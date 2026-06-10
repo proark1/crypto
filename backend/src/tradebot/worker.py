@@ -273,7 +273,29 @@ class Worker:
                 ", ".join(symbols),
             )
             self.regime_detector = None
+        for symbol in symbols:
+            self._activate(symbol)
         if self.regime_detector is not None:
+            # Pull the reference market's history *before* priming: on a
+            # truly first boot nothing is stored yet, and priming from an
+            # empty table would leave the gate warming up — blocking every
+            # entry for days — until a restart re-primed it. Resumable and
+            # cheap on later boots (it starts at the newest stored candle),
+            # and a failure only defers warm-up to the live stream.
+            try:
+                repaired = await self._feeds[self.regime_detector.symbol].backfill()
+                if repaired:
+                    logger.info(
+                        "priming backfill fetched %d reference candles for %s",
+                        repaired,
+                        self.regime_detector.symbol,
+                    )
+            except Exception:
+                logger.warning(
+                    "reference-market backfill failed; the regime gate warms up "
+                    "from the live stream instead",
+                    exc_info=True,
+                )
             # Prime from stored history so the gate does not spend its first
             # day warming up after every deploy.
             stored = await self.candle_store.fetch_recent(
@@ -288,8 +310,6 @@ class Worker:
                 self.regime_detector.symbol,
                 self.regime_detector.regime.label,
             )
-        for symbol in symbols:
-            self._activate(symbol)
         return await self.replay_journal()
 
     async def add_coin(self, symbol: str) -> None:

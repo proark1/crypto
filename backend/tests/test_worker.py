@@ -379,3 +379,66 @@ class TestWorker:
         backtest_config = AppConfig(mode=TradingMode.BACKTEST)
         with pytest.raises(NotImplementedError, match="paper mode"):
             Worker(backtest_config, database, ScriptedExchange([]))
+
+
+class HistoryServingExchange(ScriptedExchange):
+    """Serves enough recent 1m history to warm the regime gate on first boot."""
+
+    def __init__(self, minutes: int) -> None:
+        super().__init__([])
+        # Anchored to the wall clock: the first-boot backfill reaches back
+        # from now, so the history must be recent to be fetched.
+        end = datetime.now(UTC).replace(second=0, microsecond=0)
+        start_ms = int((end - timedelta(minutes=minutes)).timestamp() * 1000)
+        self.history: list[OhlcvRow] = [
+            # A steady climb: hourly ADX reads it as a clean trend.
+            [start_ms + i * MINUTE_MS, close, close + 0.5, close - 0.5, close, 10.0]
+            for i in range(minutes)
+            for close in (100 + 0.01 * i,)
+        ]
+        self.fetch_calls = 0
+
+    async def fetch_ohlcv(
+        self, symbol: str, timeframe: str, since: int | None = None, limit: int | None = None
+    ) -> list[OhlcvRow]:
+        self.fetch_calls += 1
+        if symbol != "BTC/USDT":
+            return []
+        if since is None:
+            return self.history
+        return [row for row in self.history if row[0] >= since]
+
+
+class FailingBackfillExchange(ScriptedExchange):
+    async def fetch_ohlcv(
+        self, symbol: str, timeframe: str, since: int | None = None, limit: int | None = None
+    ) -> list[OhlcvRow]:
+        raise ConnectionError("venue unreachable")
+
+
+class TestFirstBootRegimePriming:
+    async def test_first_boot_backfills_the_reference_and_primes_the_gate(
+        self, database: Database
+    ) -> None:
+        """A fresh deploy must not block entries for days of live warm-up."""
+        worker = Worker(
+            make_config(regime_gate_enabled=True),
+            database,
+            HistoryServingExchange(minutes=14_500),  # > required_m1_candles()
+        )
+        await worker.initialize()
+
+        assert worker.regime_detector is not None
+        assert worker.regime_detector.regime.label == "trending"
+
+    async def test_failed_reference_backfill_degrades_to_live_warm_up(
+        self, database: Database
+    ) -> None:
+        """A venue outage at boot defers warm-up; it never crashes startup."""
+        worker = Worker(
+            make_config(regime_gate_enabled=True), database, FailingBackfillExchange([])
+        )
+        await worker.initialize()
+
+        assert worker.regime_detector is not None
+        assert worker.regime_detector.regime.label == "warming_up"

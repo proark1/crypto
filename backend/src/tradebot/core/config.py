@@ -175,12 +175,16 @@ class AppConfig(BaseSettings):
             )
         return self
 
-    history_backfill_days: int = Field(default=0, ge=0)
+    history_backfill_days: int = Field(default=30, ge=0)
     """How many days of candle history to fetch for a symbol that has none
     stored yet (first boot, newly added coin). Binance-class venues serve
     years of public 1m history for free; the only cost is database storage
-    (roughly 0.5 GB per symbol-year of 1m candles). ``0`` keeps the default
-    behavior: backfill only from the newest stored candle forward."""
+    (roughly 0.5 GB per symbol-year of 1m candles). The default covers the
+    regime gate's warm-up (~10 days of 1m candles for hourly ADX and the
+    drawdown window) with room to spare, so a fresh deploy starts with a
+    working gate and warm indicators instead of days of blocked entries.
+    ``0`` disables deep backfill: only the gap from the newest stored
+    candle forward is repaired."""
 
     api_token: str | None = None
     """Bearer token for the control API. Unset means the API does not start:
