@@ -206,7 +206,31 @@ class TestFindings:
         )
 
         finding_id = await store.insert_finding(finding)
-        (loaded,) = await store.fetch_findings(run_id)
+        ((loaded_id, loaded),) = await store.fetch_findings(run_id)
         assert finding_id > 0
+        assert loaded_id == finding_id
         assert loaded == finding
         assert loaded.status == "proposed"
+
+    async def test_status_is_the_only_mutable_field(self, database: Database) -> None:
+        store = EvaluationStore(database)
+        run_id = await make_run(store)
+        finding = LearningFinding(
+            run_id=run_id,
+            pattern="entries lose money when trend is ranging",
+            evidence_scenario_ids=(1, 2),
+            affected_count=2,
+            average_r_impact=Decimal("-0.3"),
+            suggestion="gate entries behind extra confirmation",
+            confidence="low",
+            created_at=BASE_TIME,
+        )
+        finding_id = await store.insert_finding(finding)
+
+        await store.set_finding_status(finding_id, "accepted")
+
+        loaded = await store.fetch_finding(finding_id)
+        assert loaded is not None
+        assert loaded.status == "accepted"
+        assert loaded.pattern == finding.pattern  # facts stay frozen
+        assert await store.fetch_finding(9999) is None

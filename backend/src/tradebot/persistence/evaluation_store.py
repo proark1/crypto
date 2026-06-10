@@ -288,8 +288,12 @@ class EvaluationStore:
             finding_id: int = (await connection.execute(statement)).scalar_one()
         return finding_id
 
-    async def fetch_findings(self, run_id: int) -> list[LearningFinding]:
-        """Return all findings for ``run_id`` in creation order."""
+    async def fetch_findings(self, run_id: int) -> list[tuple[int, LearningFinding]]:
+        """Return (id, finding) pairs for ``run_id`` in creation order.
+
+        Ids ride along because accept/reject addresses a finding by id —
+        the model itself stays a pure domain object.
+        """
         statement = (
             select(learning_findings_table)
             .where(learning_findings_table.c.run_id == run_id)
@@ -297,4 +301,27 @@ class EvaluationStore:
         )
         async with self._database.engine.connect() as connection:
             rows = (await connection.execute(statement)).mappings().all()
-        return [LearningFinding.model_validate(dict(row)) for row in rows]
+        return [(row["id"], LearningFinding.model_validate(dict(row))) for row in rows]
+
+    async def fetch_finding(self, finding_id: int) -> LearningFinding | None:
+        """Return one finding, or ``None`` if unknown."""
+        statement = select(learning_findings_table).where(
+            learning_findings_table.c.id == finding_id
+        )
+        async with self._database.engine.connect() as connection:
+            row = (await connection.execute(statement)).mappings().first()
+        return None if row is None else LearningFinding.model_validate(dict(row))
+
+    async def set_finding_status(self, finding_id: int, status: str) -> None:
+        """Record the human's accept/reject verdict on a finding.
+
+        The only mutation findings ever see: pattern, evidence, and impact
+        are facts about the run and stay frozen.
+        """
+        statement = (
+            update(learning_findings_table)
+            .where(learning_findings_table.c.id == finding_id)
+            .values(status=status)
+        )
+        async with self._database.engine.begin() as connection:
+            await connection.execute(statement)

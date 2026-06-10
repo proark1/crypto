@@ -115,6 +115,19 @@ export interface ScenarioReplayResponse {
   horizon: CandleResponse[];
 }
 
+export interface FindingResponse {
+  id: number;
+  run_id: number;
+  pattern: string;
+  evidence_scenario_ids: number[];
+  affected_count: number;
+  average_r_impact: string;
+  suggestion: string;
+  confidence: string;
+  status: string;
+  created_at: string;
+}
+
 export interface EvaluationRunResponse {
   id: number;
   created_at: string;

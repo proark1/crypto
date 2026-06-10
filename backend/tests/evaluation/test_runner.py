@@ -120,6 +120,10 @@ class TestRunner:
         summary = run["summary"]
         assert summary["scenario_count"] == CONFIG.scenario_count
         assert "verdicts" in summary and "by_trend" in summary
+        # Mining ran as part of completion; whatever it found is proposed,
+        # never auto-accepted — the verdict belongs to a human.
+        findings = await store.fetch_findings(run_id)
+        assert all(finding.status == "proposed" for _, finding in findings)
 
     async def test_run_with_no_candles_completes_empty_not_failed(self, database: Database) -> None:
         """Too little history is a skipped series, not a crashed run."""
