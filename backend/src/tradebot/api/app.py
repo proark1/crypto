@@ -18,6 +18,7 @@ from pydantic import BaseModel
 
 from tradebot.core.config import AppConfig
 from tradebot.core.models import CandleInterval
+from tradebot.engine import TradingEngine
 from tradebot.persistence import CandleStore, FillStore
 from tradebot.portfolio import Portfolio
 
@@ -45,6 +46,11 @@ class BotState(Protocol):
         """The persistent fill journal."""
         ...
 
+    @property
+    def engine(self) -> TradingEngine:
+        """The trading loop, for pause/resume/kill commands."""
+        ...
+
 
 class PositionResponse(BaseModel):
     """One open position, amounts as strings."""
@@ -59,6 +65,7 @@ class StatusResponse(BaseModel):
     """The three-second answer to "is everything okay?"."""
 
     mode: str
+    paused: bool
     symbol: str
     exchange_id: str
     quote_currency: str
@@ -68,6 +75,13 @@ class StatusResponse(BaseModel):
     last_candle_close_time: str | None
     mark_price_quote: str | None
     equity_quote: str | None
+
+
+class CommandResponse(BaseModel):
+    """Outcome of a control command."""
+
+    paused: bool
+    detail: str
 
 
 class FillResponse(BaseModel):
@@ -133,6 +147,7 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
             )
         return StatusResponse(
             mode=state.config.mode.value,
+            paused=state.engine.paused,
             symbol=symbol,
             exchange_id=state.config.exchange_id,
             quote_currency=state.config.quote_currency,
@@ -143,6 +158,26 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
             mark_price_quote=str(mark_price) if mark_price is not None else None,
             equity_quote=str(equity) if equity is not None else None,
         )
+
+    @app.post("/pause")
+    async def pause() -> CommandResponse:
+        state.engine.pause()
+        return CommandResponse(paused=True, detail="strategy muted; resting orders stay live")
+
+    @app.post("/resume")
+    async def resume() -> CommandResponse:
+        state.engine.resume()
+        return CommandResponse(paused=False, detail="strategy resumed")
+
+    @app.post("/kill")
+    async def kill() -> CommandResponse:
+        exit_submitted = await state.engine.kill()
+        detail = (
+            "halted; exit order submitted, fills on next candle"
+            if exit_submitted
+            else "halted; no position to flatten"
+        )
+        return CommandResponse(paused=True, detail=detail)
 
     @app.get("/fills")
     async def get_fills() -> list[FillResponse]:
