@@ -4,7 +4,7 @@
  * screens can distinguish auth failures (prompt for token) from outages.
  */
 
-import type { CommandResponse, FillResponse, StatusResponse } from "./types";
+import type { CommandResponse, DecisionResponse, FillResponse, StatusResponse } from "./types";
 
 const TOKEN_STORAGE_KEY = "tradebot_api_token";
 
@@ -63,6 +63,10 @@ export function fetchStatus(): Promise<StatusResponse> {
 
 export function fetchFills(): Promise<FillResponse[]> {
   return request<FillResponse[]>("/fills", "GET");
+}
+
+export function fetchDecisions(): Promise<DecisionResponse[]> {
+  return request<DecisionResponse[]>("/decisions", "GET");
 }
 
 export function postPause(): Promise<CommandResponse> {

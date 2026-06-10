@@ -40,3 +40,14 @@ export interface CommandResponse {
   paused: boolean;
   detail: string;
 }
+
+export interface DecisionResponse {
+  signal_id: string;
+  strategy_name: string;
+  symbol: string;
+  side: string;
+  stop_price_quote: string;
+  reasons: string[];
+  outcome: string;
+  created_at: string;
+}

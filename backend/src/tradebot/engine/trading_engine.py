@@ -16,9 +16,17 @@ from __future__ import annotations
 import logging
 
 from tradebot.core.events import CandleClosed, EventBus, FillRecorded
-from tradebot.core.models import Candle, CandleInterval, Fill, Side, Signal
+from tradebot.core.models import (
+    Candle,
+    CandleInterval,
+    Decision,
+    DecisionOutcome,
+    Fill,
+    Side,
+    Signal,
+)
 from tradebot.execution.simulator import SimulatedExecutionAdapter
-from tradebot.persistence import FillStore
+from tradebot.persistence import DecisionStore, FillStore
 from tradebot.portfolio import Portfolio
 from tradebot.risk import RiskManager
 from tradebot.strategies import Strategy
@@ -44,6 +52,7 @@ class TradingEngine:
         symbol: str | None = None,
         interval: CandleInterval = CandleInterval.M1,
         fill_store: FillStore | None = None,
+        decision_store: DecisionStore | None = None,
     ) -> None:
         """Wire the components; ``symbol=None`` binds to the first candle seen."""
         self._strategy = strategy
@@ -53,6 +62,7 @@ class TradingEngine:
         self._symbol = symbol
         self._interval = interval
         self._fill_store = fill_store
+        self._decision_store = decision_store
         self._fills: list[Fill] = []
         self._paused = False
         self._last_candle: Candle | None = None
@@ -133,6 +143,7 @@ class TradingEngine:
         logger.warning(
             "kill switch submitted exit %s for %s", exit_order.client_order_id, self._symbol
         )
+        await self._record_decision(signal, DecisionOutcome.SUBMITTED)
         return True
 
     def attach_to(self, bus: EventBus) -> None:
@@ -173,6 +184,7 @@ class TradingEngine:
                 signal.side,
                 signal.symbol,
             )
+            await self._record_decision(signal, DecisionOutcome.PAUSED)
             return
         order = self._risk_manager.evaluate(signal, candle.close_quote)
         if order is None:
@@ -182,6 +194,7 @@ class TradingEngine:
                 signal.side,
                 signal.symbol,
             )
+            await self._record_decision(signal, DecisionOutcome.VETOED)
             return
         logger.info(
             "submitting order %s: %s %s %s (signal %s)",
@@ -192,6 +205,30 @@ class TradingEngine:
             order.signal_id,
         )
         await self._adapter.submit(order)
+        await self._record_decision(signal, DecisionOutcome.SUBMITTED)
+
+    async def _record_decision(self, signal: Signal, outcome: DecisionOutcome) -> None:
+        """Journal a signal's fate for the decision-pipeline view.
+
+        Best-effort by design: the explainability trail must never break
+        trading, so persistence failures are logged and dropped.
+        """
+        if self._decision_store is None:
+            return
+        decision = Decision(
+            signal_id=signal.signal_id,
+            strategy_name=signal.strategy_name,
+            symbol=signal.symbol,
+            side=signal.side,
+            stop_price_quote=signal.stop_price_quote,
+            reasons=signal.reasons,
+            outcome=outcome,
+            created_at=signal.created_at,
+        )
+        try:
+            await self._decision_store.append(decision)
+        except Exception:
+            logger.exception("failed to journal decision %s", signal.signal_id)
 
     async def _on_fill(self, fill: Fill) -> None:
         # Journal before touching in-memory state: if the write fails, memory

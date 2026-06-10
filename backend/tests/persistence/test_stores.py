@@ -3,8 +3,8 @@ from decimal import Decimal
 
 import pytest
 
-from tradebot.core.models import Candle, CandleInterval, Fill, Side
-from tradebot.persistence import CandleStore, Database, FillStore
+from tradebot.core.models import Candle, CandleInterval, Decision, DecisionOutcome, Fill, Side
+from tradebot.persistence import CandleStore, Database, DecisionStore, FillStore
 
 BASE_TIME = datetime(2026, 1, 2, 0, 0, tzinfo=UTC)
 
@@ -144,3 +144,39 @@ class TestFillStore:
         await store.append(other)
 
         assert len(await store.fetch_all("ETH/USDT")) == 1
+
+
+def make_decision(signal_id: str, outcome: DecisionOutcome) -> Decision:
+    return Decision(
+        signal_id=signal_id,
+        strategy_name="trend_following",
+        symbol="BTC/USDT",
+        side=Side.BUY,
+        stop_price_quote=Decimal("95.5"),
+        reasons=("fast EMA crossed above slow EMA", "stop at 2 x ATR below close"),
+        outcome=outcome,
+        created_at=BASE_TIME,
+    )
+
+
+class TestDecisionStore:
+    async def test_round_trip_preserves_reasons_and_outcome(self, database: Database) -> None:
+        store = DecisionStore(database)
+        original = make_decision("sig-1", DecisionOutcome.VETOED)
+        await store.append(original)
+
+        (loaded,) = await store.fetch_recent("BTC/USDT")
+        assert loaded == original  # reasons tuple, Decimal stop, outcome enum
+
+    async def test_fetch_recent_is_newest_first_and_limited(self, database: Database) -> None:
+        store = DecisionStore(database)
+        for index in range(5):
+            await store.append(make_decision(f"sig-{index}", DecisionOutcome.SUBMITTED))
+
+        recent = await store.fetch_recent("BTC/USDT", limit=2)
+        assert [d.signal_id for d in recent] == ["sig-4", "sig-3"]
+
+    async def test_symbols_are_isolated(self, database: Database) -> None:
+        store = DecisionStore(database)
+        await store.append(make_decision("sig-1", DecisionOutcome.SUBMITTED))
+        assert await store.fetch_recent("ETH/USDT") == []

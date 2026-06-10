@@ -192,3 +192,30 @@ class Fill(BaseModel):
     quantity_base: PositiveAmount
     fee_quote: Amount
     filled_at: UtcDatetime
+
+
+class DecisionOutcome(enum.StrEnum):
+    """What happened to a signal at the risk/authorization boundary."""
+
+    SUBMITTED = "submitted"
+    VETOED = "vetoed"
+    PAUSED = "paused"
+
+
+class Decision(BaseModel):
+    """One signal and its fate — the raw material of explainability.
+
+    The UI's decision-pipeline view shows these verbatim (ARCHITECTURE.md
+    6.2): the bot never does, or declines to do, something it cannot explain.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    signal_id: str
+    strategy_name: str
+    symbol: str
+    side: Side
+    stop_price_quote: PositiveAmount
+    reasons: tuple[str, ...]
+    outcome: DecisionOutcome
+    created_at: UtcDatetime

@@ -10,10 +10,17 @@ import pytest
 
 from tradebot.api import create_app
 from tradebot.core.config import AppConfig, TradingMode
-from tradebot.core.models import Candle, CandleInterval, Fill, Side
+from tradebot.core.models import (
+    Candle,
+    CandleInterval,
+    Decision,
+    DecisionOutcome,
+    Fill,
+    Side,
+)
 from tradebot.engine import TradingEngine
 from tradebot.execution import FillSimulatorConfig, SimulatedExecutionAdapter
-from tradebot.persistence import CandleStore, Database, FillStore
+from tradebot.persistence import CandleStore, Database, DecisionStore, FillStore
 from tradebot.persistence.database import metadata
 from tradebot.portfolio import Portfolio
 from tradebot.risk import RiskConfig, RiskManager
@@ -47,6 +54,7 @@ class StubBot:
         self.portfolio = Portfolio(Decimal("10000"))
         self.candle_store = CandleStore(database)
         self.fill_store = FillStore(database)
+        self.decision_store = DecisionStore(database)
         self.engine = TradingEngine(
             TrendFollowingStrategy(TrendFollowingConfig()),
             RiskManager(RiskConfig(), self.portfolio),
@@ -210,6 +218,39 @@ class TestCommands:
         )
         await bot.engine.process_candle(next_candle)
         assert bot.portfolio.position("BTC/USDT") is None
+
+
+class TestDecisions:
+    async def test_decisions_are_returned_newest_first_with_reasons(
+        self, database: Database
+    ) -> None:
+        bot = StubBot(database)
+        await bot.decision_store.append(
+            Decision(
+                signal_id="sig-1",
+                strategy_name="trend_following",
+                symbol="BTC/USDT",
+                side=Side.BUY,
+                stop_price_quote=Decimal("95"),
+                reasons=("fast EMA crossed above slow EMA",),
+                outcome=DecisionOutcome.VETOED,
+                created_at=BASE_TIME,
+            )
+        )
+
+        async with make_client(bot) as client:
+            body = (await client.get("/decisions")).json()
+
+        assert len(body) == 1
+        assert body[0]["outcome"] == "vetoed"
+        assert body[0]["reasons"] == ["fast EMA crossed above slow EMA"]
+        assert body[0]["stop_price_quote"] == "95"
+
+    async def test_out_of_range_limit_is_rejected(self, database: Database) -> None:
+        bot = StubBot(database)
+        async with make_client(bot) as client:
+            assert (await client.get("/decisions?limit=0")).status_code == 422
+            assert (await client.get("/decisions?limit=9999")).status_code == 422
 
 
 class TestFills:
