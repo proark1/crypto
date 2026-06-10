@@ -248,10 +248,12 @@ class TestFeed:
         expected_floor = (datetime.now(UTC) - timedelta(days=365)).timestamp() * 1000
         assert abs(first_since - expected_floor) < 60_000  # within a minute
 
-    async def test_history_horizon_is_ignored_once_anything_is_stored(
+    async def test_shallow_stored_history_deepens_before_resuming_forward(
         self, database: Database
     ) -> None:
-        """Resume-from-latest always wins over the first-fill horizon."""
+        """Stored-but-shallow history reaches for the horizon first, then
+        resumes forward from the newest stored candle — a database that
+        predates a deeper setting must not keep its sliver forever."""
         store = CandleStore(database)
         seed = FakeExchange([], rest_rows=[row(0), row(1)])
         await LiveMarketDataFeed(seed, "BTC/USDT", store, EventBus()).backfill()  # stores row 0
@@ -260,11 +262,72 @@ class TestFeed:
         feed = LiveMarketDataFeed(exchange, "BTC/USDT", store, EventBus(), history_days=365)
         await feed.backfill()
 
-        # The crawl resumed at the stored candle's successor, not a year ago.
-        assert exchange.rest_calls[0] == BASE_MS + MINUTE_MS
+        # First call reaches back to the 365-day horizon (deepening)...
+        first_since = exchange.rest_calls[0]
+        assert first_since is not None
+        expected_floor = (datetime.now(UTC) - timedelta(days=365)).timestamp() * 1000
+        assert abs(first_since - expected_floor) < 60_000  # within a minute
+        # ...then the forward crawl resumes at the stored candle's successor.
+        assert exchange.rest_calls[1] == BASE_MS + MINUTE_MS
 
     async def test_backfill_when_caught_up_inserts_nothing(self, database: Database) -> None:
         store = CandleStore(database)
         exchange = FakeExchange([], rest_rows=[row(0)])
         feed = LiveMarketDataFeed(exchange, "BTC/USDT", store, EventBus())
         assert await feed.backfill() == 0
+
+
+class TestDeepenHistory:
+    """Backward deepening: shallow existing history grows to the horizon."""
+
+    @staticmethod
+    def recent_row(minutes_ago: int, now_ms: int) -> list[float]:
+        return [now_ms - minutes_ago * MINUTE_MS, 100.0, 101.0, 99.0, 100.0, 1.0]
+
+    @staticmethod
+    def now_ms() -> int:
+        anchor = datetime.now(UTC).replace(second=0, microsecond=0)
+        return int(anchor.timestamp() * 1000)
+
+    async def insert_recent(self, store: CandleStore, now_ms: int, minutes_ago: list[int]) -> None:
+        feed_rows = [self.recent_row(m, now_ms) for m in minutes_ago]
+        from tradebot.marketdata.live_feed import _row_to_candle  # test-only import
+
+        await store.insert_batch(
+            [_row_to_candle(row, "BTC/USDT", CandleInterval.M1) for row in feed_rows]
+        )
+
+    async def test_shallow_history_is_deepened_to_the_horizon(self, database: Database) -> None:
+        """A database that predates a deeper setting still gets the depth."""
+        store = CandleStore(database)
+        now = self.now_ms()
+        # Stored: only the last 10 minutes (what a young deployment has).
+        await self.insert_recent(store, now, list(range(10, 0, -1)))
+        # The venue can serve far deeper history than what is stored.
+        exchange = FakeExchange([], rest_rows=[self.recent_row(m, now) for m in range(300, 0, -1)])
+        feed = LiveMarketDataFeed(exchange, "BTC/USDT", store, EventBus(), history_days=1)
+
+        inserted = await feed.backfill()
+
+        earliest = await store.earliest_open_time("BTC/USDT", CandleInterval.M1)
+        assert earliest is not None
+        # Deepened to the venue's depth (300 minutes), well past the stored 10.
+        assert earliest == datetime.fromtimestamp((now - 300 * MINUTE_MS) / 1000, tz=UTC)
+        assert inserted >= 290  # the deepened span, without double-counting stored rows
+
+    async def test_history_already_at_the_horizon_is_left_alone(self, database: Database) -> None:
+        store = CandleStore(database)
+        now = self.now_ms()
+        two_days_back = 2 * 24 * 60
+        await self.insert_recent(store, now, [two_days_back, 2, 1])
+        exchange = FakeExchange(
+            [], rest_rows=[self.recent_row(m, now) for m in range(3 * 24 * 60, 0, 60)]
+        )
+        feed = LiveMarketDataFeed(exchange, "BTC/USDT", store, EventBus(), history_days=1)
+
+        await feed.backfill()
+
+        earliest = await store.earliest_open_time("BTC/USDT", CandleInterval.M1)
+        # Nothing older than the pre-existing earliest appeared: the stored
+        # history already reaches past the 1-day horizon.
+        assert earliest == datetime.fromtimestamp((now - two_days_back * MINUTE_MS) / 1000, tz=UTC)

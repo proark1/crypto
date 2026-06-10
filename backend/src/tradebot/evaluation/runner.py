@@ -72,6 +72,15 @@ class EvaluationRunner:
         try:
             await self._store.set_run_status(run_id, RunStatus.RUNNING)
             records = await self._evaluate_all(run_id, config)
+            if not records:
+                # A run that evaluated nothing must not look "completed":
+                # the operator would read an empty report as a quiet pass
+                # instead of the data problem it is.
+                raise RuntimeError(
+                    "no symbol/timeframe series had enough stored history to host a "
+                    "single scenario; deepen the candle history "
+                    "(TRADEBOT_HISTORY_BACKFILL_DAYS) or shorten lookback/horizon"
+                )
             # Findings land before the run flips to completed, so a
             # "completed" run is always fully mined — never half-reported.
             findings = mine_findings(run_id, records, utc_now())
