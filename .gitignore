@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+dist/
+*.egg-info/
+
+# Node / frontend
+node_modules/
+frontend/dist/
+
+# Environment & secrets — config comes from env vars, never the repo
+.env
+.env.*
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store
