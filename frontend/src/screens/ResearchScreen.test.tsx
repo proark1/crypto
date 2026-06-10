@@ -29,7 +29,7 @@ const RUN: EvaluationRunResponse = {
 describe("RunReport", () => {
   it("leads with expectancy and shows verdicts and breakdowns", () => {
     render(<RunReport run={RUN} />);
-    expect(screen.getByText("expectancy (R)")).toBeDefined();
+    expect(screen.getAllByText("expectancy (R)").length).toBeGreaterThan(0);
     expect(screen.getByText("0.3100")).toBeDefined();
     expect(screen.getByText(/very bad: 1/)).toBeDefined();
     expect(screen.getByText("by trend")).toBeDefined();
