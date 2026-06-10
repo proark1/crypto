@@ -49,6 +49,8 @@ def build_report(
     """Compute the report for ``result`` produced over ``candles``."""
     if not candles:
         raise ValueError("cannot report on an empty candle series")
+    if initial_balance_quote <= 0:
+        raise ValueError(f"initial balance must be positive, got {initial_balance_quote}")
 
     total_return = _fraction(
         result.final_equity_quote - initial_balance_quote, initial_balance_quote
@@ -97,16 +99,18 @@ def _max_drawdown(equity_curve: tuple[tuple[object, Decimal], ...]) -> Decimal:
 def _round_trip_pnls(result: BacktestResult, initial_balance_quote: Decimal) -> list[Decimal]:
     """Net PnL per closed round trip, by replaying fills through accounting.
 
+    A round trip completes when the position returns to flat, so partial
+    exits accumulate into one round trip instead of counting once per sell.
     Reuses ``Portfolio`` rather than re-deriving fee/cost-basis rules: the
     report must agree with the books by construction, not by parallel math.
     """
     replay = Portfolio(initial_balance_quote)
     pnls: list[Decimal] = []
-    previous_realized = Decimal(0)
+    realized_at_last_flat: dict[str, Decimal] = {}
     for fill in result.fills:
         replay.apply_fill(fill)
-        if fill.side == Side.SELL:
-            realized = replay.realized_pnl_quote()
-            pnls.append(realized - previous_realized)
-            previous_realized = realized
+        if fill.side == Side.SELL and replay.position(fill.symbol) is None:
+            realized = replay.realized_pnl_quote(fill.symbol)
+            pnls.append(realized - realized_at_last_flat.get(fill.symbol, Decimal(0)))
+            realized_at_last_flat[fill.symbol] = realized
     return pnls

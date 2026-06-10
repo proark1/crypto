@@ -108,6 +108,18 @@ class TestRoundTrips:
         assert report.profit_factor == pytest.approx(18 / 7)
         assert report.total_fees_quote == Decimal("4")
 
+    def test_partial_exits_form_one_round_trip(self) -> None:
+        fills = [
+            make_fill(Side.BUY, "100", quantity="2", minute=0),
+            make_fill(Side.SELL, "110", quantity="1", minute=1),  # scale out
+            make_fill(Side.SELL, "120", quantity="1", minute=2),  # flat here
+        ]
+        candles = [make_candle(i, "100") for i in range(3)]
+        report = build_report(make_result(fills, ["1000"] * 3), candles, INITIAL)
+
+        assert report.round_trips == 1  # not two; the position went flat once
+        assert report.winning_round_trips == 1
+
     def test_no_trades_yields_none_rates(self) -> None:
         candles = [make_candle(0, "100")]
         report = build_report(make_result([], ["1000"]), candles, INITIAL)
@@ -130,3 +142,8 @@ class TestRoundTrips:
     def test_empty_candles_are_rejected(self) -> None:
         with pytest.raises(ValueError, match="empty candle series"):
             build_report(make_result([], ["1000"]), [], INITIAL)
+
+    def test_non_positive_initial_balance_is_rejected(self) -> None:
+        candles = [make_candle(0, "100")]
+        with pytest.raises(ValueError, match="must be positive"):
+            build_report(make_result([], ["1000"]), candles, Decimal("0"))
