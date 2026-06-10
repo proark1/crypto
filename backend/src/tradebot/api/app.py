@@ -13,6 +13,7 @@ import secrets
 from typing import Protocol
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, status
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 
@@ -149,6 +150,16 @@ class FillResponse(BaseModel):
     filled_at: str
 
 
+def _parse_cors_origins(raw: str) -> list[str]:
+    """Split the comma-separated origins setting, ignoring blanks.
+
+    Trailing slashes are stripped because an Origin header never carries
+    one — ``https://app.example.com/`` pasted from a browser address bar
+    would otherwise silently never match.
+    """
+    return [origin.strip().rstrip("/") for origin in raw.split(",") if origin.strip()]
+
+
 def create_health_only_app() -> FastAPI:
     """Build a liveness-only app for when the control plane is disabled.
 
@@ -183,6 +194,18 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
             )
 
     app = FastAPI(title="tradebot control plane")
+    # The dashboard is served from a different origin than the API (two
+    # Railway services), so without these headers the browser blocks every
+    # request before it leaves the page. Credentials stay off: auth is a
+    # bearer header the page attaches itself, never a cookie the browser
+    # would attach for an attacker.
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_parse_cors_origins(state.config.api_cors_origins),
+        allow_credentials=False,
+        allow_methods=["GET", "POST"],
+        allow_headers=["Authorization", "Content-Type"],
+    )
     protected = APIRouter(dependencies=[Depends(require_token)])
 
     @app.get("/health")

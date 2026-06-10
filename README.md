@@ -3,8 +3,11 @@
 Autonomous crypto **spot trading bot**: technical analysis + market data signals,
 per-coin autonomy modes (autonomous / co-pilot approval), strict risk management.
 
-- **[ARCHITECTURE.md](ARCHITECTURE.md)** — the design document and source of truth.
+- **[ARCHITECTURE.md](ARCHITECTURE.md)** — the design document and source of truth
+  (includes the implementation-status table).
 - **[CLAUDE.md](CLAUDE.md)** — repository structure, safety invariants, and coding standards.
+- **[LIVE_TRADING_CHECKLIST.md](LIVE_TRADING_CHECKLIST.md)** — the hard blockers and
+  soak runbook gating live trading.
 
 ## Layout
 
@@ -60,6 +63,7 @@ internally.
 | `TRADEBOT_DATABASE_URL` | yes | `${{Postgres.DATABASE_URL}}` — any standard Postgres DSN works; the bot rewrites the scheme to its asyncpg driver itself |
 | `TRADEBOT_API_TOKEN` | for the API/dashboard | long random string; API stays off without it |
 | `TRADEBOT_API_PORT` | no | falls back to Railway's injected `PORT` automatically |
+| `TRADEBOT_API_CORS_ORIGINS` | no | `*` (safe with bearer-header auth); set to the dashboard URL, e.g. `https://frontend-xxxx.up.railway.app`, for defence in depth |
 | `TRADEBOT_EXCHANGE_ID` | no | `binance` (any CCXT id: `kraken`, `coinbase`, ...) |
 | `TRADEBOT_SYMBOL` | no | `BTC/USDT` |
 | `TRADEBOT_PAPER_INITIAL_BALANCE_QUOTE` | no | `10000` |

@@ -144,6 +144,54 @@ class TestAuth:
             assert (await client.post("/kill")).status_code == 404
 
 
+class TestCors:
+    """The dashboard lives on a different origin than the API; without CORS
+    headers the browser blocks every dashboard request before it is sent."""
+
+    async def test_cross_origin_request_gets_allow_origin_header(self, database: Database) -> None:
+        bot = StubBot(database)  # default config: api_cors_origins="*"
+        async with make_client(bot) as client:
+            response = await client.get(
+                "/status", headers={"Origin": "https://dashboard.example.com"}
+            )
+
+        assert response.status_code == 200
+        assert response.headers["access-control-allow-origin"] == "*"
+
+    async def test_preflight_allows_authorization_header(self, database: Database) -> None:
+        """The token rides in an Authorization header, which makes every
+        dashboard request "non-simple" — the browser preflights it."""
+        bot = StubBot(database)
+        async with make_client(bot) as client:
+            response = await client.options(
+                "/proposals/approve",
+                headers={
+                    "Origin": "https://dashboard.example.com",
+                    "Access-Control-Request-Method": "POST",
+                    "Access-Control-Request-Headers": "authorization,content-type",
+                },
+            )
+
+        assert response.status_code == 200
+        assert "authorization" in response.headers["access-control-allow-headers"].lower()
+        assert "POST" in response.headers["access-control-allow-methods"]
+
+    async def test_configured_origin_list_is_enforced(self, database: Database) -> None:
+        bot = StubBot(database)
+        bot.config = AppConfig(
+            mode=TradingMode.PAPER,
+            symbol="BTC/USDT",
+            # Trailing slash on purpose: pasted from a browser address bar.
+            api_cors_origins="https://dash.example.com/, https://other.example.com",
+        )
+        async with make_client(bot) as client:
+            allowed = await client.get("/status", headers={"Origin": "https://dash.example.com"})
+            denied = await client.get("/status", headers={"Origin": "https://evil.example.com"})
+
+        assert allowed.headers["access-control-allow-origin"] == "https://dash.example.com"
+        assert "access-control-allow-origin" not in denied.headers
+
+
 class TestStatus:
     async def test_flat_account_status(self, database: Database) -> None:
         bot = StubBot(database)

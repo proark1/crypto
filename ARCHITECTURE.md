@@ -4,7 +4,28 @@ A spot-trading bot that uses technical analysis and market data to decide when t
 and sell. The user adds a coin (trading pair) and the bot starts trading it
 autonomously within configured risk limits.
 
-This document is the plan. Nothing here is implemented yet.
+This document is the target design. Implementation status as of June 2026
+(update this table in the same PR as the code it describes):
+
+| Component (section) | Status |
+|---|---|
+| Core domain models, event bus, config (§4, §11) | **Done** — Decimal money, UTC timestamps, fail-safe defaults |
+| Market data: live CCXT feed, closed-candle tracking, backfill, validation (§4.1) | **Done** — single symbol, 1m candles; multi-timeframe aggregation missing |
+| Indicators: incremental EMA, RSI, ATR (§4.2) | **Done** — tested against reference values |
+| Strategies: trend-following EMA crossover (§4.2) | **Done** — one strategy; the pluggable registry is the pattern, more strategies pending |
+| Backtester: runner, pessimistic fill simulator, golden test (§5) | **Done** — walk-forward optimizer missing |
+| Risk manager: sizing, stop validation, per-trade limits (§4.3) | **Partial** — circuit breakers, loss-streak cooldown, daily trade caps missing |
+| Execution: simulated adapter (backtest + paper) (§4.4) | **Done for paper** — live adapter, exchange-native stops, partial-fill handling are Phase 3 (see LIVE_TRADING_CHECKLIST.md) |
+| Portfolio + persistence: positions, PnL, Postgres journal (§4.5) | **Done** — journal-replay restart recovery; nightly backups missing |
+| Trading engine + worker (§4.2, §7.1) | **Done** — single symbol, paper mode only by hard guard |
+| Control API: status, pause/resume, kill, data endpoints (§6.4) | **Done** — bearer auth, public /health, CORS; SSE/WS push missing (dashboard polls) |
+| Co-pilot mode: proposal queue, approve/reject, TTL + drift guards (§6.3) | **Done** — entries only; exits never wait for approval |
+| Telegram notifications (§6.2) | **Done** — alerts only; command handling missing |
+| Dashboard: status, chart, decisions, proposals, controls (§6.1) | **Done** — single symbol; wizard, journal, research screens missing |
+| Multi-coin support, add-a-coin flow (§4.2, §6.1) | **Missing** |
+| News pipeline, regime gates, signal fusion (§4.6, §4.7) | **Missing** |
+| Observability: metrics, dead-man's switch, DB backups (§7.3) | **Missing** — Railway healthcheck + Telegram only |
+| Live trading (§8 Phase 3) | **Missing** — blockers enumerated in LIVE_TRADING_CHECKLIST.md |
 
 ---
 
