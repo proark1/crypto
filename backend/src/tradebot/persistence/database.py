@@ -65,6 +65,17 @@ decisions_table = Table(
 decision-pipeline UI reads. Append-only, like fills."""
 
 
+coins_table = Table(
+    "coins",
+    metadata,
+    Column("symbol", Text, primary_key=True),
+    Column("added_at", DateTime(timezone=True), nullable=False),
+)
+"""The actively traded pairs — the runtime source of truth. The env var
+``TRADEBOT_SYMBOLS`` only seeds this table on first boot; afterwards coins
+are added and removed through the control API."""
+
+
 _SYNC_SCHEME_PREFIXES = (
     "postgres://",
     "postgresql://",

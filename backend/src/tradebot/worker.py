@@ -17,17 +17,19 @@ import asyncio
 import contextlib
 import logging
 import signal
-from datetime import timedelta
+from collections.abc import Mapping
+from datetime import UTC, datetime, timedelta
+from typing import Protocol
 
 import httpx
 
 from tradebot.authorization import ProposalQueue
-from tradebot.core.config import AppConfig, TradingMode
+from tradebot.core.config import AppConfig, TradingMode, validate_symbol_quote
 from tradebot.core.events import EventBus
 from tradebot.engine import TradingEngine
 from tradebot.execution import FillSimulatorConfig, SimulatedExecutionAdapter
 from tradebot.marketdata.live_feed import LiveMarketDataFeed, OhlcvExchange
-from tradebot.persistence import CandleStore, Database, DecisionStore, FillStore
+from tradebot.persistence import CandleStore, CoinStore, Database, DecisionStore, FillStore
 from tradebot.portfolio import Portfolio
 from tradebot.risk import RiskConfig, RiskManager
 from tradebot.strategies import TrendFollowingConfig, TrendFollowingStrategy
@@ -35,11 +37,29 @@ from tradebot.strategies import TrendFollowingConfig, TrendFollowingStrategy
 logger = logging.getLogger(__name__)
 
 
-class Worker:
-    """N symbols, one strategy each, one account, paper fills — the Phase 2 bot."""
+class TradingVenue(OhlcvExchange, Protocol):
+    """The worker's view of the exchange: OHLCV plus the market catalog."""
 
-    def __init__(self, config: AppConfig, database: Database, exchange: OhlcvExchange) -> None:
-        """Compose every component; raises unless ``config.mode`` is paper."""
+    async def load_markets(self) -> Mapping[str, object]:
+        """Return the exchange's market catalog keyed by unified symbol."""
+        ...
+
+
+class Worker:
+    """N symbols, one strategy each, one account, paper fills — the Phase 2 bot.
+
+    Coins live in Postgres (``coins`` table) and can be added or removed at
+    runtime through the control API. ``TRADEBOT_SYMBOLS`` only seeds the
+    table on first boot — afterwards the table is the source of truth, so a
+    coin removed via the API stays removed across deploys.
+    """
+
+    def __init__(self, config: AppConfig, database: Database, exchange: TradingVenue) -> None:
+        """Compose the static components; raises unless ``config.mode`` is paper.
+
+        Coins (engines and feeds) are built in :meth:`initialize`, which
+        needs the database.
+        """
         if config.mode != TradingMode.PAPER:
             raise NotImplementedError(
                 f"worker only supports paper mode for now, got {config.mode}; "
@@ -50,34 +70,105 @@ class Worker:
         self.candle_store = CandleStore(database)
         self.fill_store = FillStore(database)
         self.decision_store = DecisionStore(database)
+        self.coin_store = CoinStore(database)
         self.portfolio = Portfolio(config.paper_initial_balance_quote)
         # One risk manager for all symbols: the circuit breakers and equity
         # caps are account-level and must see every position through one
         # pair of eyes (engines and feeds are per-symbol).
         self.risk_manager = RiskManager(RiskConfig(), self.portfolio)
-        self.symbols = config.symbol_list()
-        self.engines: dict[str, TradingEngine] = {
-            symbol: TradingEngine(
-                TrendFollowingStrategy(TrendFollowingConfig()),
-                self.risk_manager,
-                self.portfolio,
-                SimulatedExecutionAdapter(FillSimulatorConfig()),
-                symbol=symbol,
-                fill_store=self.fill_store,
-                decision_store=self.decision_store,
-                autonomy_mode=config.autonomy_mode,
-                proposal_queue=ProposalQueue(
-                    ttl=timedelta(seconds=config.proposal_ttl_seconds),
-                    max_drift_fraction=config.proposal_max_drift_fraction,
-                ),
-            )
-            for symbol in self.symbols
-        }
-        self.feeds = [
-            LiveMarketDataFeed(exchange, symbol, self.candle_store, self.bus)
-            for symbol in self.symbols
-        ]
+        self.engines: dict[str, TradingEngine] = {}
+        self._feeds: dict[str, LiveMarketDataFeed] = {}
+        self._feed_tasks: dict[str, asyncio.Task[None]] = {}
+        self._task_group: asyncio.TaskGroup | None = None
+        self._stop_requested = asyncio.Event()
+        self._exchange = exchange
         self._database = database
+
+    @property
+    def symbols(self) -> tuple[str, ...]:
+        """The actively traded pairs, in the order they were added."""
+        return tuple(self.engines)
+
+    def _activate(self, symbol: str) -> None:
+        """Build and wire one coin's engine and feed; start the feed if running."""
+        engine = TradingEngine(
+            TrendFollowingStrategy(TrendFollowingConfig()),
+            self.risk_manager,
+            self.portfolio,
+            SimulatedExecutionAdapter(FillSimulatorConfig()),
+            symbol=symbol,
+            fill_store=self.fill_store,
+            decision_store=self.decision_store,
+            autonomy_mode=self.config.autonomy_mode,
+            proposal_queue=ProposalQueue(
+                ttl=timedelta(seconds=self.config.proposal_ttl_seconds),
+                max_drift_fraction=self.config.proposal_max_drift_fraction,
+            ),
+        )
+        engine.attach_to(self.bus)
+        feed = LiveMarketDataFeed(self._exchange, symbol, self.candle_store, self.bus)
+        self.engines[symbol] = engine
+        self._feeds[symbol] = feed
+        if self._task_group is not None:
+            self._feed_tasks[symbol] = self._task_group.create_task(feed.run())
+
+    async def initialize(self) -> int:
+        """Create the schema, load the active coins, and replay the journal.
+
+        Returns the number of fills replayed. Separate from ``__init__``
+        because the coin set lives in the database.
+        """
+        await self._database.create_schema()
+        if await self.coin_store.seed_if_empty(self.config.symbol_list(), datetime.now(UTC)):
+            logger.info("first boot: coins seeded from TRADEBOT_SYMBOLS")
+        for symbol in await self.coin_store.list_symbols():
+            self._activate(symbol)
+        return await self.replay_journal()
+
+    async def add_coin(self, symbol: str) -> None:
+        """Start trading ``symbol``: validate, persist, build, stream.
+
+        Raises ``ValueError`` for an invalid, duplicate, or unlisted pair.
+        """
+        symbol = symbol.strip()
+        validate_symbol_quote(symbol, self.config.quote_currency)
+        if symbol in self.engines:
+            raise ValueError(f"{symbol} is already being traded")
+        markets = await self._exchange.load_markets()
+        if symbol not in markets:
+            raise ValueError(f"{symbol} is not listed on {self.config.exchange_id}")
+        await self.coin_store.add(symbol, datetime.now(UTC))
+        self._activate(symbol)
+        logger.info("coin added at runtime: %s", symbol)
+
+    async def remove_coin(self, symbol: str) -> None:
+        """Stop trading ``symbol``; its candles, fills, and decisions stay.
+
+        Raises ``KeyError`` for an unknown coin and ``RuntimeError`` when
+        removal would be unsafe: an open position or pending proposal must
+        be dealt with by a human first, and the last coin cannot be removed
+        (pause the bot instead — an empty bot looks healthy while doing
+        nothing, which is a trap).
+        """
+        engine = self.engines.get(symbol)
+        if engine is None:
+            raise KeyError(f"{symbol} is not being traded")
+        if len(self.engines) == 1:
+            raise RuntimeError("cannot remove the last coin; pause the bot instead")
+        if self.portfolio.position(symbol) is not None:
+            raise RuntimeError(f"{symbol} has an open position; flatten it first (kill or exit)")
+        if engine.pending_proposals():
+            raise RuntimeError(f"{symbol} has a pending proposal; approve or reject it first")
+        await self.coin_store.remove(symbol)
+        self._feeds.pop(symbol).stop()
+        task = self._feed_tasks.pop(symbol, None)
+        if task is not None:
+            # The TaskGroup ignores cancelled children, so removal never
+            # tears down the other feeds the way a crash would.
+            task.cancel()
+        engine.detach_from(self.bus)
+        del self.engines[symbol]
+        logger.info("coin removed at runtime: %s", symbol)
 
     async def replay_journal(self) -> int:
         """Rebuild portfolio state from persisted fills; returns fills replayed.
@@ -95,8 +186,7 @@ class Worker:
 
     async def run(self) -> None:
         """Start the bot (and the control API, if configured) until stopped."""
-        await self._database.create_schema()
-        replayed = await self.replay_journal()
+        replayed = await self.initialize()
         positions = (
             ", ".join(
                 f"{symbol}={position.quantity_base}"
@@ -112,8 +202,6 @@ class Worker:
             positions,
             self.portfolio.quote_balance,
         )
-        for engine in self.engines.values():
-            engine.attach_to(self.bus)
         # Started inside the try so a failure in any later startup step still
         # tears down whatever already runs (no leaked tasks or clients).
         api_task: asyncio.Task[None] | None = None
@@ -126,11 +214,16 @@ class Worker:
             heartbeat_task, heartbeat_client = self._start_heartbeat_if_configured()
             # TaskGroup, not gather: if one feed crashes, the others must be
             # cancelled with it — a bot trading some symbols while blind on
-            # another would be worse than one that stops and restarts.
+            # another would be worse than one that stops and restarts. The
+            # keeper task holds the group open while coins are added and
+            # removed at runtime (even down to zero feeds).
             async with asyncio.TaskGroup() as task_group:
-                for feed in self.feeds:
-                    task_group.create_task(feed.run())
+                self._task_group = task_group
+                task_group.create_task(self._stop_requested.wait())
+                for symbol, feed in self._feeds.items():
+                    self._feed_tasks[symbol] = task_group.create_task(feed.run())
         finally:
+            self._task_group = None  # late add_coin calls must not target a closed group
             for task in (api_task, heartbeat_task):
                 if task is None:
                     continue
@@ -261,7 +354,8 @@ class Worker:
 
     def stop(self) -> None:
         """Request shutdown (also wired to SIGTERM for Railway deploys)."""
-        for feed in self.feeds:
+        self._stop_requested.set()
+        for feed in self._feeds.values():
             feed.stop()
 
 

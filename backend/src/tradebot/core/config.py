@@ -17,6 +17,20 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from tradebot.core.models import AutonomyMode
 
 
+def validate_symbol_quote(symbol: str, quote_currency: str) -> None:
+    """Reject a pair that is not ``BASE/<quote_currency>``.
+
+    One accounting currency is a portfolio invariant; this is the single
+    check used by config parsing and the runtime add-a-coin flow alike.
+    """
+    base, separator, quote = symbol.partition("/")
+    if not base or separator != "/" or quote != quote_currency:
+        raise ValueError(
+            f"symbol {symbol!r} is not quoted in {quote_currency}; "
+            "all pairs must share the accounting currency"
+        )
+
+
 class TradingMode(enum.StrEnum):
     """Which execution adapter the bot runs against."""
 
@@ -78,11 +92,7 @@ class AppConfig(BaseSettings):
         if not seen:
             raise ValueError("TRADEBOT_SYMBOLS must name at least one trading pair")
         for symbol in seen:
-            if not symbol.endswith(f"/{self.quote_currency}"):
-                raise ValueError(
-                    f"symbol {symbol!r} is not quoted in {self.quote_currency}; "
-                    "all pairs must share the accounting currency"
-                )
+            validate_symbol_quote(symbol, self.quote_currency)
         return tuple(seen)
 
     database_url: str | None = None

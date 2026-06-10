@@ -56,18 +56,33 @@ class StubBot:
         self.fill_store = FillStore(database)
         self.decision_store = DecisionStore(database)
         # One risk manager shared by all engines, mirroring the worker.
-        risk_manager = RiskManager(RiskConfig(), self.portfolio)
+        self.risk_manager = RiskManager(RiskConfig(), self.portfolio)
         self.engines: dict[str, TradingEngine] = {
-            symbol: TradingEngine(
-                TrendFollowingStrategy(TrendFollowingConfig()),
-                risk_manager,
-                self.portfolio,
-                SimulatedExecutionAdapter(FillSimulatorConfig()),
-                symbol=symbol,
-            )
-            for symbol in self.config.symbol_list()
+            symbol: self._build_engine(symbol) for symbol in self.config.symbol_list()
         }
         self.engine = self.engines[self.config.symbol_list()[0]]
+
+    def _build_engine(self, symbol: str) -> TradingEngine:
+        return TradingEngine(
+            TrendFollowingStrategy(TrendFollowingConfig()),
+            self.risk_manager,
+            self.portfolio,
+            SimulatedExecutionAdapter(FillSimulatorConfig()),
+            symbol=symbol,
+        )
+
+    async def add_coin(self, symbol: str) -> None:
+        symbol = symbol.strip()
+        if symbol in self.engines:
+            raise ValueError(f"{symbol} is already being traded")
+        self.engines[symbol] = self._build_engine(symbol)
+
+    async def remove_coin(self, symbol: str) -> None:
+        if symbol not in self.engines:
+            raise KeyError(f"{symbol} is not being traded")
+        if len(self.engines) == 1:
+            raise RuntimeError("cannot remove the last coin; pause the bot instead")
+        del self.engines[symbol]
 
     def replace_first_engine(self, engine: TradingEngine) -> None:
         """Swap the first symbol's engine (for co-pilot test setups)."""
@@ -527,6 +542,38 @@ class TestMultiSymbol:
 
         assert "no position" in body["detail"]
         assert all(engine.paused for engine in bot.engines.values())
+
+
+class TestCoins:
+    async def test_add_shows_up_in_status_symbols(self, database: Database) -> None:
+        bot = StubBot(database)
+        async with make_client(bot) as client:
+            response = await client.post("/coins", json={"symbol": "ETH/USDT"})
+            body = (await client.get("/status")).json()
+
+        assert response.status_code == 200
+        assert response.json()["detail"] == "ETH/USDT added"
+        assert body["symbols"] == ["BTC/USDT", "ETH/USDT"]
+
+    async def test_duplicate_add_is_400(self, database: Database) -> None:
+        bot = StubBot(database)
+        async with make_client(bot) as client:
+            response = await client.post("/coins", json={"symbol": "BTC/USDT"})
+        assert response.status_code == 400
+        assert "already being traded" in response.json()["detail"]
+
+    async def test_remove_and_its_guards(self, database: Database) -> None:
+        bot = StubBot(database, symbols="BTC/USDT,ETH/USDT")
+        async with make_client(bot) as client:
+            removed = await client.post("/coins/remove", json={"symbol": "ETH/USDT"})
+            unknown = await client.post("/coins/remove", json={"symbol": "DOGE/USDT"})
+            last = await client.post("/coins/remove", json={"symbol": "BTC/USDT"})
+
+        assert removed.status_code == 200
+        assert unknown.status_code == 404
+        assert last.status_code == 409
+        assert "last coin" in last.json()["detail"]
+        assert list(bot.engines) == ["BTC/USDT"]
 
 
 class TestFills:

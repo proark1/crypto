@@ -7,6 +7,6 @@ logic stay in their own modules; this layer only persists and retrieves.
 """
 
 from tradebot.persistence.database import Database
-from tradebot.persistence.stores import CandleStore, DecisionStore, FillStore
+from tradebot.persistence.stores import CandleStore, CoinStore, DecisionStore, FillStore
 
-__all__ = ["CandleStore", "Database", "DecisionStore", "FillStore"]
+__all__ = ["CandleStore", "CoinStore", "Database", "DecisionStore", "FillStore"]

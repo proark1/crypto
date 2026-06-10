@@ -22,7 +22,7 @@ This document is the target design. Implementation status as of June 2026
 | Co-pilot mode: proposal queue, approve/reject, TTL + drift guards (§6.3) | **Done** — entries only; exits never wait for approval |
 | Telegram notifications (§6.2) | **Done** — alerts only; command handling missing |
 | Dashboard: status, chart, decisions, proposals, controls (§6.1) | **Done** — per-coin view with coin switcher; wizard, journal, research screens missing |
-| Multi-coin support (§4.2) | **Partial** — N symbols via `TRADEBOT_SYMBOLS` (per-symbol feed+engine, shared account/breakers) with per-coin dashboard; runtime add-a-coin flow missing |
+| Multi-coin support (§4.2) | **Done** — per-symbol feed+engine, shared account/breakers, per-coin dashboard, runtime add/remove via API + UI (coins persisted in Postgres; env var seeds first boot) |
 | News pipeline, regime gates, signal fusion (§4.6, §4.7) | **Missing** |
 | Observability: dead-man's switch, metrics, DB backups (§7.3) | **Partial** — heartbeat ping gated on feed freshness done; metrics and backups missing |
 | Live trading (§8 Phase 3) | **Missing** — blockers enumerated in LIVE_TRADING_CHECKLIST.md |

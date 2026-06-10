@@ -175,6 +175,16 @@ class TradingEngine:
         self._bus = bus
         bus.subscribe(CandleClosed, self._on_candle_event)
 
+    def detach_from(self, bus: EventBus) -> None:
+        """Unsubscribe from ``bus`` (runtime coin removal).
+
+        A detached engine must never see another candle: if the coin is
+        re-added, a fresh engine subscribes, and a lingering subscription
+        here would process every candle twice.
+        """
+        bus.unsubscribe(CandleClosed, self._on_candle_event)
+        self._bus = None
+
     async def _on_candle_event(self, event: CandleClosed) -> None:
         candle = event.candle
         if candle.interval != self._interval:

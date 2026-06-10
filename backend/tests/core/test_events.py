@@ -66,6 +66,31 @@ async def test_publish_without_subscribers_is_a_noop() -> None:
     await bus.publish(make_candle_closed())
 
 
+async def test_unsubscribed_handler_sees_no_further_events() -> None:
+    bus = EventBus()
+    received: list[CandleClosed] = []
+
+    async def handler(event: CandleClosed) -> None:
+        received.append(event)
+
+    bus.subscribe(CandleClosed, handler)
+    await bus.publish(make_candle_closed())
+    bus.unsubscribe(CandleClosed, handler)
+    await bus.publish(make_candle_closed())
+
+    assert len(received) == 1
+
+
+async def test_unsubscribing_an_unknown_handler_is_loud() -> None:
+    bus = EventBus()
+
+    async def never_subscribed(event: CandleClosed) -> None:  # pragma: no cover
+        pass
+
+    with pytest.raises(ValueError):
+        bus.unsubscribe(CandleClosed, never_subscribed)
+
+
 async def test_handler_exceptions_propagate_to_publisher() -> None:
     bus = EventBus()
 
