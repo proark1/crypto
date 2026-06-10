@@ -39,6 +39,14 @@ def _ensure_utc(value: datetime) -> datetime:
     return value.astimezone(UTC)
 
 
+ACCOUNTING_RESOLUTION = Decimal("1e-12")
+"""Book-keeping granularity for derived (divided) monetary amounts.
+
+Division is the one Decimal operation that produces unbounded digits;
+quantizing its results to a fixed resolution keeps every subsequent sum exact
+within Decimal's 28-digit context. 1e-12 is far below any exchange's quote
+precision (typically 1e-8), so it never affects a real amount."""
+
 Amount = Annotated[Decimal, BeforeValidator(_reject_float)]
 """A monetary amount that may legitimately be zero or negative (e.g. PnL)."""
 

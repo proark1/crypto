@@ -20,15 +20,7 @@ from decimal import ROUND_HALF_EVEN, Decimal
 
 from pydantic import BaseModel, ConfigDict
 
-from tradebot.core.models import Fill, Side
-
-ACCOUNTING_RESOLUTION = Decimal("1e-12")
-"""Book-keeping granularity for derived quote amounts.
-
-Proportional cost-of-sold is the one inexact (division) step in the books;
-quantizing its result to a fixed resolution keeps every subsequent sum exact
-within Decimal's 28-digit context instead of accumulating unbounded digits.
-1e-12 is far below any exchange's quote precision (typically 1e-8)."""
+from tradebot.core.models import ACCOUNTING_RESOLUTION, Fill, Side
 
 
 class Position(BaseModel):

@@ -1,0 +1,162 @@
+"""Backtest fill simulator: pessimistic, deterministic, candle-driven.
+
+Fill assumptions err against the strategy on purpose (ARCHITECTURE.md §8,
+"model fees and slippage pessimistically"):
+
+- **Market** orders fill on the *next* candle's open — decisions made on a
+  closed candle can never fill inside it — with slippage applied against the
+  trade and taker fees.
+- **Limit** orders fill at exactly the limit price (never with price
+  improvement) when the candle range touches it, with maker fees.
+- **Stop-limit** orders trigger when the candle range crosses the stop, then
+  fill at the limit price with taker fees — unless the candle *opens* beyond
+  the limit (gapped through), in which case they stay unfilled: stop-limit
+  gap risk is real and must show up in backtests.
+
+Partial fills are not modeled here; the fault-injection mock exchange covers
+them when the live adapter lands.
+"""
+
+from __future__ import annotations
+
+from decimal import ROUND_HALF_EVEN, Decimal
+
+from pydantic import BaseModel, ConfigDict
+
+from tradebot.core.models import ACCOUNTING_RESOLUTION, Candle, Fill, Order, OrderType, Side
+from tradebot.execution.adapter import FillHandler
+
+_BPS_DIVISOR = Decimal(10_000)
+
+
+class FillSimulatorConfig(BaseModel):
+    """Fee and slippage assumptions, in basis points (defaults ≈ Binance spot)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    maker_fee_bps: Decimal = Decimal(10)
+    taker_fee_bps: Decimal = Decimal(10)
+    market_slippage_bps: Decimal = Decimal(5)
+
+
+class SimulatedExecutionAdapter:
+    """``ExecutionAdapter`` implementation driven by replayed candles.
+
+    The backtest runner calls :meth:`process_candle` once per closed candle;
+    any fills are delivered through the registered handler in deterministic
+    order (market orders first, then resting orders in submission order).
+    """
+
+    def __init__(self, config: FillSimulatorConfig) -> None:
+        """Create a simulator with the given fee/slippage assumptions."""
+        self._config = config
+        self._pending_market: dict[str, Order] = {}
+        self._resting: dict[str, Order] = {}
+        self._fill_handler: FillHandler | None = None
+
+    def set_fill_handler(self, handler: FillHandler) -> None:
+        """Register the single consumer of simulated fills."""
+        self._fill_handler = handler
+
+    async def submit(self, order: Order) -> None:
+        """Accept an order for simulation; validates shape and id uniqueness."""
+        if order.client_order_id in self._pending_market or order.client_order_id in self._resting:
+            raise ValueError(f"duplicate client_order_id {order.client_order_id!r}")
+        if order.order_type == OrderType.MARKET:
+            self._pending_market[order.client_order_id] = order
+            return
+        if order.limit_price_quote is None:
+            raise ValueError(f"{order.order_type} order requires limit_price_quote")
+        if order.order_type == OrderType.STOP_LIMIT and order.stop_price_quote is None:
+            raise ValueError("stop_limit order requires stop_price_quote")
+        self._resting[order.client_order_id] = order
+
+    async def cancel(self, client_order_id: str) -> None:
+        """Remove a not-yet-filled order; unknown ids are an upstream bug."""
+        if self._pending_market.pop(client_order_id, None) is not None:
+            return
+        if self._resting.pop(client_order_id, None) is not None:
+            return
+        raise ValueError(f"cannot cancel unknown order {client_order_id!r}")
+
+    def open_orders(self) -> tuple[Order, ...]:
+        """Return pending market and resting orders, oldest first."""
+        return tuple(self._pending_market.values()) + tuple(self._resting.values())
+
+    async def process_candle(self, candle: Candle) -> None:
+        """Evaluate every open order of this candle's symbol against it."""
+        fills: list[Fill] = []
+        for order in list(self._pending_market.values()):
+            if order.symbol != candle.symbol:
+                continue
+            del self._pending_market[order.client_order_id]
+            fills.append(self._fill_market(order, candle))
+        for order in list(self._resting.values()):
+            if order.symbol != candle.symbol:
+                continue
+            fill = self._try_fill_resting(order, candle)
+            if fill is not None:
+                del self._resting[order.client_order_id]
+                fills.append(fill)
+        if self._fill_handler is None:
+            if fills:
+                raise RuntimeError("fills produced but no fill handler is registered")
+            return
+        for fill in fills:
+            await self._fill_handler(fill)
+
+    def _fill_market(self, order: Order, candle: Candle) -> Fill:
+        slip = self._config.market_slippage_bps / _BPS_DIVISOR
+        direction = 1 if order.side == Side.BUY else -1
+        price = (candle.open_quote * (1 + direction * slip)).quantize(
+            ACCOUNTING_RESOLUTION, rounding=ROUND_HALF_EVEN
+        )
+        # Market orders fill at the candle's open, so that is the fill time.
+        return self._make_fill(order, price, self._config.taker_fee_bps, candle, at_open=True)
+
+    def _try_fill_resting(self, order: Order, candle: Candle) -> Fill | None:
+        assert order.limit_price_quote is not None  # validated at submit
+        limit = order.limit_price_quote
+        if order.order_type == OrderType.LIMIT:
+            touched = (
+                candle.low_quote <= limit if order.side == Side.BUY else candle.high_quote >= limit
+            )
+            if not touched:
+                return None
+            return self._make_fill(order, limit, self._config.maker_fee_bps, candle)
+
+        assert order.stop_price_quote is not None  # validated at submit
+        stop = order.stop_price_quote
+        if order.side == Side.SELL:
+            triggered = candle.low_quote <= stop
+            gapped_through = candle.open_quote < limit
+        else:
+            triggered = candle.high_quote >= stop
+            gapped_through = candle.open_quote > limit
+        if not triggered or gapped_through:
+            return None
+        return self._make_fill(order, limit, self._config.taker_fee_bps, candle)
+
+    def _make_fill(
+        self,
+        order: Order,
+        price_quote: Decimal,
+        fee_bps: Decimal,
+        candle: Candle,
+        *,
+        at_open: bool = False,
+    ) -> Fill:
+        fee = (price_quote * order.quantity_base * fee_bps / _BPS_DIVISOR).quantize(
+            ACCOUNTING_RESOLUTION, rounding=ROUND_HALF_EVEN
+        )
+        # Intracandle fills are only *known* once the candle closes, so they
+        # are stamped with close_time; market fills happen at the open itself.
+        return Fill(
+            client_order_id=order.client_order_id,
+            symbol=order.symbol,
+            side=order.side,
+            price_quote=price_quote,
+            quantity_base=order.quantity_base,
+            fee_quote=fee,
+            filled_at=candle.open_time if at_open else candle.close_time,
+        )
