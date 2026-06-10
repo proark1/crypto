@@ -105,3 +105,30 @@ class TestStaleness:
         queue.create(make_signal(), Decimal("100"), NOW)
         assert queue.sweep(NOW + timedelta(minutes=1), Decimal("100.2")) == []
         assert len(queue.pending()) == 1
+
+
+class TestResolvedHistory:
+    def test_acting_on_a_swept_proposal_is_already_expired_not_unknown(self) -> None:
+        queue = make_queue(ttl_minutes=15)
+        queue.create(make_signal(), Decimal("100"), NOW)
+        queue.sweep(NOW + timedelta(minutes=16), Decimal("100"))
+
+        with pytest.raises(ValueError, match="already expired"):
+            queue.approve("sig-1", NOW + timedelta(minutes=17), Decimal("100"))
+        with pytest.raises(ValueError, match="already expired"):
+            queue.reject("sig-1")
+
+    def test_double_answers_are_already_resolved(self) -> None:
+        queue = make_queue()
+        queue.create(make_signal(), Decimal("100"), NOW)
+        queue.reject("sig-1")
+        with pytest.raises(ValueError, match="already rejected"):
+            queue.reject("sig-1")
+
+    def test_status_of_distinguishes_unknown_pending_and_resolved(self) -> None:
+        queue = make_queue()
+        assert queue.status_of("sig-1") is None
+        queue.create(make_signal(), Decimal("100"), NOW)
+        assert queue.status_of("sig-1") == ProposalStatus.PENDING
+        queue.approve("sig-1", NOW + timedelta(minutes=1), Decimal("100"))
+        assert queue.status_of("sig-1") == ProposalStatus.APPROVED

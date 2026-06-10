@@ -249,16 +249,37 @@ class TradingEngine:
         """
         if self._proposal_queue is None:
             raise KeyError("no proposal queue: engine is autonomous")
-        if all(p.signal.signal_id != signal_id for p in self._proposal_queue.pending()):
+        queue_status = self._proposal_queue.status_of(signal_id)
+        if queue_status is None:
             # Unknown-id beats no-data: a ghost id is the caller's mistake and
             # must be reported as such regardless of market state.
             raise KeyError(f"no pending proposal {signal_id!r}")
+        if queue_status != ProposalStatus.PENDING:
+            # Truthful staleness: it existed, but was resolved before the
+            # user's answer arrived — never report it as "not found".
+            raise ValueError(f"proposal {signal_id!r} is already {queue_status.value}")
         if self._last_candle is None:
             raise ValueError("no market data yet; cannot price an approval")
         current_price = self._last_candle.close_quote
-        proposal = self._proposal_queue.approve(
-            signal_id, self._last_candle.close_time, current_price
-        )
+        try:
+            proposal = self._proposal_queue.approve(
+                signal_id, self._last_candle.close_time, current_price
+            )
+        except ValueError:
+            # The approval itself discovered staleness (sweep had not run
+            # yet); journal the transition so the trail stays complete.
+            stale = self._proposal_queue.get(signal_id)
+            if stale is not None and stale.status in (
+                ProposalStatus.EXPIRED,
+                ProposalStatus.DRIFTED,
+            ):
+                outcome = (
+                    DecisionOutcome.EXPIRED
+                    if stale.status == ProposalStatus.EXPIRED
+                    else DecisionOutcome.DRIFTED
+                )
+                await self._record_decision(stale.signal, outcome)
+            raise
         order = self._risk_manager.evaluate(proposal.signal, current_price)
         if order is None:
             await self._record_decision(proposal.signal, DecisionOutcome.VETOED)

@@ -272,6 +272,10 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
             await state.engine.reject_proposal(request.signal_id)
         except KeyError as error:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+        except ValueError as error:
+            # Already resolved (expired/drifted/answered): truthful conflict,
+            # not a 500 and not a misleading "not found".
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
         return CommandResponse(paused=state.engine.paused, detail="proposal rejected")
 
     @app.get("/candles")

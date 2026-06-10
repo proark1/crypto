@@ -6,19 +6,25 @@ Safety properties enforced here:
 - approval is refused once price **drifts** beyond a configured fraction of
   the proposal price — a stale approval can never fill far from the price
   the user actually looked at;
-- one pending proposal per symbol — duplicates would invite double entries.
+- one pending proposal per symbol — duplicates would invite double entries;
+- recently **resolved** proposals are remembered (bounded), so acting on one
+  that expired or drifted moments ago yields a truthful "already expired"
+  instead of a misleading "never existed".
 
-In-memory by design: a restart drops pending proposals, which is the safe
-direction (they would only have expired), and live state is rebuilt from
-fresh signals.
+In-memory by design: a restart drops proposal state, which is the safe
+direction (pending proposals would only have expired), and live state is
+rebuilt from fresh signals.
 """
 
 from __future__ import annotations
 
 from datetime import datetime, timedelta
 from decimal import Decimal
+from typing import NoReturn
 
 from tradebot.core.models import Proposal, ProposalStatus, Signal
+
+_RESOLVED_HISTORY_LIMIT = 100
 
 
 class ProposalQueue:
@@ -33,10 +39,22 @@ class ProposalQueue:
         self._ttl = ttl
         self._max_drift = max_drift_fraction
         self._pending: dict[str, Proposal] = {}
+        self._history: dict[str, Proposal] = {}
 
     def pending(self) -> tuple[Proposal, ...]:
         """Return pending proposals, oldest first."""
         return tuple(self._pending.values())
+
+    def status_of(self, signal_id: str) -> ProposalStatus | None:
+        """Return the proposal's status (pending or resolved), ``None`` if unknown."""
+        if signal_id in self._pending:
+            return ProposalStatus.PENDING
+        resolved = self._history.get(signal_id)
+        return None if resolved is None else resolved.status
+
+    def get(self, signal_id: str) -> Proposal | None:
+        """Return the proposal, pending or recently resolved."""
+        return self._pending.get(signal_id) or self._history.get(signal_id)
 
     def create(self, signal: Signal, price_quote: Decimal, now: datetime) -> Proposal | None:
         """Queue a proposal for ``signal``; ``None`` if one is already pending.
@@ -60,39 +78,58 @@ class ProposalQueue:
         removed: list[Proposal] = []
         for signal_id, proposal in list(self._pending.items()):
             if now >= proposal.expires_at:
-                removed.append(proposal.model_copy(update={"status": ProposalStatus.EXPIRED}))
+                removed.append(self._resolve(proposal, ProposalStatus.EXPIRED))
                 del self._pending[signal_id]
             elif self._has_drifted(proposal, current_price_quote):
-                removed.append(proposal.model_copy(update={"status": ProposalStatus.DRIFTED}))
+                removed.append(self._resolve(proposal, ProposalStatus.DRIFTED))
                 del self._pending[signal_id]
         return removed
 
     def approve(self, signal_id: str, now: datetime, current_price_quote: Decimal) -> Proposal:
         """Take a pending proposal for execution; re-validates at approval time.
 
-        Raises ``KeyError`` for unknown ids and ``ValueError`` when the
-        proposal expired or price drifted between proposal and approval —
-        the user's yes was given to a market that no longer exists.
+        Raises ``KeyError`` for never-seen ids and ``ValueError`` when the
+        proposal already resolved, expired, or drifted — the user's yes was
+        given to a market that no longer exists.
         """
         proposal = self._pending.get(signal_id)
         if proposal is None:
-            raise KeyError(f"no pending proposal {signal_id!r}")
+            self._raise_unknown_or_resolved(signal_id)
         del self._pending[signal_id]
         if now >= proposal.expires_at:
+            self._resolve(proposal, ProposalStatus.EXPIRED)
             raise ValueError(f"proposal {signal_id!r} expired at {proposal.expires_at.isoformat()}")
         if self._has_drifted(proposal, current_price_quote):
+            self._resolve(proposal, ProposalStatus.DRIFTED)
             raise ValueError(
                 f"proposal {signal_id!r} cancelled: price drifted from "
                 f"{proposal.proposal_price_quote} to {current_price_quote}"
             )
-        return proposal.model_copy(update={"status": ProposalStatus.APPROVED})
+        return self._resolve(proposal, ProposalStatus.APPROVED)
 
     def reject(self, signal_id: str) -> Proposal:
-        """Reject a pending proposal; raises ``KeyError`` if unknown."""
+        """Reject a pending proposal.
+
+        Raises ``KeyError`` for never-seen ids, ``ValueError`` for already
+        resolved ones.
+        """
         proposal = self._pending.pop(signal_id, None)
         if proposal is None:
-            raise KeyError(f"no pending proposal {signal_id!r}")
-        return proposal.model_copy(update={"status": ProposalStatus.REJECTED})
+            self._raise_unknown_or_resolved(signal_id)
+        return self._resolve(proposal, ProposalStatus.REJECTED)
+
+    def _raise_unknown_or_resolved(self, signal_id: str) -> NoReturn:
+        resolved = self._history.get(signal_id)
+        if resolved is not None:
+            raise ValueError(f"proposal {signal_id!r} is already {resolved.status.value}")
+        raise KeyError(f"no pending proposal {signal_id!r}")
+
+    def _resolve(self, proposal: Proposal, status: ProposalStatus) -> Proposal:
+        resolved = proposal.model_copy(update={"status": status})
+        self._history[proposal.signal.signal_id] = resolved
+        while len(self._history) > _RESOLVED_HISTORY_LIMIT:
+            self._history.pop(next(iter(self._history)))
+        return resolved
 
     def _has_drifted(self, proposal: Proposal, current_price_quote: Decimal) -> bool:
         drift = abs(current_price_quote - proposal.proposal_price_quote)

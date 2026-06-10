@@ -346,6 +346,18 @@ class TestProposals:
         assert bot.engine.pending_proposals() == ()
         assert bot.engine.fills == ()
 
+    async def test_already_answered_proposal_is_409_not_404(self, database: Database) -> None:
+        bot = self.make_copilot_bot(database)
+        signal_id = await self.drive_to_proposal(bot)
+
+        async with make_client(bot) as client:
+            first = await client.post("/proposals/reject", json={"signal_id": signal_id})
+            second = await client.post("/proposals/reject", json={"signal_id": signal_id})
+
+        assert first.status_code == 200
+        assert second.status_code == 409
+        assert "already rejected" in second.json()["detail"]
+
     async def test_unknown_proposal_is_404(self, database: Database) -> None:
         bot = self.make_copilot_bot(database)
         ghost = {"signal_id": "ghost"}
