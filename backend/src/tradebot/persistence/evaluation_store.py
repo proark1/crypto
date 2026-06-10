@@ -8,6 +8,7 @@ through status/progress fields only, and old runs are never rescored
 
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
 from datetime import datetime
 from typing import Any
@@ -56,8 +57,12 @@ class EvaluationStore:
 
         ``config`` must be the complete run + strategy configuration — a
         result that cannot name the rules that produced it is worthless.
+        Decimal values (risk fractions, balances) are stringified on the way
+        in: JSONB cannot encode Decimal, and silently coercing to float
+        would betray the exactness the snapshot exists to preserve.
         """
         _require_aware(created_at)
+        encodable_config = json.loads(json.dumps(config, default=str))
         statement = (
             evaluation_runs_table.insert()
             .values(
@@ -65,7 +70,7 @@ class EvaluationStore:
                 status=RunStatus.PENDING.value,
                 symbols=list(symbols),
                 timeframes=list(timeframes),
-                config=config,
+                config=encodable_config,
                 code_version=code_version,
                 progress_done=0,
                 progress_total=progress_total,

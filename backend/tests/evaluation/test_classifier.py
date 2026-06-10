@@ -64,6 +64,12 @@ class TestTrend:
         closes = drift_series(100.0, -0.005, 40)
         assert classify_window(make_window(closes)).trend == TrendLabel.DOWN
 
+    def test_perfectly_smooth_drift_is_a_trend_not_a_range(self) -> None:
+        """Zero volatility with non-flat drift: the threshold is zero, so
+        any net move trends — the smoothest climb is the strongest trend."""
+        closes = [100.0 * 1.005**i for i in range(40)]  # identical returns, vol == 0
+        assert classify_window(make_window(closes)).trend == TrendLabel.UP
+
     def test_noise_without_drift_is_ranging(self) -> None:
         closes = [100.0 + (1.0 if i % 2 == 0 else -1.0) for i in range(40)]
         assert classify_window(make_window(closes)).trend == TrendLabel.RANGING
@@ -123,6 +129,13 @@ class TestEvents:
         crash_and_recovery = drift_series(88.0, 0.004, 20)
         events = classify_window(make_window(before + crash_and_recovery)).events
         assert EventLabel.POST_CRASH_RECOVERY in events
+
+    def test_spike_in_a_mostly_flat_window_is_still_labeled(self) -> None:
+        """Median move zero must not zero the threshold; the mean is the
+        fallback, and a 10% jump out of a dead-flat window clears it."""
+        closes = [100.0] * 20 + [110.0] + [110.0] * 5
+        events = classify_window(make_window(closes)).events
+        assert EventLabel.PUMP in events
 
     def test_quiet_window_has_no_events(self) -> None:
         closes = [100.0 + wobble(i) for i in range(40)]

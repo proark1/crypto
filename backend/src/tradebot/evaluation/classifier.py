@@ -83,8 +83,11 @@ def window_volatility(candles: Sequence[Candle]) -> float:
 
 
 def _trend(net_return: float, volatility: float, sample_count: int) -> TrendLabel:
+    # No special case for zero volatility: the threshold is then zero, so
+    # any non-flat drift is a trend — a perfectly smooth climb is the most
+    # trending window there is, not a ranging one.
     threshold = TREND_SIGNIFICANCE * volatility * sqrt(sample_count)
-    if volatility == 0.0 or abs(net_return) <= threshold:
+    if abs(net_return) <= threshold:
         return TrendLabel.RANGING
     return TrendLabel.UP if net_return > 0 else TrendLabel.DOWN
 
@@ -116,8 +119,19 @@ def _events(
 
 
 def _spike_threshold(returns: list[float]) -> float:
-    median_move = statistics.median(abs(r) for r in returns)
-    return SPIKE_MULTIPLE * median_move
+    """Return the single-candle move that counts as a pump/dump.
+
+    The median absolute return is the base so a spike cannot inflate its own
+    threshold; in mostly-flat windows the median is zero, which would make
+    *every* move a spike, so the mean absolute return is the fallback — the
+    spike inflates the mean far less than it would a stdev, and a 10% jump
+    out of a dead-flat window still clears it by an order of magnitude.
+    """
+    absolute_moves = [abs(r) for r in returns]
+    base = statistics.median(absolute_moves)
+    if base == 0.0:
+        base = statistics.fmean(absolute_moves)
+    return SPIKE_MULTIPLE * base
 
 
 def _breakouts(candles: Sequence[Candle]) -> list[EventLabel]:

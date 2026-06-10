@@ -121,7 +121,15 @@ def aggregate_candles(candles: Sequence[Candle], target: CandleInterval) -> list
     unordered and contain duplicate open times (idempotent stores produce
     both); it is sorted and de-duplicated here because the incremental
     aggregator rightly rejects disorder at the source.
+
+    One symbol at a time, enforced loudly: de-duplication keys on open time,
+    so mixed-symbol input would silently swallow one symbol's candles where
+    their timestamps align — exactly the kind of quiet data loss that must
+    fail instead.
     """
+    symbols = {candle.symbol for candle in candles}
+    if len(symbols) > 1:
+        raise ValueError(f"aggregate_candles takes one symbol at a time, got {sorted(symbols)}")
     by_open_time = {candle.open_time: candle for candle in candles}
     aggregator = TimeframeAggregator(target)
     aggregated: list[Candle] = []

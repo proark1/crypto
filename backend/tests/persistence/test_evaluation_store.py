@@ -89,6 +89,25 @@ class TestRunLifecycle:
         assert run["config"]["strategy"]["fast_ema_period"] == 20
         assert run["code_version"] == "abc1234"
 
+    async def test_decimal_config_values_are_stringified_not_floated(
+        self, database: Database
+    ) -> None:
+        """Real strategy configs carry Decimals; JSONB cannot encode them,
+        and coercing to float would betray the snapshot's exactness."""
+        store = EvaluationStore(database)
+        run_id = await store.create_run(
+            symbols=["BTC/USDT"],
+            timeframes=["1h"],
+            config={"risk_per_trade_fraction": Decimal("0.01")},
+            code_version="abc1234",
+            progress_total=1,
+            created_at=BASE_TIME,
+        )
+
+        run = await store.fetch_run(run_id)
+        assert run is not None
+        assert run["config"]["risk_per_trade_fraction"] == "0.01"
+
     async def test_unknown_run_is_none_and_listing_is_newest_first(
         self, database: Database
     ) -> None:

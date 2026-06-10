@@ -549,10 +549,13 @@ position's stop: if the horizon stops the position out, holding was a
 per scenario for analysis only — never simulated as an achievable result.
 
 **Market-condition labels** (constants frozen in `evaluation/classifier.py`):
-trend is UP/DOWN when |net return| > 1.5 × vol × √n, else RANGING;
+trend is UP/DOWN when |net return| > 1.5 × vol × √n, else RANGING (zero
+volatility with non-flat drift is therefore a trend, not a range);
 volatility is HIGH/LOW at 1.5× above/below the run's dataset-wide median
 reference; a pump/dump is a single-candle return beyond 6 × the window's
-median absolute return; breakouts compare the tail against the close-range
+median absolute return (falling back to the mean absolute return when the
+median is zero, so spikes in mostly-flat windows are still labeled);
+breakouts compare the tail against the close-range
 of the leading ⅔ of the window (real holds beyond the range at the final
 close, fake returns inside); post-crash recovery is a first-half dump
 followed by a second-half climb exceeding 1 × its own vol × √n.

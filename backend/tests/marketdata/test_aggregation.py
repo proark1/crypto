@@ -132,3 +132,10 @@ class TestBatchAggregation:
 
     def test_empty_input_is_empty_output(self) -> None:
         assert aggregate_candles([], CandleInterval.H1) == []
+
+    def test_mixed_symbols_are_rejected_loudly(self, make_m1: MakeM1) -> None:
+        """De-duplication keys on open time, so mixed symbols would silently
+        swallow one symbol's candles — it must fail instead."""
+        mixed = [make_m1(0), make_m1(0, symbol="ETH/USDT")]
+        with pytest.raises(ValueError, match="one symbol at a time"):
+            aggregate_candles(mixed, CandleInterval.M5)
