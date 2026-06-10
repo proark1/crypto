@@ -19,12 +19,14 @@ import {
 } from "../api/client";
 import type {
   CandleResponse,
+  ChartInterval,
   DecisionResponse,
   FillResponse,
   ProposalResponse,
   StatusResponse,
 } from "../api/types";
 import { CandleChart } from "../components/CandleChart";
+import { IntervalSwitcher } from "../components/IntervalSwitcher";
 import { toTradeMarkers } from "../lib/chart";
 import { ResearchScreen } from "./ResearchScreen";
 import { CoinManager } from "../components/CoinManager";
@@ -51,6 +53,7 @@ export function OverviewScreen() {
   // null until the first status arrives: the backend's first configured
   // coin is the default, and the frontend must not hardcode one.
   const [selectedSymbol, setSelectedSymbol] = useState<string | null>(null);
+  const [chartInterval, setChartInterval] = useState<ChartInterval>("1m");
   const [screen, setScreen] = useState<"trade" | "research">("trade");
   const requestIdRef = useRef(0);
 
@@ -67,7 +70,7 @@ export function OverviewScreen() {
           fetchStatus(symbol),
           fetchFills(),
           fetchDecisions(symbol).catch(() => null),
-          fetchCandles(symbol).catch(() => null),
+          fetchCandles(symbol, chartInterval).catch(() => null),
           fetchProposals().catch(() => null),
         ]);
       if (requestId !== requestIdRef.current) {
@@ -96,7 +99,7 @@ export function OverviewScreen() {
         setError(caught instanceof Error ? caught.message : "request failed");
       }
     }
-  }, [selectedSymbol]);
+  }, [selectedSymbol, chartInterval]);
 
   useEffect(() => {
     if (needsToken) {
@@ -270,6 +273,9 @@ export function OverviewScreen() {
             onApprove={(signalId) => void runCommand(() => approveProposal(signalId))}
             onReject={(signalId) => void runCommand(() => rejectProposal(signalId))}
           />
+          <div className="flex justify-end">
+            <IntervalSwitcher selected={chartInterval} onSelect={setChartInterval} />
+          </div>
           <CandleChart
             candles={candles}
             // Markers must match the charted coin; the journal spans them all.

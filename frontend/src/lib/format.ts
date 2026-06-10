@@ -11,6 +11,28 @@ export function trimAmount(amount: string): string {
   return trimmed === "" || trimmed === "-" || trimmed === "-0" ? "0" : trimmed;
 }
 
+/**
+ * Truncate an exact Decimal string for headline metrics, where the full
+ * 24-place precision overflows its card. Keeps at least `maxDecimals`
+ * places, extending to the first significant digit so a small-but-real
+ * PnL never displays as zero. Pure string slicing — never float math.
+ */
+export function truncateAmount(amount: string, maxDecimals = 2): string {
+  const dot = amount.indexOf(".");
+  if (dot === -1) {
+    return amount;
+  }
+  const integerIsZero = /^-?0*$/.test(amount.slice(0, dot));
+  const firstSignificant = amount.slice(dot + 1).search(/[1-9]/);
+  // A sub-cent value with no integer digits keeps its first significant
+  // decimal: a real-but-tiny PnL must never display as a flat zero.
+  const keep =
+    integerIsZero && firstSignificant !== -1
+      ? Math.max(maxDecimals, firstSignificant + 1)
+      : maxDecimals;
+  return trimAmount(amount.slice(0, dot + 1 + keep));
+}
+
 export function signClass(amount: string | null): string {
   if (amount === null) {
     return "text-zinc-400";

@@ -9,8 +9,11 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from datetime import datetime
+from decimal import Decimal
 
-from sqlalchemy import func, select
+from pydantic import BaseModel, ConfigDict
+from sqlalchemy import Numeric, func, select
+from sqlalchemy.dialects.postgresql import ARRAY, aggregate_order_by
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from tradebot.core.models import Candle, CandleInterval, Decision, Fill
@@ -21,6 +24,36 @@ from tradebot.persistence.database import (
     decisions_table,
     fills_table,
 )
+
+CHART_BUCKET_UNITS: dict[str, str] = {
+    "1h": "hour",
+    "1d": "day",
+    "1w": "week",
+    "1M": "month",
+}
+"""Chart timeframes served by SQL aggregation: API interval -> Postgres
+``date_trunc`` unit. Calendar-true buckets (weeks start Monday, months
+vary in length), which fixed-duration flooring cannot produce — that is
+why these do not reuse ``marketdata.aggregate_candles``."""
+
+
+class ChartCandle(BaseModel):
+    """One aggregated OHLCV bucket for charting (not a domain ``Candle``).
+
+    Deliberately separate from :class:`~tradebot.core.models.Candle`:
+    calendar buckets (weeks, months) have no fixed duration, so forcing
+    them into ``CandleInterval`` would hand the trading path an interval
+    whose arithmetic lies. Amounts stay ``Decimal`` end to end.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    open_time: datetime
+    open_quote: Decimal
+    high_quote: Decimal
+    low_quote: Decimal
+    close_quote: Decimal
+    volume_base: Decimal
 
 
 def _require_aware(moment: datetime) -> None:
@@ -55,6 +88,55 @@ class CandleStore:
         )
         async with self._database.engine.begin() as connection:
             await connection.execute(statement, rows)
+
+    async def fetch_recent_buckets(
+        self, symbol: str, unit: str, limit: int = 300
+    ) -> list[ChartCandle]:
+        """Return the newest ``limit`` calendar buckets, oldest first.
+
+        Aggregates the stored 1m candles in SQL (``date_trunc`` in UTC,
+        first/last by time for open/close, max/min/sum for the rest), so a
+        month of history never crosses the wire as raw minutes. ``unit``
+        must be a Postgres ``date_trunc`` unit from
+        :data:`CHART_BUCKET_UNITS`; anything else raises ``ValueError``
+        before touching SQL.
+        """
+        if unit not in CHART_BUCKET_UNITS.values():
+            raise ValueError(
+                f"unknown bucket unit {unit!r}; known: {sorted(set(CHART_BUCKET_UNITS.values()))}"
+            )
+        # Three-argument date_trunc (PG 14+): truncate in UTC explicitly,
+        # never in the session timezone — a session set to anything else
+        # would silently shift every daily bucket.
+        bucket = func.date_trunc(unit, candles_table.c.open_time, "UTC").label("open_time")
+        statement = (
+            select(
+                bucket,
+                func.array_agg(
+                    aggregate_order_by(candles_table.c.open_quote, candles_table.c.open_time.asc()),
+                    type_=ARRAY(Numeric),
+                )[1].label("open_quote"),
+                func.max(candles_table.c.high_quote).label("high_quote"),
+                func.min(candles_table.c.low_quote).label("low_quote"),
+                func.array_agg(
+                    aggregate_order_by(
+                        candles_table.c.close_quote, candles_table.c.open_time.desc()
+                    ),
+                    type_=ARRAY(Numeric),
+                )[1].label("close_quote"),
+                func.sum(candles_table.c.volume_base).label("volume_base"),
+            )
+            .where(
+                candles_table.c.symbol == symbol,
+                candles_table.c.interval == CandleInterval.M1.value,
+            )
+            .group_by(bucket)
+            .order_by(bucket.desc())
+            .limit(limit)
+        )
+        async with self._database.engine.connect() as connection:
+            rows = (await connection.execute(statement)).mappings().all()
+        return [ChartCandle.model_validate(dict(row)) for row in reversed(rows)]
 
     async def fetch_range(
         self,

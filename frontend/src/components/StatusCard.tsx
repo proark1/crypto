@@ -1,5 +1,5 @@
 import type { StatusResponse } from "../api/types";
-import { formatTime, signClass, trimAmount } from "../lib/format";
+import { formatTime, signClass, trimAmount, truncateAmount } from "../lib/format";
 
 function Metric(props: { label: string; value: string; valueClass?: string }) {
   return (
@@ -34,17 +34,19 @@ export function StatusCard(props: { status: StatusResponse }) {
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
         <Metric
           label={`equity (${quote})`}
-          value={status.equity_quote === null ? "unknown" : trimAmount(status.equity_quote)}
+          value={status.equity_quote === null ? "unknown" : truncateAmount(status.equity_quote)}
         />
-        <Metric label={`balance (${quote})`} value={trimAmount(status.quote_balance)} />
+        <Metric label={`balance (${quote})`} value={truncateAmount(status.quote_balance)} />
         <Metric
           label={`realized pnl (${quote})`}
-          value={trimAmount(status.realized_pnl_quote)}
+          value={truncateAmount(status.realized_pnl_quote)}
           valueClass={signClass(status.realized_pnl_quote)}
         />
         <Metric
           label="mark price"
-          value={status.mark_price_quote === null ? "—" : trimAmount(status.mark_price_quote)}
+          value={
+            status.mark_price_quote === null ? "—" : truncateAmount(status.mark_price_quote)
+          }
         />
       </div>
       {status.breakers.tripped_reason !== null && (
@@ -67,14 +69,14 @@ export function StatusCard(props: { status: StatusResponse }) {
             <Metric label="position" value={trimAmount(status.position.quantity_base)} />
             <Metric
               label="avg entry"
-              value={trimAmount(status.position.average_entry_price_quote)}
+              value={truncateAmount(status.position.average_entry_price_quote)}
             />
             <Metric
               label={`unrealized pnl (${quote})`}
               value={
                 status.position.unrealized_pnl_quote === null
                   ? "unknown"
-                  : trimAmount(status.position.unrealized_pnl_quote)
+                  : truncateAmount(status.position.unrealized_pnl_quote)
               }
               valueClass={signClass(status.position.unrealized_pnl_quote)}
             />

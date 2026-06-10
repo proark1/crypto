@@ -6,6 +6,7 @@
 
 import type {
   CandleResponse,
+  ChartInterval,
   EvaluationRunResponse,
   CommandResponse,
   DecisionResponse,
@@ -92,8 +93,16 @@ export function fetchDecisions(symbol?: string): Promise<DecisionResponse[]> {
   return request<DecisionResponse[]>(withSymbol("/decisions", symbol), "GET");
 }
 
-export function fetchCandles(symbol?: string): Promise<CandleResponse[]> {
-  return request<CandleResponse[]>(withSymbol("/candles", symbol), "GET");
+export function fetchCandles(
+  symbol?: string,
+  interval: ChartInterval = "1m",
+): Promise<CandleResponse[]> {
+  const path = withSymbol("/candles", symbol);
+  const separator = path.includes("?") ? "&" : "?";
+  return request<CandleResponse[]>(
+    `${path}${separator}interval=${encodeURIComponent(interval)}`,
+    "GET",
+  );
 }
 
 export function postPause(): Promise<CommandResponse> {

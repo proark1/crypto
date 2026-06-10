@@ -49,6 +49,9 @@ export interface CommandResponse {
   detail: string;
 }
 
+/** Chart timeframes the backend can serve (1m raw, the rest aggregated). */
+export type ChartInterval = "1m" | "1h" | "1d" | "1w" | "1M";
+
 export interface CandleResponse {
   open_time: string;
   open_quote: string;
