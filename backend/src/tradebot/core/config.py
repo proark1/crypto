@@ -76,6 +76,15 @@ class AppConfig(BaseSettings):
     read the token, and every request still requires it. Restrict to the
     dashboard's origin for defence in depth once its URL is known."""
 
+    heartbeat_url: str | None = None
+    """Dead-man's switch ping URL (e.g. healthchecks.io). The bot GETs it on
+    an interval while candles keep arriving; the external monitor alerts
+    when the pings stop. Unset means no heartbeat (fail-safe default: the
+    bot never phones anywhere it was not pointed at)."""
+
+    heartbeat_interval_seconds: int = 60
+    """Seconds between heartbeat pings while healthy."""
+
     telegram_bot_token: str | None = None
     """Telegram bot token; alerts are disabled unless token and chat id are set."""
 

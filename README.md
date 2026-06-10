@@ -67,6 +67,8 @@ internally.
 | `TRADEBOT_EXCHANGE_ID` | no | `binance` (any CCXT id: `kraken`, `coinbase`, ...) |
 | `TRADEBOT_SYMBOL` | no | `BTC/USDT` |
 | `TRADEBOT_PAPER_INITIAL_BALANCE_QUOTE` | no | `10000` |
+| `TRADEBOT_HEARTBEAT_URL` | recommended | a healthchecks.io ping URL; the monitor alerts when the bot (or its data feed) goes silent |
+| `TRADEBOT_HEARTBEAT_INTERVAL_SECONDS` | no | `60` |
 | `TRADEBOT_TELEGRAM_BOT_TOKEN` | for alerts | from @BotFather |
 | `TRADEBOT_TELEGRAM_CHAT_ID` | for alerts | your chat id |
 | `TRADEBOT_LOG_LEVEL` | no | `INFO` |

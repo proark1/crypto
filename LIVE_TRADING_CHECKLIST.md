@@ -58,9 +58,10 @@ to a way real money is lost that paper trading never exercises.
       exercises them.
 
 ### 7. Operational safety
-- [ ] Dead-man's switch: external monitor (e.g. healthchecks.io) that alerts
+- [x] Dead-man's switch: external monitor (e.g. healthchecks.io) that alerts
       when the worker stops pinging — a dead bot with open positions is an
-      emergency, not a log line.
+      emergency, not a log line. (`TRADEBOT_HEARTBEAT_URL`; the ping is
+      gated on candle freshness, so a stalled feed also goes silent.)
 - [ ] Nightly Postgres backups, restore tested once.
 - [ ] Exchange API key is **spot-trade-only**: withdrawals disabled, IP
       allowlist if the platform offers stable egress IPs.

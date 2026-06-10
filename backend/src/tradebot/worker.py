@@ -95,14 +95,19 @@ class Worker:
         self.engine.attach_to(self.bus)
         api_task = self._start_api()
         notifier_client = await self._start_notifier_if_configured()
+        heartbeat_task, heartbeat_client = self._start_heartbeat_if_configured()
         try:
             await self.feed.run()
         finally:
-            api_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await api_task
-            if notifier_client is not None:
-                await notifier_client.aclose()
+            for task in (api_task, heartbeat_task):
+                if task is None:
+                    continue
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+            for client in (notifier_client, heartbeat_client):
+                if client is not None:
+                    await client.aclose()
         logger.info("worker stopped cleanly")
 
     async def _start_notifier_if_configured(self) -> httpx.AsyncClient | None:
@@ -123,6 +128,32 @@ class Worker:
             f"tradebot started: {self.config.symbol} on {self.config.exchange_id} (paper)"
         )
         return client
+
+    def _start_heartbeat_if_configured(
+        self,
+    ) -> tuple[asyncio.Task[None] | None, httpx.AsyncClient | None]:
+        """Start the dead-man's switch when a monitor URL is configured.
+
+        Its own httpx client on purpose: the heartbeat must keep working
+        when Telegram is unconfigured, and a slow Telegram send must never
+        share a connection pool with the liveness signal.
+        """
+        url = self.config.heartbeat_url
+        if not url:
+            # Truthiness: an empty-string env var disables the heartbeat
+            # gracefully, same convention as the other optional services.
+            logger.info("dead-man's switch disabled: no TRADEBOT_HEARTBEAT_URL")
+            return None, None
+        from tradebot.notify import HeartbeatPinger
+
+        client = httpx.AsyncClient(timeout=10)
+        pinger = HeartbeatPinger(
+            url,
+            client,
+            interval=timedelta(seconds=self.config.heartbeat_interval_seconds),
+        )
+        pinger.attach_to(self.bus)
+        return asyncio.create_task(pinger.run()), client
 
     def _start_api(self) -> asyncio.Task[None]:
         """Serve HTTP as a background task.

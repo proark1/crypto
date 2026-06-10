@@ -1,9 +1,10 @@
-"""Notifications: pushing what the bot does to the user's phone.
+"""Notifications and outbound monitoring: what the bot tells the world.
 
-Telegram first (ARCHITECTURE.md 6.1); approve/reject buttons for co-pilot
-mode arrive with the authorization module.
+Telegram alerts (ARCHITECTURE.md 6.1) and the dead-man's heartbeat; both
+share the rule that a notification failure never disturbs trading.
 """
 
+from tradebot.notify.heartbeat import HeartbeatPinger
 from tradebot.notify.telegram import TelegramNotifier
 
-__all__ = ["TelegramNotifier"]
+__all__ = ["HeartbeatPinger", "TelegramNotifier"]
