@@ -69,20 +69,26 @@ async function request<T>(path: string, method: "GET" | "POST", body?: unknown):
   return (await response.json()) as T;
 }
 
-export function fetchStatus(): Promise<StatusResponse> {
-  return request<StatusResponse>("/status", "GET");
+function withSymbol(path: string, symbol?: string): string {
+  // No symbol means the backend's default (its first configured pair).
+  return symbol === undefined ? path : `${path}?symbol=${encodeURIComponent(symbol)}`;
+}
+
+export function fetchStatus(symbol?: string): Promise<StatusResponse> {
+  return request<StatusResponse>(withSymbol("/status", symbol), "GET");
 }
 
 export function fetchFills(): Promise<FillResponse[]> {
+  // Deliberately account-wide: the journal spans every coin.
   return request<FillResponse[]>("/fills", "GET");
 }
 
-export function fetchDecisions(): Promise<DecisionResponse[]> {
-  return request<DecisionResponse[]>("/decisions", "GET");
+export function fetchDecisions(symbol?: string): Promise<DecisionResponse[]> {
+  return request<DecisionResponse[]>(withSymbol("/decisions", symbol), "GET");
 }
 
-export function fetchCandles(): Promise<CandleResponse[]> {
-  return request<CandleResponse[]>("/candles", "GET");
+export function fetchCandles(symbol?: string): Promise<CandleResponse[]> {
+  return request<CandleResponse[]>(withSymbol("/candles", symbol), "GET");
 }
 
 export function postPause(): Promise<CommandResponse> {
