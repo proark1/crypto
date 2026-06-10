@@ -67,6 +67,15 @@ class AppConfig(BaseSettings):
     """Port for the control API. Falls back to the platform's ``PORT``
     (Railway injects it), so no manual port mapping is needed on deploy."""
 
+    api_cors_origins: str = "*"
+    """Comma-separated origins allowed to call the API from a browser.
+
+    The dashboard is served from a different domain than the API, so CORS
+    headers are required for it to work at all. ``*`` is acceptable here
+    because auth is a bearer header (no cookies): a foreign page cannot
+    read the token, and every request still requires it. Restrict to the
+    dashboard's origin for defence in depth once its URL is known."""
+
     telegram_bot_token: str | None = None
     """Telegram bot token; alerts are disabled unless token and chat id are set."""
 
