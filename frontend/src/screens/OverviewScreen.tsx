@@ -184,8 +184,8 @@ export function OverviewScreen() {
 
   return (
     <div className="mx-auto max-w-4xl space-y-4 p-4">
-      <header className="flex items-center justify-between">
-        <div className="flex items-center gap-4">
+      <header className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex items-center justify-between gap-4 sm:justify-start">
           <h1 className="text-2xl font-bold text-zinc-100">tradebot</h1>
           <nav className="flex gap-1 rounded-lg bg-zinc-900 p-1">
             {(["trade", "research"] as const).map((tab) => (
@@ -195,7 +195,7 @@ export function OverviewScreen() {
                 onClick={() => {
                   setScreen(tab);
                 }}
-                className={`rounded-md px-3 py-1 text-sm font-semibold ${
+                className={`rounded-md px-3 py-1.5 text-sm font-semibold ${
                   screen === tab ? "bg-zinc-700 text-zinc-100" : "text-zinc-400"
                 }`}
               >
@@ -204,7 +204,7 @@ export function OverviewScreen() {
             ))}
           </nav>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3">
           {screen === "trade" && status && (
             <Controls
               paused={status.paused}
@@ -223,7 +223,7 @@ export function OverviewScreen() {
               setTokenDraft("");
               setNeedsToken(true);
             }}
-            className="rounded-lg border border-zinc-700 px-3 py-1.5 text-sm text-zinc-400 hover:bg-zinc-800"
+            className="ml-auto whitespace-nowrap rounded-lg border border-zinc-700 px-3 py-1.5 text-sm text-zinc-400 hover:bg-zinc-800"
           >
             log out
           </button>

@@ -24,7 +24,7 @@ export function ProposalsPanel(props: {
       <ul>
         {props.proposals.map((proposal) => (
           <li key={proposal.signal_id} className="px-4 py-3">
-            <div className="flex items-center gap-3">
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
               <span
                 className={`text-sm font-bold uppercase ${
                   proposal.side === "buy" ? "text-emerald-400" : "text-red-400"

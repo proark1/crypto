@@ -17,7 +17,7 @@ export function Controls(props: {
   const disabled = props.disabled ?? false;
 
   return (
-    <div className="flex items-center gap-3">
+    <div className="flex flex-wrap items-center gap-3">
       {props.paused ? (
         <button
           onClick={props.onResume}
