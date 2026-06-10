@@ -11,6 +11,7 @@ from __future__ import annotations
 import enum
 from decimal import Decimal
 
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from tradebot.core.models import AutonomyMode
@@ -59,8 +60,12 @@ class AppConfig(BaseSettings):
     a control plane that can observe (and later command) the bot is never
     exposed unauthenticated (ARCHITECTURE.md 6.4)."""
 
-    api_port: int = 8000
-    """Port for the control API (Railway injects PORT; map it to this)."""
+    api_port: int = Field(
+        default=8000,
+        validation_alias=AliasChoices("TRADEBOT_API_PORT", "PORT"),
+    )
+    """Port for the control API. Falls back to the platform's ``PORT``
+    (Railway injects it), so no manual port mapping is needed on deploy."""
 
     telegram_bot_token: str | None = None
     """Telegram bot token; alerts are disabled unless token and chat id are set."""

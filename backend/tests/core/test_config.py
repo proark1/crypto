@@ -26,6 +26,18 @@ def test_invalid_mode_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
         AppConfig()
 
 
+def test_api_port_falls_back_to_platform_port(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("TRADEBOT_API_PORT", raising=False)
+    monkeypatch.setenv("PORT", "7777")  # what Railway injects
+    assert AppConfig().api_port == 7777
+
+
+def test_explicit_api_port_beats_platform_port(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TRADEBOT_API_PORT", "9000")
+    monkeypatch.setenv("PORT", "7777")
+    assert AppConfig().api_port == 9000
+
+
 def test_config_is_frozen(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("TRADEBOT_MODE", raising=False)
     config = AppConfig()

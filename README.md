@@ -35,6 +35,12 @@ One Railway project, three services. The bot runs **paper mode only** for now �
 live trading is a Phase 3 milestone and the worker refuses to start in any
 other mode.
 
+> **The one setting that matters:** this is a monorepo. Each service MUST set
+> **Settings → Source → Root Directory** to `backend` or `frontend`. Without
+> it, Railpack analyzes the repo root, finds only folders, and fails with
+> "could not determine how to build the app". Build and start commands are
+> then picked up automatically from the `railway.json` in each directory.
+
 ### 1. Postgres
 
 Add Railway's Postgres. Note its connection string; the bot needs it as an
@@ -42,8 +48,9 @@ asyncpg DSN (`postgresql+asyncpg://user:pass@host:port/db`).
 
 ### 2. `bot` (backend worker + control API)
 
-- Root directory: `backend/`
-- Start command: `uv run python -m tradebot`
+- **Root directory: `backend`** (see above)
+- Start command, restart policy, and the `/health` healthcheck come from
+  `backend/railway.json` — nothing to configure.
 - **Exactly 1 replica — never scale this service horizontally.**
 - Environment variables:
 
@@ -51,7 +58,7 @@ asyncpg DSN (`postgresql+asyncpg://user:pass@host:port/db`).
 |---|---|---|
 | `TRADEBOT_DATABASE_URL` | yes | `postgresql+asyncpg://${{Postgres.PGUSER}}:${{Postgres.PGPASSWORD}}@${{Postgres.PGHOST}}:${{Postgres.PGPORT}}/${{Postgres.PGDATABASE}}` (Railway reference variables — the default `DATABASE_URL` uses the plain `postgresql://` scheme, which asyncpg's SQLAlchemy driver does not accept) |
 | `TRADEBOT_API_TOKEN` | for the API/dashboard | long random string; API stays off without it |
-| `TRADEBOT_API_PORT` | yes | `${{PORT}}` (Railway assigns the port dynamically) |
+| `TRADEBOT_API_PORT` | no | falls back to Railway's injected `PORT` automatically |
 | `TRADEBOT_EXCHANGE_ID` | no | `binance` (any CCXT id: `kraken`, `coinbase`, ...) |
 | `TRADEBOT_SYMBOL` | no | `BTC/USDT` |
 | `TRADEBOT_PAPER_INITIAL_BALANCE_QUOTE` | no | `10000` |
@@ -63,8 +70,9 @@ No exchange API keys are needed for paper trading — market data is public.
 
 ### 3. `frontend` (dashboard)
 
-- Root directory: `frontend/`
-- Build command: `npm ci && npm run build`; serve the static `dist/`.
+- **Root directory: `frontend`** (see above)
+- Build and serve come from `frontend/railway.json` (Vite build, static
+  `dist/` served by `serve`) — nothing to configure.
 - Build-time variable: `VITE_API_URL` = the public URL of the `bot` service.
 - On first load the dashboard asks for the bearer token (`TRADEBOT_API_TOKEN`).
 
