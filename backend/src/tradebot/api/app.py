@@ -149,6 +149,22 @@ class FillResponse(BaseModel):
     filled_at: str
 
 
+def create_health_only_app() -> FastAPI:
+    """Build a liveness-only app for when the control plane is disabled.
+
+    The platform healthcheck must work in every configuration; running a
+    bot whose deploy can never be marked healthy just because the API token
+    is unset would be a trap.
+    """
+    app = FastAPI(title="tradebot health")
+
+    @app.get("/health")
+    async def health() -> dict[str, str]:
+        return {"status": "ok"}
+
+    return app
+
+
 def create_app(state: BotState, api_token: str) -> FastAPI:
     """Build the control-plane app; every route requires the bearer token."""
     if not api_token:

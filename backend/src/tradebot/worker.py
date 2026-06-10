@@ -93,15 +93,14 @@ class Worker:
             self.portfolio.quote_balance,
         )
         self.engine.attach_to(self.bus)
-        api_task = self._start_api_if_configured()
+        api_task = self._start_api()
         notifier_client = await self._start_notifier_if_configured()
         try:
             await self.feed.run()
         finally:
-            if api_task is not None:
-                api_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await api_task
+            api_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await api_task
             if notifier_client is not None:
                 await notifier_client.aclose()
         logger.info("worker stopped cleanly")
@@ -125,16 +124,27 @@ class Worker:
         )
         return client
 
-    def _start_api_if_configured(self) -> asyncio.Task[None] | None:
-        """Serve the control API as a background task when a token is set."""
-        if self.config.api_token is None:
-            logger.info("control API disabled: TRADEBOT_API_TOKEN is not set")
-            return None
+    def _start_api(self) -> asyncio.Task[None]:
+        """Serve HTTP as a background task.
+
+        With ``TRADEBOT_API_TOKEN`` set this is the full control plane;
+        without it, a health-only app — the platform healthcheck must work
+        in every configuration, control plane or not.
+        """
         from collections.abc import Generator
 
         import uvicorn  # local import: only the running worker serves HTTP
 
-        from tradebot.api import create_app
+        from tradebot.api import create_app, create_health_only_app
+
+        if not self.config.api_token:
+            # Truthiness: an empty-string env var must disable the control
+            # plane gracefully, not crash create_app at startup.
+            logger.info("control API disabled (no TRADEBOT_API_TOKEN); serving /health only")
+            app = create_health_only_app()
+        else:
+            logger.info("control API enabled")
+            app = create_app(self, self.config.api_token)
 
         class NoSignalCaptureServer(uvicorn.Server):
             """Leave signal handling to the worker, which owns SIGTERM.
@@ -148,7 +158,6 @@ class Worker:
             def capture_signals(self) -> Generator[None, None, None]:
                 yield
 
-        app = create_app(self, self.config.api_token)
         server = NoSignalCaptureServer(
             uvicorn.Config(app, host="0.0.0.0", port=self.config.api_port, log_level="warning")
         )
@@ -165,7 +174,7 @@ class Worker:
                 logger.exception("control API server crashed or failed to start")
 
         task.add_done_callback(log_api_outcome)
-        logger.info("control API listening on port %d", self.config.api_port)
+        logger.info("HTTP server listening on port %d", self.config.api_port)
         return task
 
     def stop(self) -> None:
