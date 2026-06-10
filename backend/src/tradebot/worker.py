@@ -32,7 +32,13 @@ from tradebot.core.models import CandleInterval
 from tradebot.engine import TradingEngine
 from tradebot.evaluation import ScenarioEvaluator
 from tradebot.evaluation.runner import EvaluationManager, EvaluationRunConfig, EvaluationRunner
-from tradebot.evaluation.sweep import SweepConfig, SweepManager, SweepRunner, build_trend_strategy
+from tradebot.evaluation.strategy import build_traded_strategy
+from tradebot.evaluation.sweep import (
+    SweepConfig,
+    SweepManager,
+    SweepRunner,
+    build_candidate_strategy,
+)
 from tradebot.execution import FillSimulatorConfig, SimulatedExecutionAdapter
 from tradebot.marketdata.live_feed import LiveMarketDataFeed, OhlcvExchange
 from tradebot.news import CryptoPanicSource, EventCalendar, NewsFlags, NewsGate, NewsMonitor
@@ -116,14 +122,18 @@ class Worker:
             EvaluationRunner(
                 self.candle_store,
                 self.evaluation_store,
-                ScenarioEvaluator(lambda: TrendFollowingStrategy(TrendFollowingConfig())),
+                # Bound method, read per scenario: evaluation must grade the
+                # strategy shape production trades right now (router with
+                # the regime gate on, bare trend without), not a snapshot
+                # of the wiring at boot.
+                ScenarioEvaluator(self._scenario_strategy),
             ),
             self.evaluation_store,
             code_version=os.environ.get("RAILWAY_GIT_COMMIT_SHA", "unknown"),
             spawn=self._spawn_background,
         )
         self.sweeps = SweepManager(
-            SweepRunner(self.candle_store, self.evaluation_store, build_trend_strategy),
+            SweepRunner(self.candle_store, self.evaluation_store, build_candidate_strategy),
             self.evaluation_store,
             spawn=self._spawn_background,
         )
@@ -183,6 +193,16 @@ class Worker:
         if self.regime_detector is not None:
             gates += (RegimeGate(self.regime_detector, self.sentiment),)
         return (*gates, NewsGate(self.news_flags, self.news_calendar))
+
+    def _scenario_strategy(self) -> Strategy:
+        """One fresh scenario strategy, shaped like :meth:`_build_strategy`.
+
+        Scenarios self-classify the regime from their own candles instead
+        of reading the live detector (whose wall-clock state would leak
+        the present into a historical decision); see
+        ``tradebot.evaluation.strategy`` for the documented divergence.
+        """
+        return build_traded_strategy(regime_routed=self.regime_detector is not None)
 
     def _build_strategy(self) -> Strategy:
         """One strategy per coin: regime-routed families when the gate runs.

@@ -30,7 +30,7 @@ from tradebot.engine import TradingEngine
 from tradebot.evaluation.models import LearningFinding
 from tradebot.evaluation.replay import load_replay
 from tradebot.evaluation.runner import EvaluationRunConfig
-from tradebot.evaluation.sweep import DEFAULT_TREND_CANDIDATES, SweepCandidate, SweepConfig
+from tradebot.evaluation.sweep import DEFAULT_SWEEP_CANDIDATES, SweepCandidate, SweepConfig
 from tradebot.news import NewsFlags
 from tradebot.persistence import CandleStore, DecisionStore, EvaluationStore, FillStore
 from tradebot.portfolio import Portfolio
@@ -321,17 +321,19 @@ def _scenario_summary(row: Mapping[str, Any]) -> ScenarioSummaryResponse:
 
 
 class SweepCandidateRequest(BaseModel):
-    """One named parameter set to compete in a sweep."""
+    """One named parameter set (of one strategy family) to compete in a sweep."""
 
     name: str
     params: dict[str, Any]
+    family: str = "trend_following"
 
 
 class SweepStartRequest(BaseModel):
     """Shape of a new sweep; the symbol defaults to the first active coin.
 
-    Omitting ``candidates`` sweeps the trend-following family's default
-    grid; ``candidates[0]`` is always treated as the baseline.
+    Omitting ``candidates`` sweeps the default grid (the live trend
+    configuration and its variants, plus the mean-reversion family's
+    defaults); ``candidates[0]`` is always treated as the baseline.
     """
 
     symbol: str | None = None
@@ -342,6 +344,7 @@ class SweepStartRequest(BaseModel):
     horizon_candles: int = 60
     seed: int = 7
     training_fraction: float = 0.7
+    validation_windows: int = 3
     candidates: list[SweepCandidateRequest] | None = None
     motivating_finding_ids: list[int] = []
 
@@ -961,15 +964,17 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
     @protected.post("/sweeps")
     async def start_sweep(request: SweepStartRequest) -> EvaluationStartResponse:
         """Start a walk-forward parameter sweep (one at a time)."""
-        candidates = (
-            tuple(
-                SweepCandidate(name=candidate.name, params=candidate.params)
-                for candidate in request.candidates
-            )
-            if request.candidates
-            else DEFAULT_TREND_CANDIDATES
-        )
         try:
+            candidates = (
+                tuple(
+                    SweepCandidate(
+                        name=candidate.name, params=candidate.params, family=candidate.family
+                    )
+                    for candidate in request.candidates
+                )
+                if request.candidates
+                else DEFAULT_SWEEP_CANDIDATES
+            )
             config = SweepConfig(
                 symbol=request.symbol if request.symbol else resolve_symbol(None),
                 timeframe=request.timeframe,
@@ -979,6 +984,7 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
                 horizon_candles=request.horizon_candles,
                 seed=request.seed,
                 training_fraction=request.training_fraction,
+                validation_windows=request.validation_windows,
                 candidates=candidates,
                 motivating_finding_ids=tuple(request.motivating_finding_ids),
             )
@@ -986,8 +992,9 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
         except RuntimeError as error:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
         except ValueError as error:
-            # Bad timeframe, duplicate candidate names, out-of-range split —
-            # all caller input (ValidationError is a ValueError).
+            # Bad timeframe, duplicate names, unknown family or parameter,
+            # out-of-range split — all caller input (ValidationError is a
+            # ValueError).
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)
             ) from error

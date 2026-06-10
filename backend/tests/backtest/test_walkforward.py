@@ -3,7 +3,7 @@ from decimal import Decimal
 
 import pytest
 
-from tradebot.backtest import split_walk_forward
+from tradebot.backtest import split_rolling_by_fraction, split_walk_forward
 from tradebot.core.models import Candle, CandleInterval
 
 BASE_TIME = datetime(2026, 1, 2, 0, 0, tzinfo=UTC)
@@ -66,3 +66,49 @@ def test_too_few_candles_raise() -> None:
 def test_non_positive_sizes_raise() -> None:
     with pytest.raises(ValueError, match=">= 1"):
         split_walk_forward(make_candles(10), train_size=0, validate_size=2)
+
+
+class TestSplitRollingByFraction:
+    def test_exact_window_count_tiling_all_held_out_candles(self) -> None:
+        candles = make_candles(10)
+        windows = split_rolling_by_fraction(candles, training_fraction=0.7, window_count=3)
+
+        assert len(windows) == 3
+        for window in windows:
+            assert len(window.train) == 7  # int(10 * 0.7)
+            assert window.validation[0].open_time > window.train[-1].open_time
+        validated = [candle.open_time for window in windows for candle in window.validation]
+        assert validated == [candle.open_time for candle in candles[7:]]
+
+    def test_validation_slice_sizes_differ_by_at_most_one(self) -> None:
+        windows = split_rolling_by_fraction(make_candles(100), 0.7, window_count=4)
+
+        sizes = [len(window.validation) for window in windows]
+        assert sum(sizes) == 30
+        assert max(sizes) - min(sizes) <= 1
+
+    def test_each_window_trains_on_the_span_preceding_its_slice(self) -> None:
+        candles = make_candles(20)
+        windows = split_rolling_by_fraction(candles, 0.5, window_count=2)
+
+        for window in windows:
+            assert window.train[-1].open_time + timedelta(minutes=1) == (
+                window.validation[0].open_time
+            )
+
+    def test_one_window_reproduces_the_single_chronological_split(self) -> None:
+        candles = make_candles(10)
+        (window,) = split_rolling_by_fraction(candles, training_fraction=0.6, window_count=1)
+
+        assert [c.open_time for c in window.train] == [c.open_time for c in candles[:6]]
+        assert [c.open_time for c in window.validation] == [c.open_time for c in candles[6:]]
+
+    def test_too_few_held_out_candles_raise(self) -> None:
+        with pytest.raises(ValueError, match="cannot host"):
+            split_rolling_by_fraction(make_candles(10), training_fraction=0.9, window_count=2)
+
+    def test_degenerate_arguments_raise(self) -> None:
+        with pytest.raises(ValueError, match="window_count"):
+            split_rolling_by_fraction(make_candles(10), 0.7, window_count=0)
+        with pytest.raises(ValueError, match="training_fraction"):
+            split_rolling_by_fraction(make_candles(10), 1.0, window_count=2)
