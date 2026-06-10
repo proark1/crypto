@@ -17,9 +17,11 @@ import asyncio
 import contextlib
 import logging
 import signal
+from datetime import timedelta
 
 import httpx
 
+from tradebot.authorization import ProposalQueue
 from tradebot.core.config import AppConfig, TradingMode
 from tradebot.core.events import EventBus
 from tradebot.engine import TradingEngine
@@ -57,6 +59,11 @@ class Worker:
             symbol=config.symbol,
             fill_store=self.fill_store,
             decision_store=self.decision_store,
+            autonomy_mode=config.autonomy_mode,
+            proposal_queue=ProposalQueue(
+                ttl=timedelta(seconds=config.proposal_ttl_seconds),
+                max_drift_fraction=config.proposal_max_drift_fraction,
+            ),
         )
         self.feed = LiveMarketDataFeed(exchange, config.symbol, self.candle_store, self.bus)
         self._database = database

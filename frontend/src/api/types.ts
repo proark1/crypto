@@ -50,6 +50,18 @@ export interface CandleResponse {
   volume_base: string;
 }
 
+export interface ProposalResponse {
+  signal_id: string;
+  symbol: string;
+  side: string;
+  strategy_name: string;
+  proposal_price_quote: string;
+  stop_price_quote: string;
+  reasons: string[];
+  created_at: string;
+  expires_at: string;
+}
+
 export interface DecisionResponse {
   signal_id: string;
   strategy_name: string;

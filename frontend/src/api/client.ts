@@ -9,6 +9,7 @@ import type {
   CommandResponse,
   DecisionResponse,
   FillResponse,
+  ProposalResponse,
   StatusResponse,
 } from "./types";
 
@@ -43,10 +44,15 @@ export function storeToken(token: string): void {
 
 const BASE_URL: string = (import.meta.env.VITE_API_URL as string | undefined) ?? "";
 
-async function request<T>(path: string, method: "GET" | "POST"): Promise<T> {
+async function request<T>(path: string, method: "GET" | "POST", body?: unknown): Promise<T> {
+  const headers: Record<string, string> = { Authorization: `Bearer ${getStoredToken()}` };
+  if (body !== undefined) {
+    headers["Content-Type"] = "application/json";
+  }
   const response = await fetch(`${BASE_URL}${path}`, {
     method,
-    headers: { Authorization: `Bearer ${getStoredToken()}` },
+    headers,
+    body: body === undefined ? undefined : JSON.stringify(body),
   });
   if (!response.ok) {
     let detail = response.statusText;
@@ -89,4 +95,16 @@ export function postResume(): Promise<CommandResponse> {
 
 export function postKill(): Promise<CommandResponse> {
   return request<CommandResponse>("/kill", "POST");
+}
+
+export function fetchProposals(): Promise<ProposalResponse[]> {
+  return request<ProposalResponse[]>("/proposals", "GET");
+}
+
+export function approveProposal(signalId: string): Promise<CommandResponse> {
+  return request<CommandResponse>("/proposals/approve", "POST", { signal_id: signalId });
+}
+
+export function rejectProposal(signalId: string): Promise<CommandResponse> {
+  return request<CommandResponse>("/proposals/reject", "POST", { signal_id: signalId });
 }

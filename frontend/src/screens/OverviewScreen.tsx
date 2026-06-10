@@ -2,26 +2,31 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
   ApiError,
+  approveProposal,
   fetchCandles,
   fetchDecisions,
   fetchFills,
+  fetchProposals,
   fetchStatus,
   getStoredToken,
   postKill,
   postPause,
   postResume,
+  rejectProposal,
   storeToken,
 } from "../api/client";
 import type {
   CandleResponse,
   DecisionResponse,
   FillResponse,
+  ProposalResponse,
   StatusResponse,
 } from "../api/types";
 import { CandleChart } from "../components/CandleChart";
 import { Controls } from "../components/Controls";
 import { DecisionsPanel } from "../components/DecisionsPanel";
 import { FillsTable } from "../components/FillsTable";
+import { ProposalsPanel } from "../components/ProposalsPanel";
 import { StatusCard } from "../components/StatusCard";
 
 const POLL_INTERVAL_MS = 5000;
@@ -31,6 +36,7 @@ export function OverviewScreen() {
   const [fills, setFills] = useState<FillResponse[]>([]);
   const [decisions, setDecisions] = useState<DecisionResponse[]>([]);
   const [candles, setCandles] = useState<CandleResponse[]>([]);
+  const [proposals, setProposals] = useState<ProposalResponse[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [needsToken, setNeedsToken] = useState(getStoredToken() === "");
   const [tokenDraft, setTokenDraft] = useState("");
@@ -45,12 +51,14 @@ export function OverviewScreen() {
     try {
       // Decisions are explainability, not safety: their endpoint failing
       // must never take down status/fills or the kill switch with it.
-      const [nextStatus, nextFills, nextDecisions, nextCandles] = await Promise.all([
-        fetchStatus(),
-        fetchFills(),
-        fetchDecisions().catch(() => null),
-        fetchCandles().catch(() => null),
-      ]);
+      const [nextStatus, nextFills, nextDecisions, nextCandles, nextProposals] =
+        await Promise.all([
+          fetchStatus(),
+          fetchFills(),
+          fetchDecisions().catch(() => null),
+          fetchCandles().catch(() => null),
+          fetchProposals().catch(() => null),
+        ]);
       if (requestId !== requestIdRef.current) {
         return;
       }
@@ -61,6 +69,9 @@ export function OverviewScreen() {
       }
       if (nextCandles !== null) {
         setCandles(nextCandles);
+      }
+      if (nextProposals !== null) {
+        setProposals(nextProposals);
       }
       setError(null);
       setNeedsToken(false);
@@ -166,6 +177,12 @@ export function OverviewScreen() {
       ) : (
         <div className="text-sm text-zinc-500">loading…</div>
       )}
+      <ProposalsPanel
+        proposals={proposals}
+        disabled={commandPending}
+        onApprove={(signalId) => void runCommand(() => approveProposal(signalId))}
+        onReject={(signalId) => void runCommand(() => rejectProposal(signalId))}
+      />
       <CandleChart candles={candles} fills={fills} />
       <DecisionsPanel decisions={decisions} />
       <FillsTable fills={fills} />

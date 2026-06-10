@@ -102,6 +102,30 @@ class DecisionResponse(BaseModel):
     created_at: str
 
 
+class ProposalActionRequest(BaseModel):
+    """Identifies the proposal to act on.
+
+    In the body rather than the path: signal ids contain the symbol (e.g.
+    ``trend_following:BTC/USDT:...``), whose slash would break path routing.
+    """
+
+    signal_id: str
+
+
+class ProposalResponse(BaseModel):
+    """One pending co-pilot proposal awaiting approve/reject."""
+
+    signal_id: str
+    symbol: str
+    side: str
+    strategy_name: str
+    proposal_price_quote: str
+    stop_price_quote: str
+    reasons: list[str]
+    created_at: str
+    expires_at: str
+
+
 class CandleResponse(BaseModel):
     """One OHLCV candle for charting, amounts as strings."""
 
@@ -212,6 +236,47 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
             else "halted; no position to flatten"
         )
         return CommandResponse(paused=True, detail=detail)
+
+    @app.get("/proposals")
+    async def get_proposals() -> list[ProposalResponse]:
+        return [
+            ProposalResponse(
+                signal_id=proposal.signal.signal_id,
+                symbol=proposal.signal.symbol,
+                side=proposal.signal.side.value,
+                strategy_name=proposal.signal.strategy_name,
+                proposal_price_quote=str(proposal.proposal_price_quote),
+                stop_price_quote=str(proposal.signal.stop_price_quote),
+                reasons=list(proposal.signal.reasons),
+                created_at=proposal.created_at.isoformat(),
+                expires_at=proposal.expires_at.isoformat(),
+            )
+            for proposal in state.engine.pending_proposals()
+        ]
+
+    @app.post("/proposals/approve")
+    async def approve_proposal(request: ProposalActionRequest) -> CommandResponse:
+        try:
+            detail = await state.engine.approve_proposal(request.signal_id)
+        except KeyError as error:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+        except ValueError as error:
+            # Expired or drifted: the yes was given to a market that no
+            # longer exists, so the approval is refused — loudly.
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+        return CommandResponse(paused=state.engine.paused, detail=detail)
+
+    @app.post("/proposals/reject")
+    async def reject_proposal(request: ProposalActionRequest) -> CommandResponse:
+        try:
+            await state.engine.reject_proposal(request.signal_id)
+        except KeyError as error:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+        except ValueError as error:
+            # Already resolved (expired/drifted/answered): truthful conflict,
+            # not a 500 and not a misleading "not found".
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+        return CommandResponse(paused=state.engine.paused, detail="proposal rejected")
 
     @app.get("/candles")
     async def get_candles(
