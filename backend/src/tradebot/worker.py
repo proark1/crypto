@@ -20,7 +20,7 @@ import os
 import signal
 from collections.abc import Coroutine, Mapping
 from datetime import UTC, datetime, timedelta
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 import httpx
 
@@ -31,6 +31,7 @@ from tradebot.core.metrics import MetricsCollector
 from tradebot.core.models import CandleInterval
 from tradebot.engine import TradingEngine
 from tradebot.evaluation import ScenarioEvaluator
+from tradebot.evaluation.improve import AutoImprover
 from tradebot.evaluation.runner import EvaluationManager, EvaluationRunConfig, EvaluationRunner
 from tradebot.evaluation.strategy import build_traded_strategy
 from tradebot.evaluation.sweep import (
@@ -38,6 +39,7 @@ from tradebot.evaluation.sweep import (
     SweepManager,
     SweepRunner,
     build_candidate_strategy,
+    validate_family_params,
 )
 from tradebot.execution import FillSimulatorConfig, SimulatedExecutionAdapter
 from tradebot.marketdata.live_feed import LiveMarketDataFeed, OhlcvExchange
@@ -49,6 +51,7 @@ from tradebot.persistence import (
     DecisionStore,
     EvaluationStore,
     FillStore,
+    StrategySettingsStore,
 )
 from tradebot.portfolio import Portfolio
 from tradebot.risk import RiskConfig, RiskManager
@@ -68,7 +71,15 @@ from tradebot.strategies import (
     TrendFollowingStrategy,
 )
 
+if TYPE_CHECKING:  # runtime import stays local to its start method
+    from tradebot.notify import TelegramNotifier
+
 logger = logging.getLogger(__name__)
+
+STRATEGY_PRIME_CANDLES = 1000
+"""Stored 1m candles fed through a freshly promoted strategy before it
+goes live: comfortably past the slowest indicator's warm-up (a 90-period
+EMA needs ~450), so a promotion never trades on half-formed indicators."""
 
 
 class TradingVenue(OhlcvExchange, Protocol):
@@ -106,6 +117,12 @@ class Worker:
         self.decision_store = DecisionStore(database)
         self.coin_store = CoinStore(database)
         self.evaluation_store = EvaluationStore(database)
+        self.strategy_settings_store = StrategySettingsStore(database)
+        # The active (possibly auto-promoted) parameters per strategy
+        # family; loaded from Postgres in initialize(), empty means
+        # defaults. Engines, scenarios, and sweeps all read this one dict
+        # so research always grades what the bot actually trades.
+        self.strategy_params: dict[str, dict[str, Any]] = {}
         self.portfolio = Portfolio(config.paper_initial_balance_quote)
         # One risk manager for all symbols: the circuit breakers and equity
         # caps are account-level and must see every position through one
@@ -159,6 +176,10 @@ class Worker:
         )
         self.metrics = MetricsCollector()
         self.metrics.attach_to(self.bus)
+        self._notifier: TelegramNotifier | None = None
+        # Validated at boot, not first cycle: a bad timeframe must fail the
+        # deploy, not the first improvement attempt half a day later.
+        CandleInterval(config.auto_improve_timeframe)
 
     def _spawn_background(self, coroutine: Coroutine[Any, Any, None]) -> asyncio.Task[None]:
         """Run a coroutine under the worker's TaskGroup (shutdown cancels it)."""
@@ -187,6 +208,76 @@ class Worker:
         """The actively traded pairs, in the order they were added."""
         return tuple(self.engines)
 
+    async def apply_strategy_params(
+        self,
+        family: str,
+        params: Mapping[str, Any],
+        source_sweep_id: int | None = None,
+        note: str | None = None,
+    ) -> int:
+        """Promote ``params`` as ``family``'s active configuration (§12.7).
+
+        Persists a new settings version (lineage first — a promotion that
+        crashed mid-swap must still be visible in the journal), then hot-
+        swaps every engine's strategy with a fresh instance primed from
+        stored candles, so indicators are warm from the first live candle.
+        Returns the new version id. Raises ``ValueError`` for an unknown
+        family or parameter.
+        """
+        validate_family_params(family, dict(params))
+        version = await self.strategy_settings_store.record(
+            family, params, datetime.now(UTC), source_sweep_id, note
+        )
+        self.strategy_params[family] = dict(params)
+        await self._rebuild_strategies()
+        logger.info(
+            "strategy settings v%d active: %s %s (sweep %s)",
+            version,
+            family,
+            dict(params),
+            source_sweep_id,
+        )
+        return version
+
+    async def revert_strategy_version(self, version_id: int) -> int:
+        """Re-apply a historical settings version; returns the new version.
+
+        Reverting appends rather than rewrites: the journal keeps the full
+        story, including the human override. Raises ``KeyError`` for an
+        unknown version id.
+        """
+        row = await self.strategy_settings_store.fetch(version_id)
+        if row is None:
+            raise KeyError(f"no strategy settings version {version_id}")
+        return await self.apply_strategy_params(
+            row["family"],
+            row["params"],
+            source_sweep_id=row["source_sweep_id"],
+            note=f"manual revert to version #{version_id}",
+        )
+
+    async def _rebuild_strategies(self) -> None:
+        """Swap every engine onto a freshly built, pre-warmed strategy.
+
+        Priming feeds recent stored candles through the new instance (its
+        outputs discarded) so the EMAs/RSI/ATR are formed before the swap;
+        the swap itself is a single assignment on the event loop, and the
+        engine's position, orders, and risk state are untouched.
+        """
+        for symbol, engine in self.engines.items():
+            strategy = self._build_strategy()
+            stored = await self.candle_store.fetch_recent(
+                symbol, CandleInterval.M1, STRATEGY_PRIME_CANDLES
+            )
+            for candle in stored:
+                strategy.on_candle(candle, None)
+            engine.replace_strategy(strategy)
+
+    async def _notify(self, text: str) -> None:
+        """Send a Telegram alert when configured; silently skip otherwise."""
+        if self._notifier is not None:
+            await self._notifier.send(text)
+
     def _entry_gates(self) -> tuple[EntryGate, ...]:
         """Build the §5.2 gate chain in pipeline order: regime, then news."""
         gates: tuple[EntryGate, ...] = ()
@@ -202,7 +293,10 @@ class Worker:
         the present into a historical decision); see
         ``tradebot.evaluation.strategy`` for the documented divergence.
         """
-        return build_traded_strategy(regime_routed=self.regime_detector is not None)
+        return build_traded_strategy(
+            regime_routed=self.regime_detector is not None,
+            params_by_family=self.strategy_params,
+        )
 
     def _build_strategy(self) -> Strategy:
         """One strategy per coin: regime-routed families when the gate runs.
@@ -212,13 +306,17 @@ class Worker:
         without it there is no regime to route by, so the trend family
         trades alone — exactly the pre-router behavior.
         """
-        trend = TrendFollowingStrategy(TrendFollowingConfig())
+        trend = TrendFollowingStrategy(
+            TrendFollowingConfig(**self.strategy_params.get("trend_following", {}))
+        )
         if self.regime_detector is None:
             return trend
         detector = self.regime_detector
         return RegimeStrategyRouter(
             trend,
-            MeanReversionStrategy(MeanReversionConfig()),
+            MeanReversionStrategy(
+                MeanReversionConfig(**self.strategy_params.get("mean_reversion", {}))
+            ),
             regime_label=lambda: detector.regime.label,
         )
 
@@ -259,6 +357,14 @@ class Worker:
         because the coin set lives in the database.
         """
         await self._database.create_schema()
+        # Active strategy parameters come first: every engine built below
+        # captures its strategy from this dict.
+        self.strategy_params = await self.strategy_settings_store.active()
+        if self.strategy_params:
+            logger.info(
+                "loaded promoted strategy settings for: %s",
+                ", ".join(sorted(self.strategy_params)),
+            )
         if await self.coin_store.seed_if_empty(self.config.symbol_list(), datetime.now(UTC)):
             logger.info("first boot: coins seeded from TRADEBOT_SYMBOLS")
         symbols = await self.coin_store.list_symbols()
@@ -384,6 +490,7 @@ class Worker:
         # Started inside the try so a failure in any later startup step still
         # tears down whatever already runs (no leaked tasks or clients).
         api_task: asyncio.Task[None] | None = None
+        improver_task: asyncio.Task[None] | None = None
         notifier_client: httpx.AsyncClient | None = None
         heartbeat_task: asyncio.Task[None] | None = None
         heartbeat_client: httpx.AsyncClient | None = None
@@ -421,6 +528,7 @@ class Worker:
             news_task, news_client = self._start_news_monitor_if_configured()
             backup_task, backup_client = self._start_backups_if_configured()
             sentiment_task, sentiment_client = self._start_sentiment_if_configured()
+            improver_task = self._start_improver_if_enabled()
             # TaskGroup, not gather: if one feed crashes, the others must be
             # cancelled with it — a bot trading some symbols while blind on
             # another would be worse than one that stops and restarts. The
@@ -433,7 +541,14 @@ class Worker:
                     self._feed_tasks[symbol] = task_group.create_task(feed.run())
         finally:
             self._task_group = None  # late add_coin calls must not target a closed group
-            for task in (api_task, heartbeat_task, news_task, backup_task, sentiment_task):
+            for task in (
+                api_task,
+                improver_task,
+                heartbeat_task,
+                news_task,
+                backup_task,
+                sentiment_task,
+            ):
                 if task is None:
                     continue
                 task.cancel()
@@ -470,6 +585,7 @@ class Worker:
         client = httpx.AsyncClient(timeout=10)
         notifier = TelegramNotifier(token, chat_id, client)
         notifier.attach_to(self.bus)
+        self._notifier = notifier
         await notifier.send(
             f"tradebot started: {', '.join(self.symbols)} on {self.config.exchange_id} (paper)"
         )
@@ -644,6 +760,49 @@ class Worker:
             config.backup_s3_bucket,
         )
         return task, client
+
+    def _start_improver_if_enabled(self) -> asyncio.Task[None] | None:
+        """Start the automated improvement loop (§12.7) unless disabled.
+
+        Inherently paper-scoped: this worker refuses to construct in any
+        other mode, and promotions only rewrite the paper strategy's
+        parameters — never the mode, never the risk limits.
+        """
+        if not self.config.auto_improve_enabled:
+            logger.info("automated improvement disabled (TRADEBOT_AUTO_IMPROVE_ENABLED=false)")
+            return None
+        improver = AutoImprover(
+            sweeps=self.sweeps,
+            store=self.evaluation_store,
+            active_params=lambda: self.strategy_params,
+            symbols=lambda: self.symbols,
+            promote=self.apply_strategy_params,
+            interval=timedelta(hours=self.config.auto_improve_interval_hours),
+            history_days=self.config.auto_improve_history_days,
+            timeframe=self.config.auto_improve_timeframe,
+            notify=self._notify,
+        )
+        task = asyncio.create_task(improver.run())
+
+        def log_improver_outcome(finished: asyncio.Task[None]) -> None:
+            # The loop catches its own cycle errors; reaching here other
+            # than by cancellation means self-improvement died — say so.
+            try:
+                finished.result()
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logger.exception("automated improvement loop crashed")
+
+        task.add_done_callback(log_improver_outcome)
+        logger.info(
+            "automated improvement enabled: every %dh, %dd of %s candles, "
+            "promotions only on validated sweep verdicts",
+            self.config.auto_improve_interval_hours,
+            self.config.auto_improve_history_days,
+            self.config.auto_improve_timeframe,
+        )
+        return task
 
     def _start_api(self) -> asyncio.Task[None]:
         """Serve HTTP as a background task.

@@ -228,6 +228,27 @@ class AppConfig(BaseSettings):
     autonomy_mode: AutonomyMode = AutonomyMode.AUTONOMOUS
     """Whether entries execute directly or wait for user approval (co-pilot)."""
 
+    auto_improve_enabled: bool = True
+    """Run the automated improvement loop (ARCHITECTURE.md §12.7): sweep
+    variants of the active configuration on a schedule and promote a
+    challenger only when its verdict is *validated* — the Bonferroni-
+    corrected, walk-forward-tested bar, never a training win. Promotions
+    apply to the **paper** bot only (the worker refuses live mode outright),
+    are versioned with their sweep as lineage, and are revertible through
+    the API; that scoping is what keeps an on-by-default self-tuner
+    fail-safe. Going live stays a human decision in every configuration."""
+
+    auto_improve_interval_hours: int = Field(default=12, gt=0)
+    """Hours between automated improvement cycles. Each cycle sweeps one
+    coin (rotating), so with two coins every coin is revisited daily at the
+    default."""
+
+    auto_improve_history_days: int = Field(default=180, gt=0)
+    """History window the automated sweeps train and validate on."""
+
+    auto_improve_timeframe: str = "1h"
+    """Candle timeframe the automated sweeps evaluate (validated at boot)."""
+
     proposal_ttl_seconds: int = 900
     """Co-pilot proposals expire after this many seconds unanswered."""
 

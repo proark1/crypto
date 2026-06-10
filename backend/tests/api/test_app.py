@@ -24,7 +24,14 @@ from tradebot.evaluation.runner import EvaluationRunConfig
 from tradebot.evaluation.sweep import SweepConfig
 from tradebot.execution import FillSimulatorConfig, SimulatedExecutionAdapter
 from tradebot.news import NewsFlags
-from tradebot.persistence import CandleStore, Database, DecisionStore, EvaluationStore, FillStore
+from tradebot.persistence import (
+    CandleStore,
+    Database,
+    DecisionStore,
+    EvaluationStore,
+    FillStore,
+    StrategySettingsStore,
+)
 from tradebot.persistence.database import metadata
 from tradebot.portfolio import Portfolio
 from tradebot.risk import RiskConfig, RiskManager
@@ -66,10 +73,23 @@ class StubBot:
         }
         self.engine = self.engines[self.config.symbol_list()[0]]
         self.evaluation_store = EvaluationStore(database)
+        self.strategy_settings_store = StrategySettingsStore(database)
         self.metrics = MetricsCollector()
         self.news_flags = NewsFlags()
         self._evaluation_running = False
         self._sweep_running = False
+
+    async def revert_strategy_version(self, version_id: int) -> int:
+        row = await self.strategy_settings_store.fetch(version_id)
+        if row is None:
+            raise KeyError(f"no strategy settings version {version_id}")
+        return await self.strategy_settings_store.record(
+            row["family"],
+            row["params"],
+            BASE_TIME,
+            row["source_sweep_id"],
+            f"manual revert to version #{version_id}",
+        )
 
     async def start_evaluation(self, config: EvaluationRunConfig) -> int:
         config.intervals()  # same validation order as the real manager
@@ -1041,3 +1061,40 @@ class TestFills:
         assert body[0]["price_quote"] == "100"
         assert body[0]["side"] == "buy"
         assert body[0]["filled_at"] == BASE_TIME.isoformat()
+
+
+class TestStrategyVersions:
+    async def test_versions_list_newest_first_with_lineage(self, database: Database) -> None:
+        bot = StubBot(database)
+        first = await bot.strategy_settings_store.record(
+            "trend_following", {"fast_ema_period": 10}, BASE_TIME, 7, "auto-promoted"
+        )
+        async with make_client(bot) as client:
+            body = (await client.get("/strategy/versions")).json()
+
+        assert [row["id"] for row in body] == [first]
+        assert body[0]["family"] == "trend_following"
+        assert body[0]["params"] == {"fast_ema_period": 10}
+        assert body[0]["source_sweep_id"] == 7
+        assert body[0]["note"] == "auto-promoted"
+
+    async def test_revert_appends_a_new_version(self, database: Database) -> None:
+        bot = StubBot(database)
+        original = await bot.strategy_settings_store.record(
+            "trend_following", {"fast_ema_period": 10}, BASE_TIME
+        )
+        await bot.strategy_settings_store.record(
+            "trend_following", {"fast_ema_period": 15}, BASE_TIME
+        )
+        async with make_client(bot) as client:
+            response = await client.post(f"/strategy/versions/{original}/revert")
+            versions = (await client.get("/strategy/versions")).json()
+
+        assert response.status_code == 200
+        assert f"reverted to version #{original}" in response.json()["detail"]
+        assert versions[0]["params"] == {"fast_ema_period": 10}
+
+    async def test_unknown_version_is_404(self, database: Database) -> None:
+        bot = StubBot(database)
+        async with make_client(bot) as client:
+            assert (await client.post("/strategy/versions/9999/revert")).status_code == 404

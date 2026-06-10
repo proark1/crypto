@@ -344,3 +344,44 @@ class TestChartBuckets:
         store = CandleStore(database)
         with pytest.raises(ValueError, match="unknown bucket unit"):
             await store.fetch_recent_buckets("BTC/USDT", "fortnight")
+
+
+class TestStrategySettingsStore:
+    async def test_active_returns_the_newest_version_per_family(
+        self, database: Database
+    ) -> None:
+        from tradebot.persistence import StrategySettingsStore
+
+        store = StrategySettingsStore(database)
+        assert await store.active() == {}  # empty store means defaults
+
+        await store.record("trend_following", {"fast_ema_period": 10}, BASE_TIME)
+        await store.record("mean_reversion", {"rsi_period": 7}, BASE_TIME)
+        newest = await store.record(
+            "trend_following", {"fast_ema_period": 12}, BASE_TIME, source_sweep_id=42
+        )
+
+        active = await store.active()
+        assert active == {
+            "trend_following": {"fast_ema_period": 12},
+            "mean_reversion": {"rsi_period": 7},
+        }
+        row = await store.fetch(newest)
+        assert row is not None
+        assert row["source_sweep_id"] == 42
+
+    async def test_history_is_newest_first_and_fetch_misses_are_none(
+        self, database: Database
+    ) -> None:
+        from tradebot.persistence import StrategySettingsStore
+
+        store = StrategySettingsStore(database)
+        first = await store.record("trend_following", {"fast_ema_period": 10}, BASE_TIME)
+        second = await store.record(
+            "trend_following", {"fast_ema_period": 12}, BASE_TIME, note="auto-promoted"
+        )
+
+        history = await store.history()
+        assert [row["id"] for row in history] == [second, first]
+        assert history[0]["note"] == "auto-promoted"
+        assert await store.fetch(9999) is None

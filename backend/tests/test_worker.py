@@ -484,3 +484,62 @@ class TestHealthDuringFirstBackfill:
             run_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await run_task
+
+
+class TestStrategyPromotion:
+    async def test_apply_strategy_params_persists_and_hot_swaps_engines(
+        self, database: Database
+    ) -> None:
+        worker = Worker(make_config("BTC/USDT,ETH/USDT"), database, ScriptedExchange([]))
+        await worker.initialize()
+        before = {symbol: engine._strategy for symbol, engine in worker.engines.items()}
+
+        version = await worker.apply_strategy_params(
+            "trend_following",
+            {"fast_ema_period": 10, "slow_ema_period": 30},
+            source_sweep_id=7,
+            note="auto-promoted: it validated",
+        )
+
+        assert version > 0
+        assert worker.strategy_params["trend_following"]["fast_ema_period"] == 10
+        for symbol, engine in worker.engines.items():
+            assert engine._strategy is not before[symbol], symbol  # fresh instance
+        active = await worker.strategy_settings_store.active()
+        assert active["trend_following"]["slow_ema_period"] == 30
+
+    async def test_promoted_params_survive_a_restart(self, database: Database) -> None:
+        first_boot = Worker(make_config(), database, ScriptedExchange([]))
+        await first_boot.initialize()
+        await first_boot.apply_strategy_params("trend_following", {"fast_ema_period": 12})
+
+        second_boot = Worker(make_config(), database, ScriptedExchange([]))
+        await second_boot.initialize()
+
+        assert second_boot.strategy_params["trend_following"]["fast_ema_period"] == 12
+
+    async def test_revert_reapplies_the_old_version_as_a_new_one(
+        self, database: Database
+    ) -> None:
+        worker = Worker(make_config(), database, ScriptedExchange([]))
+        await worker.initialize()
+        original = await worker.apply_strategy_params("trend_following", {"fast_ema_period": 10})
+        await worker.apply_strategy_params("trend_following", {"fast_ema_period": 15})
+
+        new_version = await worker.revert_strategy_version(original)
+
+        assert new_version > original
+        assert worker.strategy_params["trend_following"]["fast_ema_period"] == 10
+        history = await worker.strategy_settings_store.history()
+        assert f"revert to version #{original}" in (history[0]["note"] or "")
+
+    async def test_unknown_family_or_params_are_refused(self, database: Database) -> None:
+        worker = Worker(make_config(), database, ScriptedExchange([]))
+        await worker.initialize()
+
+        with pytest.raises(ValueError, match="unknown strategy family"):
+            await worker.apply_strategy_params("momentum", {})
+        with pytest.raises(ValueError, match="unknown trend_following parameters"):
+            await worker.apply_strategy_params("trend_following", {"fast_ema_perod": 1})
+        with pytest.raises(KeyError, match="no strategy settings version"):
+            await worker.revert_strategy_version(9999)

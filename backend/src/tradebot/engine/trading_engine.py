@@ -94,6 +94,27 @@ class TradingEngine:
         return tuple(self._fills)
 
     @property
+    def strategy_name(self) -> str:
+        """The active signal generator's identifier, for status surfaces."""
+        return self._strategy.name
+
+    def replace_strategy(self, strategy: Strategy) -> None:
+        """Swap the signal generator in place (automated promotion, §12.7).
+
+        Only the strategy changes: the position, pending orders, risk
+        state, and gates are untouched — a promotion mid-position simply
+        means the next exit comes from the new rules. The replacement must
+        arrive pre-warmed (primed from stored candles by the caller), and
+        the assignment is atomic on the event loop, so no candle is ever
+        half-processed across two strategies.
+        """
+        previous = self._strategy.name
+        self._strategy = strategy
+        logger.info(
+            "strategy replaced for %s: %s -> %s", self._symbol, previous, strategy.name
+        )
+
+    @property
     def paused(self) -> bool:
         """True while the strategy is muted (orders/stops keep working)."""
         return self._paused

@@ -495,3 +495,30 @@ class TestEntryGates:
 
         assert portfolio.position("BTC/USDT") is None  # the collapse exit filled
         assert engine.fills and all(fill.side == Side.SELL for fill in engine.fills)
+
+
+class TestReplaceStrategy:
+    async def test_swap_changes_signals_but_not_position_state(self) -> None:
+        """A promotion mid-flight replaces only the signal generator."""
+        portfolio = Portfolio(INITIAL_BALANCE)
+        engine = make_engine(portfolio)
+        # Ride the rally into an open position with the original strategy.
+        for index, close in enumerate(CLOSES[:14]):
+            await engine.process_candle(make_candle(index, close))
+        assert portfolio.position("BTC/USDT") is not None
+        balance_before = portfolio.quote_balance
+
+        replacement = TrendFollowingStrategy(
+            TrendFollowingConfig(fast_ema_period=4, slow_ema_period=9, atr_period=4)
+        )
+        for index, close in enumerate(CLOSES[:14]):  # pre-warmed, as the worker does
+            replacement.on_candle(make_candle(index, close), None)
+        engine.replace_strategy(replacement)
+
+        assert engine.strategy_name == "trend_following"
+        assert portfolio.position("BTC/USDT") is not None  # untouched by the swap
+        assert portfolio.quote_balance == balance_before
+        # The collapse exits the position through the replacement strategy.
+        for offset, close in enumerate(CLOSES[14:]):
+            await engine.process_candle(make_candle(14 + offset, close))
+        assert portfolio.position("BTC/USDT") is None

@@ -7,9 +7,10 @@ range after a backfill or restart must be harmless, because it will happen.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 from decimal import Decimal
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import Numeric, func, select
@@ -23,6 +24,7 @@ from tradebot.persistence.database import (
     coins_table,
     decisions_table,
     fills_table,
+    strategy_settings_table,
 )
 
 CHART_BUCKET_UNITS: dict[str, str] = {
@@ -307,3 +309,77 @@ class DecisionStore:
         async with self._database.engine.connect() as connection:
             rows = (await connection.execute(statement)).mappings().all()
         return [Decision.model_validate(dict(row)) for row in rows]
+
+
+class StrategySettingsStore:
+    """Versioned strategy parameters: what each family trades right now.
+
+    Append-only by design — promotions and reverts both append, so the
+    version history is the full lineage of every configuration the bot has
+    ever traded (ARCHITECTURE.md §12.5/§12.7).
+    """
+
+    def __init__(self, database: Database) -> None:
+        """Bind the store to ``database``."""
+        self._database = database
+
+    async def active(self) -> dict[str, dict[str, Any]]:
+        """Return the newest params per family; empty dict means defaults."""
+        newest = (
+            select(
+                strategy_settings_table.c.family,
+                func.max(strategy_settings_table.c.id).label("id"),
+            )
+            .group_by(strategy_settings_table.c.family)
+            .subquery()
+        )
+        statement = select(
+            strategy_settings_table.c.family, strategy_settings_table.c.params
+        ).join(newest, strategy_settings_table.c.id == newest.c.id)
+        async with self._database.engine.connect() as connection:
+            rows = (await connection.execute(statement)).all()
+        return {family: dict(params) for family, params in rows}
+
+    async def record(
+        self,
+        family: str,
+        params: Mapping[str, Any],
+        activated_at: datetime,
+        source_sweep_id: int | None = None,
+        note: str | None = None,
+    ) -> int:
+        """Append a new active version for ``family``; returns its id."""
+        _require_aware(activated_at)
+        statement = (
+            pg_insert(strategy_settings_table)
+            .values(
+                family=family,
+                params=dict(params),
+                source_sweep_id=source_sweep_id,
+                note=note,
+                activated_at=activated_at,
+            )
+            .returning(strategy_settings_table.c.id)
+        )
+        async with self._database.engine.begin() as connection:
+            return int((await connection.execute(statement)).scalar_one())
+
+    async def fetch(self, version_id: int) -> dict[str, Any] | None:
+        """Return one version row, or ``None`` if it does not exist."""
+        statement = select(strategy_settings_table).where(
+            strategy_settings_table.c.id == version_id
+        )
+        async with self._database.engine.connect() as connection:
+            row = (await connection.execute(statement)).mappings().first()
+        return dict(row) if row is not None else None
+
+    async def history(self, limit: int = 50) -> list[dict[str, Any]]:
+        """Return versions newest first, across all families."""
+        statement = (
+            select(strategy_settings_table)
+            .order_by(strategy_settings_table.c.id.desc())
+            .limit(limit)
+        )
+        async with self._database.engine.connect() as connection:
+            rows = (await connection.execute(statement)).mappings().all()
+        return [dict(row) for row in rows]

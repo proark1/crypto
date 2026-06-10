@@ -20,6 +20,9 @@ scenario's blind window.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from typing import Any
+
 from tradebot.core.models import Candle, Signal
 from tradebot.portfolio import Position
 from tradebot.signals import RegimeClassifier, RegimeConfig
@@ -73,19 +76,25 @@ class SelfRoutedRegimeStrategy:
         return self._router.on_candle(candle, position)
 
 
-def build_traded_strategy(regime_routed: bool) -> Strategy:
+def build_traded_strategy(
+    regime_routed: bool,
+    params_by_family: Mapping[str, Mapping[str, Any]] | None = None,
+) -> Strategy:
     """Build one fresh instance of the strategy production would trade.
 
     ``regime_routed`` mirrors the worker's wiring: with the regime gate on,
-    coins trade the family router; without it, the trend family alone. A
-    fresh instance per call keeps indicator state from bleeding across
-    scenarios (the :class:`~tradebot.evaluation.engine.ScenarioEvaluator`
-    contract).
+    coins trade the family router; without it, the trend family alone.
+    ``params_by_family`` carries the *active* (possibly auto-promoted)
+    parameters per family so research always grades the configuration the
+    bot actually trades; missing families fall back to defaults. A fresh
+    instance per call keeps indicator state from bleeding across scenarios
+    (the :class:`~tradebot.evaluation.engine.ScenarioEvaluator` contract).
     """
-    trend = TrendFollowingStrategy(TrendFollowingConfig())
+    params = params_by_family or {}
+    trend = TrendFollowingStrategy(TrendFollowingConfig(**params.get("trend_following", {})))
     if not regime_routed:
         return trend
     return SelfRoutedRegimeStrategy(
         trend,
-        MeanReversionStrategy(MeanReversionConfig()),
+        MeanReversionStrategy(MeanReversionConfig(**params.get("mean_reversion", {}))),
     )

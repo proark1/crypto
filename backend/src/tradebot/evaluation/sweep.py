@@ -64,7 +64,7 @@ candidate names its family, so one sweep can pit families against each
 other on identical scenarios."""
 
 
-def _validate_family_params(family: str, params: Mapping[str, Any]) -> None:
+def validate_family_params(family: str, params: Mapping[str, Any]) -> None:
     """Raise ``ValueError`` for an unknown family or parameter, loudly.
 
     Pydantic ignores unknown keys by default; a typo'd parameter would
@@ -89,13 +89,13 @@ class SweepCandidate(BaseModel):
 
     @model_validator(mode="after")
     def _family_and_params_must_exist(self) -> SweepCandidate:
-        _validate_family_params(self.family, self.params)
+        validate_family_params(self.family, self.params)
         return self
 
 
 def build_candidate_strategy(candidate: SweepCandidate) -> Strategy:
     """Build one fresh strategy instance for ``candidate``."""
-    _validate_family_params(candidate.family, candidate.params)
+    validate_family_params(candidate.family, candidate.params)
     config_model, strategy_constructor = STRATEGY_FAMILIES[candidate.family]
     return strategy_constructor(config_model(**candidate.params))
 

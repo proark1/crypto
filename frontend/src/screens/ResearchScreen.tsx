@@ -8,8 +8,10 @@ import {
   fetchFindings,
   fetchScenarioReplay,
   fetchScenarios,
+  fetchStrategyVersions,
   fetchSweeps,
   rejectFinding,
+  revertStrategyVersion,
   startEvaluation,
   startSweep,
 } from "../api/client";
@@ -18,9 +20,11 @@ import type {
   FindingResponse,
   ScenarioReplayResponse,
   ScenarioSummaryResponse,
+  StrategyVersionResponse,
   SweepResponse,
 } from "../api/types";
 import { FindingsPanel } from "../components/FindingsPanel";
+import { ImprovementsPanel } from "../components/ImprovementsPanel";
 import { ScenarioReplay } from "../components/ScenarioReplay";
 import { SweepPanel } from "../components/SweepPanel";
 import {
@@ -249,11 +253,13 @@ export function ResearchScreen() {
   const [findings, setFindings] = useState<FindingResponse[]>([]);
   const [replay, setReplay] = useState<ScenarioReplayResponse | null>(null);
   const [sweeps, setSweeps] = useState<SweepResponse[]>([]);
+  const [versions, setVersions] = useState<StrategyVersionResponse[]>([]);
 
   const refresh = useCallback(async () => {
     try {
       setRuns(await fetchEvaluations());
       setSweeps(await fetchSweeps());
+      setVersions(await fetchStrategyVersions());
     } catch {
       // The overview screen owns auth/error UX; research polls quietly.
     }
@@ -447,6 +453,20 @@ export function ResearchScreen() {
         </section>
       </div>
 
+      <ImprovementsPanel
+        versions={versions}
+        onRevert={(versionId) => {
+          revertStrategyVersion(versionId).then(
+            (result) => {
+              setNotice(result.detail);
+              void refresh();
+            },
+            (caught: unknown) => {
+              setNotice(caught instanceof Error ? caught.message : "failed to revert");
+            },
+          );
+        }}
+      />
       <SweepPanel
         sweeps={sweeps}
         onStart={handleStartSweep}

@@ -39,6 +39,7 @@ from tradebot.persistence import (
     DecisionStore,
     EvaluationStore,
     FillStore,
+    StrategySettingsStore,
 )
 from tradebot.portfolio import Portfolio
 
@@ -110,6 +111,15 @@ class BotState(Protocol):
     @property
     def metrics(self) -> MetricsCollector:
         """Bus-fed counters for the /metrics endpoint."""
+        ...
+
+    @property
+    def strategy_settings_store(self) -> StrategySettingsStore:
+        """Versioned strategy parameters (automated promotions + reverts)."""
+        ...
+
+    async def revert_strategy_version(self, version_id: int) -> int:
+        """Re-apply a historical settings version (``KeyError`` unknown)."""
         ...
 
     @property
@@ -354,6 +364,17 @@ class SweepStartRequest(BaseModel):
     validation_windows: int = 3
     candidates: list[SweepCandidateRequest] | None = None
     motivating_finding_ids: list[int] = []
+
+
+class StrategyVersionResponse(BaseModel):
+    """One versioned strategy configuration: who trades what, since when."""
+
+    id: int
+    family: str
+    params: dict[str, Any]
+    source_sweep_id: int | None
+    note: str | None
+    activated_at: str
 
 
 class SweepResponse(BaseModel):
@@ -1042,6 +1063,37 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
             )
         first_engine = next(iter(state.engines.values()))
         return CommandResponse(paused=first_engine.paused, detail=f"sweep {sweep_id} cancelled")
+
+    @protected.get("/strategy/versions")
+    async def list_strategy_versions() -> list[StrategyVersionResponse]:
+        """List the settings journal: every configuration the bot has traded."""
+        return [
+            StrategyVersionResponse(
+                id=row["id"],
+                family=row["family"],
+                params=row["params"],
+                source_sweep_id=row["source_sweep_id"],
+                note=row["note"],
+                activated_at=row["activated_at"].isoformat(),
+            )
+            for row in await state.strategy_settings_store.history()
+        ]
+
+    @protected.post("/strategy/versions/{version_id}/revert")
+    async def revert_strategy_version(version_id: int) -> CommandResponse:
+        """Re-apply a historical version — the human override of §12.7."""
+        try:
+            new_version = await state.revert_strategy_version(version_id)
+        except KeyError as error:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"no strategy settings version {version_id}",
+            ) from error
+        first_engine = next(iter(state.engines.values()))
+        return CommandResponse(
+            paused=first_engine.paused,
+            detail=f"reverted to version #{version_id} (new version #{new_version})",
+        )
 
     @protected.get("/metrics")
     async def get_metrics() -> PlainTextResponse:

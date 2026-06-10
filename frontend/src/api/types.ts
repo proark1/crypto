@@ -131,6 +131,15 @@ export interface FindingResponse {
   created_at: string;
 }
 
+export interface StrategyVersionResponse {
+  id: number;
+  family: string;
+  params: Record<string, unknown>;
+  source_sweep_id: number | null;
+  note: string | null;
+  activated_at: string;
+}
+
 export interface SweepResponse {
   id: number;
   created_at: string;
