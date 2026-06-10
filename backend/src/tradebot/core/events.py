@@ -14,7 +14,7 @@ from typing import TypeVar, cast
 
 from pydantic import BaseModel, ConfigDict
 
-from tradebot.core.models import Candle
+from tradebot.core.models import Candle, Fill
 
 E = TypeVar("E", bound=BaseModel)
 
@@ -31,6 +31,18 @@ class CandleClosed(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     candle: Candle
+
+
+class FillRecorded(BaseModel):
+    """Published by the engine after a fill is journaled and booked.
+
+    Observers only (notifications, UI pushes): the portfolio and journal are
+    already updated when this fires, so consumers can never race the books.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    fill: Fill
 
 
 class EventBus:
