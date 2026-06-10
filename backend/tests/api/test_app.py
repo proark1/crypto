@@ -219,6 +219,45 @@ class TestAuth:
             assert (await client.post("/kill")).status_code == 404
 
 
+class TestAuthLockout:
+    async def test_burst_of_bad_tokens_locks_even_the_right_one_out(
+        self, database: Database
+    ) -> None:
+        """Brute-force brake: the cooldown answers 429, not 401, to everyone."""
+        app = create_app(StubBot(database), TOKEN)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://control"
+        ) as client:
+            for _ in range(11):
+                response = await client.get("/status", headers={"Authorization": "Bearer wrong"})
+                assert response.status_code == 401
+            locked = await client.get("/status", headers={"Authorization": f"Bearer {TOKEN}"})
+
+        assert locked.status_code == 429
+        assert "try again shortly" in locked.json()["detail"]
+
+    def test_lock_engages_on_burst_and_expires_after_cooldown(self) -> None:
+        from tradebot.api.app import AuthLockout
+
+        lockout = AuthLockout(max_failures=3, window=timedelta(minutes=1))
+        start = BASE_TIME
+        for seconds in range(3):
+            lockout.record_failure(start + timedelta(seconds=seconds))
+        assert lockout.locked_until(start + timedelta(seconds=3)) is None  # at the limit
+
+        lockout.record_failure(start + timedelta(seconds=3))  # over it
+        assert lockout.locked_until(start + timedelta(seconds=4)) is not None
+        assert lockout.locked_until(start + timedelta(minutes=2)) is None  # cooled down
+
+    def test_slow_typos_never_trip_the_lock(self) -> None:
+        from tradebot.api.app import AuthLockout
+
+        lockout = AuthLockout(max_failures=3, window=timedelta(minutes=1))
+        for minutes in range(10):  # one bad token a minute: an operator, not an attack
+            lockout.record_failure(BASE_TIME + timedelta(minutes=2 * minutes))
+        assert lockout.locked_until(BASE_TIME + timedelta(minutes=20)) is None
+
+
 class TestCors:
     """The dashboard lives on a different origin than the API; without CORS
     headers the browser blocks every dashboard request before it is sent."""
