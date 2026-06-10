@@ -142,6 +142,67 @@ class TestPaperFlowOverBus:
             await engine.process_candle(make_candle(1, 100.0, symbol="ETH/USDT"))
 
 
+class TestPauseAndKill:
+    async def test_paused_engine_discards_signals_but_keeps_indicators_warm(self) -> None:
+        portfolio = Portfolio(INITIAL_BALANCE)
+        engine = make_engine(portfolio)
+
+        engine.pause()
+        for index, close in enumerate(CLOSES):
+            await engine.process_candle(make_candle(index, close))
+        assert engine.fills == ()  # the rally's entry signal was discarded
+
+        engine.resume()
+        # Indicators consumed the whole series: a fresh rally triggers a new
+        # cross without re-warming from zero.
+        next_index = len(CLOSES)
+        for offset, close in enumerate([80.0 + 6 * i for i in range(1, 11)]):
+            await engine.process_candle(make_candle(next_index + offset, close))
+        resumed_fills: tuple[Fill, ...] = engine.fills
+        assert [fill.side for fill in resumed_fills] == [Side.BUY]
+
+    async def test_kill_cancels_resting_orders_and_flattens(self) -> None:
+        portfolio = Portfolio(INITIAL_BALANCE)
+        engine = make_engine(portfolio)
+        # Ride the rally into an open position (stop before the collapse).
+        for index, close in enumerate(CLOSES[:16]):
+            await engine.process_candle(make_candle(index, close))
+        assert portfolio.position("BTC/USDT") is not None
+
+        submitted = await engine.kill()
+        assert submitted is True
+        assert engine.paused is True
+
+        await engine.process_candle(make_candle(16, CLOSES[16]))
+        assert portfolio.position("BTC/USDT") is None  # flattened while paused
+
+    async def test_kill_when_flat_before_any_candle_halts_without_exit(self) -> None:
+        portfolio = Portfolio(INITIAL_BALANCE)
+        engine = make_engine(portfolio)
+        submitted = await engine.kill()
+        assert submitted is False
+        assert engine.paused is True
+
+    async def test_kill_with_position_but_no_candle_raises_not_flat(self) -> None:
+        """Halted-but-not-flat must never look like 'nothing to flatten'."""
+        portfolio = Portfolio(INITIAL_BALANCE)
+        portfolio.apply_fill(
+            Fill(
+                client_order_id="seed",
+                symbol="BTC/USDT",
+                side=Side.BUY,
+                price_quote=Decimal("100"),
+                quantity_base=Decimal("1"),
+                fee_quote=Decimal("0"),
+                filled_at=BASE_TIME,
+            )
+        )
+        engine = make_engine(portfolio)
+        with pytest.raises(RuntimeError, match="NOT flat"):
+            await engine.kill()
+        assert engine.paused is True  # still halted despite the error
+
+
 class TestParityWithBacktest:
     async def test_bus_driven_engine_matches_backtest_runner_exactly(self) -> None:
         """Paper mode and backtest mode are the same code; prove it."""

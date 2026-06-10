@@ -11,9 +11,13 @@ import pytest
 from tradebot.api import create_app
 from tradebot.core.config import AppConfig, TradingMode
 from tradebot.core.models import Candle, CandleInterval, Fill, Side
+from tradebot.engine import TradingEngine
+from tradebot.execution import FillSimulatorConfig, SimulatedExecutionAdapter
 from tradebot.persistence import CandleStore, Database, FillStore
 from tradebot.persistence.database import metadata
 from tradebot.portfolio import Portfolio
+from tradebot.risk import RiskConfig, RiskManager
+from tradebot.strategies import TrendFollowingConfig, TrendFollowingStrategy
 
 BASE_TIME = datetime(2026, 1, 2, 0, 0, tzinfo=UTC)
 TOKEN = "test-token"
@@ -43,6 +47,13 @@ class StubBot:
         self.portfolio = Portfolio(Decimal("10000"))
         self.candle_store = CandleStore(database)
         self.fill_store = FillStore(database)
+        self.engine = TradingEngine(
+            TrendFollowingStrategy(TrendFollowingConfig()),
+            RiskManager(RiskConfig(), self.portfolio),
+            self.portfolio,
+            SimulatedExecutionAdapter(FillSimulatorConfig()),
+            symbol="BTC/USDT",
+        )
 
 
 def make_fill(price: str = "100", quantity: str = "2") -> Fill:
@@ -143,6 +154,62 @@ class TestStatus:
 
         assert body["equity_quote"] is None  # refuses to guess, never wrong
         assert body["position"]["unrealized_pnl_quote"] is None
+
+
+class TestCommands:
+    async def test_pause_and_resume_toggle_status(self, database: Database) -> None:
+        bot = StubBot(database)
+        async with make_client(bot) as client:
+            paused = (await client.post("/pause")).json()
+            status_paused = (await client.get("/status")).json()
+            resumed = (await client.post("/resume")).json()
+            status_resumed = (await client.get("/status")).json()
+
+        assert paused["paused"] is True
+        assert status_paused["paused"] is True
+        assert resumed["paused"] is False
+        assert status_resumed["paused"] is False
+
+    async def test_kill_when_flat_halts_only(self, database: Database) -> None:
+        bot = StubBot(database)
+        async with make_client(bot) as client:
+            body = (await client.post("/kill")).json()
+
+        assert body["paused"] is True
+        assert "no position" in body["detail"]
+        assert bot.engine.paused is True
+
+    async def test_kill_with_position_but_no_candle_returns_conflict(
+        self, database: Database
+    ) -> None:
+        bot = StubBot(database)
+        bot.portfolio.apply_fill(make_fill(price="100", quantity="2"))
+        # The engine has processed no candle: kill cannot price an exit.
+        async with make_client(bot) as client:
+            response = await client.post("/kill")
+
+        assert response.status_code == 409
+        assert "NOT flat" in response.json()["detail"]
+        assert bot.engine.paused is True
+
+    async def test_kill_with_position_submits_exit(self, database: Database) -> None:
+        bot = StubBot(database)
+        bot.portfolio.apply_fill(make_fill(price="100", quantity="2"))
+        await bot.engine.process_candle(make_candle(close="105"))  # engine sees a price
+
+        async with make_client(bot) as client:
+            body = (await client.post("/kill")).json()
+
+        assert "exit order submitted" in body["detail"]
+        # The exit fills on the next candle even though the engine is paused.
+        next_candle = make_candle(close="106").model_copy(
+            update={
+                "open_time": BASE_TIME + timedelta(minutes=1),
+                "close_time": BASE_TIME + timedelta(minutes=2),
+            }
+        )
+        await bot.engine.process_candle(next_candle)
+        assert bot.portfolio.position("BTC/USDT") is None
 
 
 class TestFills:
