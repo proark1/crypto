@@ -114,6 +114,12 @@ operational pain with zero benefit.
 - Default order type: limit orders at/near touch with a timeout-then-reprice loop,
   to control slippage and earn maker fees where possible. Fees and slippage are
   modeled identically in the backtest simulator.
+- **Stops live on the exchange, not in the bot.** Protective stops are placed as
+  exchange-native stop-limit orders wherever the exchange supports them, so positions
+  stay protected even if the bot crashes, Railway restarts it, or connectivity drops.
+  The bot manages (trails, replaces) these resting orders rather than watching prices
+  and reacting — bot-side stop logic is the fallback only where native stops are
+  unavailable.
 
 ### 4.5 Portfolio / State Manager
 - Single source of truth for positions, balances, open orders, realized/unrealized PnL.
@@ -398,6 +404,9 @@ re-optimization pipeline (scheduled walk-forward), P2 data sources, full dashboa
   Mitigation: reconciliation on startup, idempotent orders, fault-injection tests.
 - **Tail events** (flash crashes, delistings). Mitigation: hard stops, daily loss
   circuit breaker, max exposure caps, kill switch, only trade liquid pairs.
+- **Bot or exchange downtime with open positions.** Mitigation: exchange-native stop
+  orders keep protection active while the bot is down; on exchange outage the bot
+  alerts immediately and blocks new entries until reconciliation completes.
 - **Key compromise.** Mitigation: trade-only API keys, IP allowlists, no withdrawal
   permission, secrets never in the repo.
 
@@ -422,3 +431,38 @@ only while it keeps passing the last one:
 Operational record-keeping supports this: every trade is journaled (signal context,
 gate decisions, fees, PnL) and exportable as CSV — needed for both strategy review
 and tax reporting.
+
+## 11. Engineering quality & reproducibility
+
+What separates a bot that survives from one that quietly rots:
+
+**Testing strategy:**
+- **Indicator unit tests** against TA-Lib reference outputs — a subtly wrong EMA is
+  worse than a crash because it loses money silently.
+- **Property-based tests for risk math:** position sizing can never exceed configured
+  limits for any input, stop distance is never zero, balances never go negative.
+- **Golden backtest in CI:** a fixed dataset + fixed config must produce byte-identical
+  trades on every commit. Any diff means behavior changed — intentionally or not.
+- **Fault-injection suite:** WebSocket drop mid-candle, restart with open orders,
+  partial fill then disconnect, exchange 5xx/rate-limit responses, malformed payloads.
+  Run in CI against a mock exchange; this is what makes Phase 3's exit criteria real.
+- **Fill-simulator calibration:** recorded live fills are periodically replayed against
+  the simulator; if simulated fills drift from reality, backtests are lying.
+
+**Data quality:**
+- Candle validation on ingest: gaps, zero-volume anomalies, and outlier ticks are
+  flagged and quarantined — the bot pauses a coin on bad data instead of trading on it.
+- Exchange maintenance windows are treated as data gaps: no signals, no entries.
+
+**Reproducibility:**
+- Every live trade is tagged with the strategy version (git SHA) and a config hash;
+  every backtest records its dataset version and parameters. Any historical result —
+  live or simulated — can be traced to exactly the code and config that produced it.
+- UTC everywhere; exchange server-time drift is checked on startup and periodically
+  (signed requests fail on clock skew).
+
+**Process:**
+- CI (GitHub Actions) runs the full suite on every push; Railway auto-deploys `main`
+  to the paper environment only when CI is green; promotion to live is manual.
+- Before building each component, review how mature OSS bots (Freqtrade, Hummingbot,
+  Jesse) solved the same problem — steal good ideas, avoid documented mistakes.
