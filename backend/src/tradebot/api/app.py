@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 import secrets
 from collections import deque
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any, Protocol
@@ -32,7 +32,14 @@ from tradebot.evaluation.replay import load_replay
 from tradebot.evaluation.runner import EvaluationRunConfig
 from tradebot.evaluation.sweep import DEFAULT_SWEEP_CANDIDATES, SweepCandidate, SweepConfig
 from tradebot.news import NewsFlags
-from tradebot.persistence import CandleStore, DecisionStore, EvaluationStore, FillStore
+from tradebot.persistence import (
+    CHART_BUCKET_UNITS,
+    CandleStore,
+    ChartCandle,
+    DecisionStore,
+    EvaluationStore,
+    FillStore,
+)
 from tradebot.portfolio import Portfolio
 
 logger = logging.getLogger(__name__)
@@ -407,8 +414,8 @@ def _finding_response(finding_id: int, finding: LearningFinding) -> FindingRespo
     )
 
 
-def _candle_response(candle: Candle) -> CandleResponse:
-    """Serialize one candle for charting, amounts as strings."""
+def _candle_response(candle: Candle | ChartCandle) -> CandleResponse:
+    """Serialize one candle or aggregated bucket for charting, amounts as strings."""
     return CandleResponse(
         open_time=candle.open_time.isoformat(),
         open_quote=str(candle.open_quote),
@@ -795,10 +802,23 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
     async def get_candles(
         limit: int = Query(300, ge=1, le=1000),
         symbol: str | None = Query(None),
+        interval: str = Query("1m"),
     ) -> list[CandleResponse]:
-        candles = await state.candle_store.fetch_recent(
-            resolve_symbol(symbol), CandleInterval.M1, limit
-        )
+        """Chart candles: raw 1m, or calendar buckets aggregated in SQL."""
+        if interval == CandleInterval.M1.value:
+            candles: Sequence[Candle | ChartCandle] = await state.candle_store.fetch_recent(
+                resolve_symbol(symbol), CandleInterval.M1, limit
+            )
+        elif interval in CHART_BUCKET_UNITS:
+            candles = await state.candle_store.fetch_recent_buckets(
+                resolve_symbol(symbol), CHART_BUCKET_UNITS[interval], limit
+            )
+        else:
+            supported = [CandleInterval.M1.value, *CHART_BUCKET_UNITS]
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"unknown chart interval {interval!r}; supported: {supported}",
+            )
         return [_candle_response(candle) for candle in candles]
 
     @protected.get("/decisions")

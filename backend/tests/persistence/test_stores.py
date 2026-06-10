@@ -245,3 +245,102 @@ class TestDecisionStore:
         store = DecisionStore(database)
         await store.append(make_decision("sig-1", DecisionOutcome.SUBMITTED))
         assert await store.fetch_recent("ETH/USDT") == []
+
+
+def rich_candle(
+    at: datetime,
+    open_quote: str,
+    high: str,
+    low: str,
+    close: str,
+    volume: str = "1",
+    symbol: str = "BTC/USDT",
+) -> Candle:
+    return Candle(
+        symbol=symbol,
+        interval=CandleInterval.M1,
+        open_time=at,
+        close_time=at + timedelta(minutes=1),
+        open_quote=Decimal(open_quote),
+        high_quote=Decimal(high),
+        low_quote=Decimal(low),
+        close_quote=Decimal(close),
+        volume_base=Decimal(volume),
+    )
+
+
+class TestChartBuckets:
+    async def test_hour_buckets_keep_first_open_last_close_extremes_and_volume(
+        self, database: Database
+    ) -> None:
+        store = CandleStore(database)
+        first_hour = datetime(2026, 1, 2, 10, 0, tzinfo=UTC)
+        await store.insert_batch(
+            [
+                rich_candle(first_hour, "100", "105", "98", "101", volume="2"),
+                rich_candle(first_hour + timedelta(minutes=30), "101", "120", "99", "110"),
+                rich_candle(first_hour + timedelta(minutes=59), "110", "112", "90", "95"),
+                rich_candle(first_hour + timedelta(hours=1), "95", "96", "94", "96", volume="3"),
+            ]
+        )
+
+        buckets = await store.fetch_recent_buckets("BTC/USDT", "hour")
+
+        assert [bucket.open_time for bucket in buckets] == [
+            first_hour,
+            first_hour + timedelta(hours=1),
+        ]
+        full_hour = buckets[0]
+        assert full_hour.open_quote == Decimal("100")  # first candle's open
+        assert full_hour.close_quote == Decimal("95")  # last candle's close
+        assert full_hour.high_quote == Decimal("120")
+        assert full_hour.low_quote == Decimal("90")
+        assert full_hour.volume_base == Decimal("4")
+
+    async def test_week_and_month_buckets_split_on_calendar_boundaries(
+        self, database: Database
+    ) -> None:
+        store = CandleStore(database)
+        sunday = datetime(2026, 1, 4, 23, 59, tzinfo=UTC)
+        monday = datetime(2026, 1, 5, 0, 0, tzinfo=UTC)  # next ISO week
+        january_end = datetime(2026, 1, 31, 23, 59, tzinfo=UTC)
+        february_start = datetime(2026, 2, 1, 0, 0, tzinfo=UTC)
+        await store.insert_batch(
+            [
+                rich_candle(sunday, "1", "1", "1", "1"),
+                rich_candle(monday, "2", "2", "2", "2"),
+                rich_candle(january_end, "3", "3", "3", "3"),
+                rich_candle(february_start, "4", "4", "4", "4"),
+            ]
+        )
+
+        weeks = await store.fetch_recent_buckets("BTC/USDT", "week")
+        months = await store.fetch_recent_buckets("BTC/USDT", "month")
+
+        # The Sunday candle and the Monday candle land in different weeks
+        # even though they are one minute apart (weeks start Monday).
+        assert weeks[0].open_time == datetime(2025, 12, 29, tzinfo=UTC)
+        assert weeks[1].open_time == datetime(2026, 1, 5, tzinfo=UTC)
+        assert [month.open_time for month in months] == [
+            datetime(2026, 1, 1, tzinfo=UTC),
+            datetime(2026, 2, 1, tzinfo=UTC),
+        ]
+
+    async def test_limit_keeps_the_newest_buckets_oldest_first(self, database: Database) -> None:
+        store = CandleStore(database)
+        start = datetime(2026, 1, 2, 0, 0, tzinfo=UTC)
+        await store.insert_batch(
+            [rich_candle(start + timedelta(hours=hour), "1", "1", "1", "1") for hour in range(5)]
+        )
+
+        buckets = await store.fetch_recent_buckets("BTC/USDT", "hour", limit=2)
+
+        assert [bucket.open_time for bucket in buckets] == [
+            start + timedelta(hours=3),
+            start + timedelta(hours=4),
+        ]
+
+    async def test_unknown_unit_raises_before_touching_sql(self, database: Database) -> None:
+        store = CandleStore(database)
+        with pytest.raises(ValueError, match="unknown bucket unit"):
+            await store.fetch_recent_buckets("BTC/USDT", "fortnight")

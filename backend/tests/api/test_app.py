@@ -481,6 +481,33 @@ class TestCandles:
             assert (await client.get("/candles?limit=0")).status_code == 422
             assert (await client.get("/candles?limit=99999")).status_code == 422
 
+    async def test_candles_aggregate_to_calendar_buckets(self, database: Database) -> None:
+        bot = StubBot(database)
+        late = make_candle(close="120").model_copy(
+            update={
+                "open_time": BASE_TIME + timedelta(minutes=30),
+                "close_time": BASE_TIME + timedelta(minutes=31),
+                "high_quote": Decimal("125"),
+            }
+        )
+        await bot.candle_store.insert_batch([make_candle(close="110"), late])
+
+        async with make_client(bot) as client:
+            for interval in ("1h", "1d", "1w", "1M"):
+                (bucket,) = (await client.get(f"/candles?interval={interval}")).json()
+                # Two 1m candles roll into one bucket on every timeframe.
+                assert bucket["open_quote"] == "100"
+                assert bucket["close_quote"] == "120"
+                assert bucket["high_quote"] == "125"
+                assert bucket["volume_base"] == "2"
+
+    async def test_unknown_chart_interval_is_400(self, database: Database) -> None:
+        bot = StubBot(database)
+        async with make_client(bot) as client:
+            response = await client.get("/candles?interval=7m")
+        assert response.status_code == 400
+        assert "supported" in response.json()["detail"]
+
 
 class TestProposals:
     @staticmethod
