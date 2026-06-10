@@ -1,4 +1,4 @@
-"""Round-trip tests for the four evaluation tables."""
+"""Round-trip tests for the evaluation tables."""
 
 import os
 from collections.abc import AsyncIterator
@@ -234,3 +234,27 @@ class TestFindings:
         assert loaded.status == "accepted"
         assert loaded.pattern == finding.pattern  # facts stay frozen
         assert await store.fetch_finding(9999) is None
+
+
+class TestSweeps:
+    async def test_sweep_lifecycle_round_trips(self, database: Database) -> None:
+        store = EvaluationStore(database)
+        sweep_id = await store.create_sweep(
+            symbol="BTC/USDT",
+            timeframe="1h",
+            config={"training_fraction": 0.7, "risk": Decimal("0.01")},
+            motivating_finding_ids=[7, 9],
+            created_at=BASE_TIME,
+        )
+
+        await store.set_sweep_status(sweep_id, RunStatus.RUNNING)
+        await store.complete_sweep(sweep_id, {"verdict": "overfit", "winner": "faster_cross"})
+
+        sweep = await store.fetch_sweep(sweep_id)
+        assert sweep is not None
+        assert sweep["status"] == "completed"
+        assert sweep["motivating_finding_ids"] == [7, 9]
+        assert sweep["config"]["risk"] == "0.01"  # Decimal stringified, not floated
+        assert sweep["report"]["verdict"] == "overfit"
+        assert await store.fetch_sweep(9999) is None
+        assert [row["id"] for row in await store.list_sweeps()] == [sweep_id]

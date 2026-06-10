@@ -1,4 +1,4 @@
-"""Persistence for evaluation runs, scenarios, results, and findings.
+"""Persistence for evaluation runs, scenarios, results, findings, and sweeps.
 
 Append-mostly by design: results are facts about a frozen (config, data)
 pair, so nothing here updates a verdict after the fact — runs advance
@@ -28,6 +28,7 @@ from tradebot.persistence.database import (
     learning_findings_table,
     scenario_results_table,
     scenarios_table,
+    sweeps_table,
 )
 
 
@@ -38,7 +39,7 @@ def _require_aware(moment: datetime) -> None:
 
 
 class EvaluationStore:
-    """Typed access to the four evaluation tables."""
+    """Typed access to the five evaluation tables (runs, scenarios, results, findings, sweeps)."""
 
     def __init__(self, database: Database) -> None:
         """Bind the store to ``database``."""
@@ -276,6 +277,70 @@ class EvaluationStore:
         async with self._database.engine.connect() as connection:
             rows = (await connection.execute(statement)).mappings().all()
         return [ScenarioResult.model_validate(dict(row)) for row in rows]
+
+    async def create_sweep(
+        self,
+        symbol: str,
+        timeframe: str,
+        config: dict[str, Any],
+        motivating_finding_ids: Sequence[int],
+        created_at: datetime,
+    ) -> int:
+        """Create a pending sweep; returns its id.
+
+        Same JSONB discipline as runs: Decimals in the config snapshot are
+        stringified, never coerced to float.
+        """
+        _require_aware(created_at)
+        encodable_config = json.loads(json.dumps(config, default=str))
+        statement = (
+            sweeps_table.insert()
+            .values(
+                created_at=created_at,
+                status=RunStatus.PENDING.value,
+                symbol=symbol,
+                timeframe=timeframe,
+                config=encodable_config,
+                motivating_finding_ids=list(motivating_finding_ids),
+            )
+            .returning(sweeps_table.c.id)
+        )
+        async with self._database.engine.begin() as connection:
+            sweep_id: int = (await connection.execute(statement)).scalar_one()
+        return sweep_id
+
+    async def set_sweep_status(self, sweep_id: int, status: RunStatus) -> None:
+        """Advance the sweep's lifecycle (pending → running → terminal)."""
+        statement = (
+            update(sweeps_table).where(sweeps_table.c.id == sweep_id).values(status=status.value)
+        )
+        async with self._database.engine.begin() as connection:
+            await connection.execute(statement)
+
+    async def complete_sweep(self, sweep_id: int, report: dict[str, Any]) -> None:
+        """Mark the sweep completed and attach its walk-forward report."""
+        encodable_report = json.loads(json.dumps(report, default=str))
+        statement = (
+            update(sweeps_table)
+            .where(sweeps_table.c.id == sweep_id)
+            .values(status=RunStatus.COMPLETED.value, report=encodable_report)
+        )
+        async with self._database.engine.begin() as connection:
+            await connection.execute(statement)
+
+    async def fetch_sweep(self, sweep_id: int) -> dict[str, Any] | None:
+        """Return one sweep row as a mapping, or ``None`` if unknown."""
+        statement = select(sweeps_table).where(sweeps_table.c.id == sweep_id)
+        async with self._database.engine.connect() as connection:
+            row = (await connection.execute(statement)).mappings().first()
+        return None if row is None else dict(row)
+
+    async def list_sweeps(self, limit: int = 50) -> list[dict[str, Any]]:
+        """Return the newest sweeps first (the research screen's sweep list)."""
+        statement = select(sweeps_table).order_by(sweeps_table.c.id.desc()).limit(limit)
+        async with self._database.engine.connect() as connection:
+            rows = (await connection.execute(statement)).mappings().all()
+        return [dict(row) for row in rows]
 
     async def insert_finding(self, finding: LearningFinding) -> int:
         """Persist one mined finding; returns its id."""

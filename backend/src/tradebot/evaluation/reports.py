@@ -27,7 +27,7 @@ def build_summary(records: list[tuple[Scenario, ScenarioResult]]) -> dict[str, A
     summary: dict[str, Any] = {
         "scenario_count": len(records),
         "verdicts": _verdict_counts(records),
-        **_trade_metrics([result for _, result in records]),
+        **trade_metrics([result for _, result in records]),
         "hold_metrics": _hold_metrics(records),
         "by_trend": _breakdown(records, lambda s: s.conditions.trend.value),
         "by_volatility": _breakdown(records, lambda s: s.conditions.volatility.value),
@@ -45,8 +45,17 @@ def _verdict_counts(records: list[tuple[Scenario, ScenarioResult]]) -> dict[str,
     return counts
 
 
-def _trade_metrics(results: list[ScenarioResult]) -> dict[str, Any]:
-    r_values = [result.r_multiple for result in results if result.r_multiple is not None]
+def trade_metrics(results: list[ScenarioResult]) -> dict[str, Any]:
+    """Build the trade-quality block from graded results (expectancy first)."""
+    return r_metrics([r.r_multiple for r in results if r.r_multiple is not None])
+
+
+def r_metrics(r_values: list[Decimal]) -> dict[str, Any]:
+    """Build the trade-quality block from raw R-multiples (§12.3 format).
+
+    Public because the parameter sweep reports per-candidate quality with
+    exactly these numbers — two formats for one concept would drift.
+    """
     if not r_values:
         return {"trade_count": 0}
     wins = [r for r in r_values if r > 0]
@@ -101,7 +110,7 @@ def _breakdown(
     return {
         label: {
             "scenario_count": len(group),
-            **_trade_metrics([result for _, result in group]),
+            **trade_metrics([result for _, result in group]),
         }
         for label, group in sorted(groups.items())
     }
@@ -117,7 +126,7 @@ def _event_breakdown(
     return {
         label: {
             "scenario_count": len(group),
-            **_trade_metrics([result for _, result in group]),
+            **trade_metrics([result for _, result in group]),
         }
         for label, group in sorted(groups.items())
     }

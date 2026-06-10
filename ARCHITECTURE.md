@@ -23,7 +23,7 @@ This document is the target design. Implementation status as of June 2026
 | Telegram notifications (§6.2) | **Done** — alerts only; command handling missing |
 | Dashboard: status, chart, decisions, proposals, controls (§6.1) | **Done** — per-coin view with coin switcher; wizard, journal, research screens missing |
 | Multi-coin support (§4.2) | **Done** — per-symbol feed+engine, shared account/breakers, per-coin dashboard, runtime add/remove via API + UI (coins persisted in Postgres; env var seeds first boot) |
-| Evaluation & training: blind walk-forward (§12) | **Partial** — foundations, scenario engine (leak-tested), run orchestration + API, research screen, scenario replay viewer, learning findings (mined + human accept/reject) done; parameter sweeps (§12.5) pending |
+| Evaluation & training: blind walk-forward (§12) | **Done** — foundations, scenario engine (leak-tested), run orchestration + API, research screen, scenario replay viewer, learning findings (mined + human accept/reject), walk-forward parameter sweeps with explicit overfit verdicts |
 | News pipeline, regime gates, signal fusion (§4.6, §4.7) | **Missing** |
 | Observability: dead-man's switch, metrics, DB backups (§7.3) | **Partial** — heartbeat ping gated on feed freshness done; metrics and backups missing |
 | Live trading (§8 Phase 3) | **Missing** — blockers enumerated in LIVE_TRADING_CHECKLIST.md |
@@ -572,12 +572,14 @@ independence assumption).
 
 ### 12.4 Persistence
 
-Four tables (see `persistence/database.py`): `evaluation_runs` (config
+Five tables (see `persistence/database.py`): `evaluation_runs` (config
 snapshot, code version, status/progress, summary), `scenarios` (coordinates
 + condition labels; candles are referenced, never copied),
 `scenario_results` (decision, reasons, R, MFE/MAE, oracle, verdict, timing),
 `learning_findings` (pattern, evidence ids, impact, suggestion, confidence,
-human accept/reject status).
+human accept/reject status), `sweeps` (candidate grid + split snapshot,
+training/validation scores, plain-words verdict, and the accepted-finding
+ids that motivated the sweep — the §12.5 lineage link).
 
 ### 12.5 Training loop
 
@@ -589,14 +591,20 @@ its lineage: what changed, why, and whether validation confirmed it.
 
 ### 12.6 Delivery status
 
-Steps 1-5 are implemented: foundations (this section, aggregation batch
-helper, condition classifier, the four tables), scenario engine + scoring,
-run API, research screen, and the scenario replay viewer (scenarios are
-rebuilt from their stored coordinates through the run's own aggregation
-path and revealed candle by candle, grade last). Of step 6, the learning
-findings half is implemented: every completed run is mined for mechanical,
-evidence-backed patterns (losing condition buckets, chronic late entries /
-early exits, missed opportunities, wrong holds — thresholds frozen in
-`evaluation/learning.py`), and each finding awaits an explicit human
-accept/reject through the API; the verdict is recorded once and never
-flipped. Parameter sweeps with walk-forward validation (§12.5) remain.
+All six steps are implemented: foundations (this section, aggregation
+batch helper, condition classifier, the tables), scenario engine + scoring,
+run API, research screen, the scenario replay viewer (scenarios are rebuilt
+from their stored coordinates through the run's own aggregation path and
+revealed candle by candle, grade last), and the learning layer. The
+learning layer has two halves. Findings: every completed run is mined for
+mechanical, evidence-backed patterns (losing condition buckets, chronic
+late entries / early exits, missed opportunities, wrong holds — thresholds
+frozen in `evaluation/learning.py`), and each finding awaits an explicit
+human accept/reject through the API; the verdict is recorded once and never
+flipped. Sweeps (`evaluation/sweep.py`): candidate parameter sets are
+scored by the same blind pipeline on a chronological training slice; only
+the training winner and the baseline are scored on the untouched validation
+slice, and the report's verdict is plain words — *validated*, *overfit*
+("wins only on the data it was tuned on"), *baseline best*, or
+*insufficient evidence*. Sweeps and findings recommend; applying a config
+change remains a human action.

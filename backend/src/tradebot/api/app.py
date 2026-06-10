@@ -25,6 +25,7 @@ from tradebot.engine import TradingEngine
 from tradebot.evaluation.models import LearningFinding
 from tradebot.evaluation.replay import load_replay
 from tradebot.evaluation.runner import EvaluationRunConfig
+from tradebot.evaluation.sweep import DEFAULT_TREND_CANDIDATES, SweepCandidate, SweepConfig
 from tradebot.persistence import CandleStore, DecisionStore, EvaluationStore, FillStore
 from tradebot.portfolio import Portfolio
 
@@ -81,6 +82,14 @@ class BotState(Protocol):
 
     def cancel_evaluation(self, run_id: int) -> bool:
         """Cancel the in-flight run; False when it is not running."""
+        ...
+
+    async def start_sweep(self, config: SweepConfig) -> int:
+        """Start a sweep (``RuntimeError`` if one is in flight, ``ValueError`` bad config)."""
+        ...
+
+    def cancel_sweep(self, sweep_id: int) -> bool:
+        """Cancel the in-flight sweep; False when it is not running."""
         ...
 
 
@@ -290,6 +299,59 @@ def _scenario_summary(row: Mapping[str, Any]) -> ScenarioSummaryResponse:
         verdict=row["verdict"],
         r_multiple=_optional_str(row["r_multiple"]),
         timing=row["timing"],
+    )
+
+
+class SweepCandidateRequest(BaseModel):
+    """One named parameter set to compete in a sweep."""
+
+    name: str
+    params: dict[str, Any]
+
+
+class SweepStartRequest(BaseModel):
+    """Shape of a new sweep; the symbol defaults to the first active coin.
+
+    Omitting ``candidates`` sweeps the trend-following family's default
+    grid; ``candidates[0]`` is always treated as the baseline.
+    """
+
+    symbol: str | None = None
+    timeframe: str = "1h"
+    history_days: int = 180
+    scenario_count: int = 100
+    lookback_candles: int = 200
+    horizon_candles: int = 60
+    seed: int = 7
+    training_fraction: float = 0.7
+    candidates: list[SweepCandidateRequest] | None = None
+    motivating_finding_ids: list[int] = []
+
+
+class SweepResponse(BaseModel):
+    """One sweep's status and (when completed) its walk-forward report."""
+
+    id: int
+    created_at: str
+    status: str
+    symbol: str
+    timeframe: str
+    config: dict[str, Any]
+    motivating_finding_ids: list[int]
+    report: dict[str, Any] | None
+
+
+def _sweep_response(sweep: Mapping[str, Any]) -> SweepResponse:
+    """Serialize a sweep row for the API."""
+    return SweepResponse(
+        id=sweep["id"],
+        created_at=sweep["created_at"].isoformat(),
+        status=sweep["status"],
+        symbol=sweep["symbol"],
+        timeframe=sweep["timeframe"],
+        config=sweep["config"],
+        motivating_finding_ids=list(sweep["motivating_finding_ids"]),
+        report=sweep["report"],
     )
 
 
@@ -821,6 +883,64 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
             )
         first_engine = next(iter(state.engines.values()))
         return CommandResponse(paused=first_engine.paused, detail=f"run {run_id} cancelled")
+
+    @protected.post("/sweeps")
+    async def start_sweep(request: SweepStartRequest) -> EvaluationStartResponse:
+        """Start a walk-forward parameter sweep (one at a time)."""
+        candidates = (
+            tuple(
+                SweepCandidate(name=candidate.name, params=candidate.params)
+                for candidate in request.candidates
+            )
+            if request.candidates
+            else DEFAULT_TREND_CANDIDATES
+        )
+        try:
+            config = SweepConfig(
+                symbol=request.symbol if request.symbol else resolve_symbol(None),
+                timeframe=request.timeframe,
+                history_days=request.history_days,
+                scenario_count=request.scenario_count,
+                lookback_candles=request.lookback_candles,
+                horizon_candles=request.horizon_candles,
+                seed=request.seed,
+                training_fraction=request.training_fraction,
+                candidates=candidates,
+                motivating_finding_ids=tuple(request.motivating_finding_ids),
+            )
+            sweep_id = await state.start_sweep(config)
+        except RuntimeError as error:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+        except ValueError as error:
+            # Bad timeframe, duplicate candidate names, out-of-range split —
+            # all caller input (ValidationError is a ValueError).
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)
+            ) from error
+        return EvaluationStartResponse(run_id=sweep_id, detail="sweep started")
+
+    @protected.get("/sweeps")
+    async def list_sweeps() -> list[SweepResponse]:
+        return [_sweep_response(sweep) for sweep in await state.evaluation_store.list_sweeps()]
+
+    @protected.get("/sweeps/{sweep_id}")
+    async def get_sweep(sweep_id: int) -> SweepResponse:
+        sweep = await state.evaluation_store.fetch_sweep(sweep_id)
+        if sweep is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail=f"no sweep {sweep_id}"
+            )
+        return _sweep_response(sweep)
+
+    @protected.post("/sweeps/{sweep_id}/cancel")
+    async def cancel_sweep(sweep_id: int) -> CommandResponse:
+        if not state.cancel_sweep(sweep_id):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"sweep {sweep_id} is not in flight",
+            )
+        first_engine = next(iter(state.engines.values()))
+        return CommandResponse(paused=first_engine.paused, detail=f"sweep {sweep_id} cancelled")
 
     @protected.get("/fills")
     async def get_fills(symbol: str | None = Query(None)) -> list[FillResponse]:

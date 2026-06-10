@@ -15,6 +15,7 @@ import type {
   ScenarioReplayResponse,
   ScenarioSummaryResponse,
   StatusResponse,
+  SweepResponse,
 } from "./types";
 
 const TOKEN_STORAGE_KEY = "tradebot_api_token";
@@ -165,4 +166,20 @@ export function acceptFinding(findingId: number): Promise<FindingResponse> {
 
 export function rejectFinding(findingId: number): Promise<FindingResponse> {
   return request<FindingResponse>(`/evaluations/findings/${String(findingId)}/reject`, "POST");
+}
+
+export function fetchSweeps(): Promise<SweepResponse[]> {
+  return request<SweepResponse[]>("/sweeps", "GET");
+}
+
+export function startSweep(body: {
+  timeframe: string;
+  history_days: number;
+}): Promise<{ run_id: number; detail: string }> {
+  // Omitting candidates sweeps the backend's default grid for the strategy.
+  return request<{ run_id: number; detail: string }>("/sweeps", "POST", body);
+}
+
+export function cancelSweep(sweepId: number): Promise<CommandResponse> {
+  return request<CommandResponse>(`/sweeps/${String(sweepId)}/cancel`, "POST");
 }

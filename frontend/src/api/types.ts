@@ -128,6 +128,17 @@ export interface FindingResponse {
   created_at: string;
 }
 
+export interface SweepResponse {
+  id: number;
+  created_at: string;
+  status: string;
+  symbol: string;
+  timeframe: string;
+  config: Record<string, unknown>;
+  motivating_finding_ids: number[];
+  report: Record<string, unknown> | null;
+}
+
 export interface EvaluationRunResponse {
   id: number;
   created_at: string;

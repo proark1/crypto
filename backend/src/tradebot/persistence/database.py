@@ -174,6 +174,24 @@ learning_findings_table = Table(
 """Mined mistake patterns with their evidence. Findings recommend; a human
 accepts or rejects — the system never changes trading rules by itself."""
 
+sweeps_table = Table(
+    "sweeps",
+    metadata,
+    Column("id", BigInteger, primary_key=True, autoincrement=True),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("status", Text, nullable=False),
+    Column("symbol", Text, nullable=False),
+    Column("timeframe", Text, nullable=False),
+    Column("config", JSONB, nullable=False),
+    Column("motivating_finding_ids", ARRAY(BigInteger), nullable=False),
+    Column("report", JSONB, nullable=True),
+)
+"""One walk-forward parameter sweep (ARCHITECTURE.md section 12.5).
+``config`` snapshots the full candidate grid and split; ``report`` carries
+training scores, validation scores, and the plain-words verdict (validated /
+overfit / baseline best). ``motivating_finding_ids`` is the lineage link from
+accepted findings to the config change they motivated."""
+
 
 _SYNC_SCHEME_PREFIXES = (
     "postgres://",

@@ -20,6 +20,7 @@ from tradebot.core.models import (
 )
 from tradebot.engine import TradingEngine
 from tradebot.evaluation.runner import EvaluationRunConfig
+from tradebot.evaluation.sweep import SweepConfig
 from tradebot.execution import FillSimulatorConfig, SimulatedExecutionAdapter
 from tradebot.persistence import CandleStore, Database, DecisionStore, EvaluationStore, FillStore
 from tradebot.persistence.database import metadata
@@ -64,6 +65,7 @@ class StubBot:
         self.engine = self.engines[self.config.symbol_list()[0]]
         self.evaluation_store = EvaluationStore(database)
         self._evaluation_running = False
+        self._sweep_running = False
 
     async def start_evaluation(self, config: EvaluationRunConfig) -> int:
         config.intervals()  # same validation order as the real manager
@@ -82,6 +84,25 @@ class StubBot:
     def cancel_evaluation(self, run_id: int) -> bool:
         if self._evaluation_running:
             self._evaluation_running = False
+            return True
+        return False
+
+    async def start_sweep(self, config: SweepConfig) -> int:
+        config.interval()  # same validation order as the real manager
+        if self._sweep_running:
+            raise RuntimeError("sweep 1 is already in progress")
+        self._sweep_running = True
+        return await self.evaluation_store.create_sweep(
+            symbol=config.symbol,
+            timeframe=config.timeframe,
+            config=config.model_dump(),
+            motivating_finding_ids=list(config.motivating_finding_ids),
+            created_at=BASE_TIME,
+        )
+
+    def cancel_sweep(self, sweep_id: int) -> bool:
+        if self._sweep_running:
+            self._sweep_running = False
             return True
         return False
 
@@ -847,6 +868,60 @@ class TestFindings:
 
         assert rejected.status_code == 200
         assert rejected.json()["status"] == "rejected"
+        assert missing.status_code == 404
+
+
+class TestSweeps:
+    async def test_start_with_default_grid_lists_and_fetches(self, database: Database) -> None:
+        bot = StubBot(database)
+        async with make_client(bot) as client:
+            started = await client.post("/sweeps", json={})
+            sweep_id = started.json()["run_id"]
+            listed = (await client.get("/sweeps")).json()
+            fetched = (await client.get(f"/sweeps/{sweep_id}")).json()
+
+        assert started.status_code == 200
+        assert [sweep["id"] for sweep in listed] == [sweep_id]
+        assert fetched["status"] == "pending"
+        assert fetched["symbol"] == "BTC/USDT"  # defaulted to the first active coin
+        # The default grid rides in the config snapshot, baseline first.
+        names = [candidate["name"] for candidate in fetched["config"]["candidates"]]
+        assert names[0].startswith("baseline")
+        assert len(names) >= 2
+        assert fetched["report"] is None
+
+    async def test_second_start_while_running_is_409(self, database: Database) -> None:
+        bot = StubBot(database)
+        async with make_client(bot) as client:
+            assert (await client.post("/sweeps", json={})).status_code == 200
+            second = await client.post("/sweeps", json={})
+        assert second.status_code == 409
+
+    async def test_bad_config_is_400(self, database: Database) -> None:
+        bot = StubBot(database)
+        duplicate = {
+            "candidates": [
+                {"name": "same", "params": {}},
+                {"name": "same", "params": {}},
+            ]
+        }
+        async with make_client(bot) as client:
+            bad_timeframe = await client.post("/sweeps", json={"timeframe": "7m"})
+            duplicate_names = await client.post("/sweeps", json=duplicate)
+        assert bad_timeframe.status_code == 400
+        assert duplicate_names.status_code == 400
+
+    async def test_cancel_and_unknown_sweep(self, database: Database) -> None:
+        bot = StubBot(database)
+        async with make_client(bot) as client:
+            started = await client.post("/sweeps", json={})
+            sweep_id = started.json()["run_id"]
+            cancelled = await client.post(f"/sweeps/{sweep_id}/cancel")
+            again = await client.post(f"/sweeps/{sweep_id}/cancel")
+            missing = await client.get("/sweeps/9999")
+
+        assert cancelled.status_code == 200
+        assert again.status_code == 409
         assert missing.status_code == 404
 
 
