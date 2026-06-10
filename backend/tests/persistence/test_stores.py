@@ -13,7 +13,15 @@ BASE_TIME = datetime(2026, 1, 2, 0, 0, tzinfo=UTC)
 class TestDsnCoercion:
     def test_platform_default_schemes_become_asyncpg(self) -> None:
         """Railway/Heroku-style DSNs must not crash the deploy on psycopg2."""
-        for scheme in ("postgres://", "postgresql://", "postgresql+psycopg2://"):
+        schemes = (
+            "postgres://",
+            "postgresql://",
+            "postgresql+psycopg2://",
+            "postgresql+psycopg://",
+            "POSTGRESQL://",  # schemes are case-insensitive, RFC 3986
+            "  postgresql://",  # pasted env vars carry stray whitespace
+        )
+        for scheme in schemes:
             coerced = coerce_async_dsn(f"{scheme}user:pass@host:5432/db")
             assert coerced == "postgresql+asyncpg://user:pass@host:5432/db"
 

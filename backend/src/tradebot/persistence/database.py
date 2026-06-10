@@ -83,12 +83,16 @@ def coerce_async_dsn(url: str) -> str:
     standard Postgres URL can be pasted into ``TRADEBOT_DATABASE_URL``
     without the deploy crash-looping on a driver import.
     """
-    if url.startswith("postgresql+asyncpg://"):
-        return url
+    # Schemes are case-insensitive (RFC 3986 §3.1), and copy-pasted env
+    # vars routinely carry stray whitespace.
+    cleaned = url.strip()
+    lowered = cleaned.lower()
+    if lowered.startswith("postgresql+asyncpg://"):
+        return cleaned
     for prefix in _SYNC_SCHEME_PREFIXES:
-        if url.startswith(prefix):
-            return "postgresql+asyncpg://" + url.removeprefix(prefix)
-    return url
+        if lowered.startswith(prefix):
+            return "postgresql+asyncpg://" + cleaned[len(prefix) :]
+    return cleaned
 
 
 class Database:
