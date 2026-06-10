@@ -13,8 +13,8 @@ This document is the target design. Implementation status as of June 2026
 | Market data: live CCXT feed, closed-candle tracking, backfill, validation (§4.1) | **Done** — single symbol, 1m candles; multi-timeframe aggregation missing |
 | Indicators: incremental EMA, RSI, ATR (§4.2) | **Done** — tested against reference values |
 | Strategies: trend-following EMA crossover (§4.2) | **Done** — one strategy; the pluggable registry is the pattern, more strategies pending |
-| Backtester: runner, pessimistic fill simulator, golden test (§5) | **Done** — walk-forward optimizer missing |
-| Risk manager: sizing, per-trade limits, circuit breakers (§4.3) | **Done** — daily-loss + drawdown trips (human reset), loss-streak cooldown, daily entry cap |
+| Backtester: runner, pessimistic fill simulator, golden test (§5) | **Done** — walk-forward splitting feeds the parameter sweeps (§12.5) |
+| Risk manager: sizing, per-trade limits, circuit breakers (§4.3) | **Done** — daily-loss + drawdown trips (human reset), loss-streak cooldown, daily entry cap, account-wide exposure cap (open positions treated as one fully correlated block; per-coin caps alone understate crypto risk) |
 | Execution: simulated adapter (backtest + paper) (§4.4) | **Done for paper** — live adapter, exchange-native stops, partial-fill handling are Phase 3 (see LIVE_TRADING_CHECKLIST.md) |
 | Portfolio + persistence: positions, PnL, Postgres journal (§4.5) | **Done** — journal-replay restart recovery; nightly backups missing |
 | Trading engine + worker (§4.2, §7.1) | **Done** — single symbol, paper mode only by hard guard |
@@ -23,7 +23,7 @@ This document is the target design. Implementation status as of June 2026
 | Telegram notifications (§6.2) | **Done** — alerts only; command handling missing |
 | Dashboard: status, chart, decisions, proposals, controls (§6.1) | **Done** — per-coin view with coin switcher; wizard, journal, research screens missing |
 | Multi-coin support (§4.2) | **Done** — per-symbol feed+engine, shared account/breakers, per-coin dashboard, runtime add/remove via API + UI (coins persisted in Postgres; env var seeds first boot) |
-| Evaluation & training: blind walk-forward (§12) | **Done** — foundations, scenario engine (leak-tested), run orchestration + API, research screen, scenario replay viewer, learning findings (mined + human accept/reject), walk-forward parameter sweeps with explicit overfit verdicts |
+| Evaluation & training: blind walk-forward (§12) | **Done** — foundations, scenario engine (leak-tested), run orchestration + API, research screen, scenario replay viewer, learning findings (mined + human accept/reject), walk-forward parameter sweeps with explicit overfit verdicts, cross-family candidates, multiple validation windows, bootstrap confidence intervals + Bonferroni-corrected significance on every verdict; evaluation runs grade the production strategy shape (regime-routed families, self-classified per scenario) |
 | News pipeline, regime gates, signal fusion (§5.2, §5.3) | **Partial** — BTC regime gate done (ADX trend/range + drawdown risk-off; family routing: trend entries in trends, mean-reversion entries in ranges; exits never gated; verdicts journaled as `gated` decisions); sentiment tighteners done (Fear & Greed extremes, BTC dominance surges, broad negative news flow — advisory, one-way, stale data contributes nothing); news pipeline done defensively (CryptoPanic polling + keyword classifier, negative-news coin flags, env-configured event windows); confirmation filters (order-flow/funding, P2 data) and automated calendar ingestion missing |
 | Mean-reversion strategy family (§5.2 routing) | **Done** — RSI oversold-recovery entries, midline exits, same ATR stop convention as trend; regime-routed per coin, both families' indicators always warm, exits pass from either family in any regime |
 | Observability: dead-man's switch, metrics, DB backups (§4.9, §7) | **Done** — heartbeat ping gated on feed freshness; /metrics (feed lag, equity, breakers, bus counters) behind the bearer token; scheduled gzipped-JSONL backups to S3-compatible storage with exact-Decimal restore (production restore drill pending, see checklist) |
@@ -584,11 +584,22 @@ ids that motivated the sweep — the §12.5 lineage link).
 
 ### 12.5 Training loop
 
-Parameter sweeps run on a training period and are validated on a later,
-untouched period (walk-forward). A config that wins only on the data it was
-tuned on is overfit, and the report says so explicitly. Accepted findings
-link to the config change they motivated, so every strategy version carries
-its lineage: what changed, why, and whether validation confirmed it.
+Parameter sweeps run on a training period and are validated on later,
+untouched periods (walk-forward). Candidates may come from any registered
+strategy family, so a sweep can pit families against each other on
+identical scenarios; the winner is selected once, on the span that
+strictly precedes every validation slice (re-selecting per window would
+train on earlier windows' validation data), and then tested on each of
+the chronological validation windows so the report shows whether the edge
+persisted or lived in one lucky stretch. A config that wins only on the
+data it was tuned on is overfit, and the report says so explicitly.
+Because a grid of N candidates gets N chances at a lucky winner, a
+challenger is only called *validated* when its edge over the baseline
+clears a one-sided bootstrap test at the Bonferroni-corrected
+significance level; every candidate's expectancy also carries a 95%
+bootstrap confidence interval. Accepted findings link to the config
+change they motivated, so every strategy version carries its lineage:
+what changed, why, and whether validation confirmed it.
 
 ### 12.6 Delivery status
 
@@ -602,10 +613,17 @@ mechanical, evidence-backed patterns (losing condition buckets, chronic
 late entries / early exits, missed opportunities, wrong holds — thresholds
 frozen in `evaluation/learning.py`), and each finding awaits an explicit
 human accept/reject through the API; the verdict is recorded once and never
-flipped. Sweeps (`evaluation/sweep.py`): candidate parameter sets are
-scored by the same blind pipeline on a chronological training slice; only
-the training winner and the baseline are scored on the untouched validation
-slice, and the report's verdict is plain words — *validated*, *overfit*
-("wins only on the data it was tuned on"), *baseline best*, or
-*insufficient evidence*. Sweeps and findings recommend; applying a config
-change remains a human action.
+flipped. Sweeps (`evaluation/sweep.py`): candidate parameter sets — from
+any registered strategy family — are scored by the same blind pipeline on
+a chronological training slice; only the training winner and the baseline
+are scored on the untouched validation windows, with bootstrap confidence
+intervals and a Bonferroni-corrected superiority test
+(`evaluation/statistics.py`), and the report's verdict is plain words —
+*validated* (now meaning statistically validated), *overfit* ("wins only
+on the data it was tuned on"), *baseline best*, or *insufficient
+evidence* (including a real but statistically unproven edge). Evaluation
+runs grade the strategy shape production trades: the regime-routed family
+router, with the regime self-classified from each scenario's own candles
+(`evaluation/strategy.py` documents the divergence from the live
+reference-market detector, which scenarios must not read). Sweeps and
+findings recommend; applying a config change remains a human action.
