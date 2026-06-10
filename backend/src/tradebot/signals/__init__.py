@@ -14,6 +14,7 @@ from tradebot.signals.regime import (
     WARMING_UP,
     MarketRegimeDetector,
     Regime,
+    RegimeClassifier,
     RegimeConfig,
     RegimeGate,
 )
@@ -29,6 +30,7 @@ __all__ = [
     "MarketRegimeDetector",
     "MarketSentiment",
     "Regime",
+    "RegimeClassifier",
     "RegimeConfig",
     "RegimeGate",
     "SentimentConfig",

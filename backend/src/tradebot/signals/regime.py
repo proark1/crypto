@@ -85,28 +85,21 @@ REVERSION_STRATEGY_NAMES = frozenset({"mean_reversion"})
 is treated as trend family for routing purposes."""
 
 
-class MarketRegimeDetector:
-    """Classifies one reference symbol's regime from its 1m candle stream.
+class RegimeClassifier:
+    """Pure per-bucket regime classification: ADX strength + drawdown risk-off.
 
-    Candles arrive via :meth:`update` (the worker subscribes it to the
-    bus) or :meth:`prime` (stored history at startup, so the gate does not
-    spend its first day warming up). Duplicate or older candles — bus
-    replays after a reconnect — are dropped silently; only genuinely new
-    time advances the state.
+    Consumes already-bucketed candles (one per classification timeframe)
+    and keeps the latest :class:`Regime`. Split out of the detector so the
+    evaluation system can classify a scenario's own candle stream with
+    exactly the production thresholds — one classification, two consumers.
     """
 
     def __init__(self, symbol: str, config: RegimeConfig | None = None) -> None:
-        """Track ``symbol`` (the market-wide reference, BTC by convention)."""
+        """``symbol`` only labels the reasons; candles arrive pre-filtered."""
         self.symbol = symbol
         self._config = config or RegimeConfig()
-        self._aggregator = (
-            None
-            if self._config.timeframe == CandleInterval.M1
-            else TimeframeAggregator(self._config.timeframe)
-        )
         self._adx = Adx(self._config.adx_period)
         self._closes: deque[float] = deque(maxlen=self._config.drawdown_window_candles)
-        self._last_m1_open_time: datetime | None = None
         self._regime = Regime(
             label=WARMING_UP,
             reasons=(f"regime warming up: no {symbol} candles seen yet",),
@@ -122,37 +115,16 @@ class MarketRegimeDetector:
         """The latest classification (``warming_up`` until ADX is formed)."""
         return self._regime
 
-    def prime(self, candles: list[Candle]) -> None:
-        """Warm up from stored 1m history (chronological order)."""
-        for candle in candles:
-            self.update(candle)
+    def classify(self, bucket: Candle) -> Regime:
+        """Consume one bucket candle and return the updated regime.
 
-    def attach_to(self, bus: EventBus) -> None:
-        """Follow the reference symbol's live candles on ``bus``."""
-        bus.subscribe(CandleClosed, self._on_candle_event)
-
-    async def _on_candle_event(self, event: CandleClosed) -> None:
-        self.update(event.candle)
-
-    def update(self, candle: Candle) -> None:
-        """Consume one closed 1m candle of the reference symbol."""
-        if candle.symbol != self.symbol or candle.interval != CandleInterval.M1:
-            return
-        if self._last_m1_open_time is not None and candle.open_time <= self._last_m1_open_time:
-            return  # bus replay after a reconnect; already counted
-        self._last_m1_open_time = candle.open_time
-        if self._aggregator is None:
-            self._classify(candle)
-            return
-        completed = self._aggregator.add(candle)
-        if completed is not None:
-            self._classify(completed)
-
-    def _classify(self, bucket: Candle) -> None:
+        The bucket's own interval labels the evidence, so the reasons stay
+        truthful whatever timeframe the caller classifies on.
+        """
         close = float(bucket.close_quote)
         adx = self._adx.update(float(bucket.high_quote), float(bucket.low_quote), close)
         self._closes.append(close)
-        timeframe = self._config.timeframe.value
+        timeframe = bucket.interval.value
 
         if adx is None:
             self._regime = Regime(
@@ -163,7 +135,7 @@ class MarketRegimeDetector:
                 ),
                 as_of=bucket.close_time,
             )
-            return
+            return self._regime
         peak = max(self._closes)
         drawdown = (peak - close) / peak if peak > 0 else 0.0
         if drawdown >= self._config.risk_off_drawdown_fraction:
@@ -193,6 +165,65 @@ class MarketRegimeDetector:
                 ),
                 as_of=bucket.close_time,
             )
+        return self._regime
+
+
+class MarketRegimeDetector:
+    """Classifies one reference symbol's regime from its 1m candle stream.
+
+    Candles arrive via :meth:`update` (the worker subscribes it to the
+    bus) or :meth:`prime` (stored history at startup, so the gate does not
+    spend its first day warming up). Duplicate or older candles — bus
+    replays after a reconnect — are dropped silently; only genuinely new
+    time advances the state.
+    """
+
+    def __init__(self, symbol: str, config: RegimeConfig | None = None) -> None:
+        """Track ``symbol`` (the market-wide reference, BTC by convention)."""
+        self.symbol = symbol
+        self._classifier = RegimeClassifier(symbol, config)
+        self._aggregator = (
+            None
+            if self._classifier.config.timeframe == CandleInterval.M1
+            else TimeframeAggregator(self._classifier.config.timeframe)
+        )
+        self._last_m1_open_time: datetime | None = None
+
+    @property
+    def config(self) -> RegimeConfig:
+        """The frozen classification constants."""
+        return self._classifier.config
+
+    @property
+    def regime(self) -> Regime:
+        """The latest classification (``warming_up`` until ADX is formed)."""
+        return self._classifier.regime
+
+    def prime(self, candles: list[Candle]) -> None:
+        """Warm up from stored 1m history (chronological order)."""
+        for candle in candles:
+            self.update(candle)
+
+    def attach_to(self, bus: EventBus) -> None:
+        """Follow the reference symbol's live candles on ``bus``."""
+        bus.subscribe(CandleClosed, self._on_candle_event)
+
+    async def _on_candle_event(self, event: CandleClosed) -> None:
+        self.update(event.candle)
+
+    def update(self, candle: Candle) -> None:
+        """Consume one closed 1m candle of the reference symbol."""
+        if candle.symbol != self.symbol or candle.interval != CandleInterval.M1:
+            return
+        if self._last_m1_open_time is not None and candle.open_time <= self._last_m1_open_time:
+            return  # bus replay after a reconnect; already counted
+        self._last_m1_open_time = candle.open_time
+        if self._aggregator is None:
+            self._classifier.classify(candle)
+            return
+        completed = self._aggregator.add(candle)
+        if completed is not None:
+            self._classifier.classify(completed)
 
 
 class RegimeGate:
