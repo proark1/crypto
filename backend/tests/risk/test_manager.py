@@ -8,10 +8,10 @@ from tradebot.risk import BreakerConfig, RiskConfig, RiskManager
 SIGNAL_TIME = datetime(2026, 1, 2, 3, 4, tzinfo=UTC)
 
 
-def make_signal(side: Side, stop: str) -> Signal:
+def make_signal(side: Side, stop: str, symbol: str = "BTC/USDT") -> Signal:
     return Signal(
         strategy_name="trend_following",
-        symbol="BTC/USDT",
+        symbol=symbol,
         side=side,
         confidence=1.0,
         stop_price_quote=Decimal(stop),
@@ -23,21 +23,25 @@ def make_manager(
     balance: str = "10000",
     risk_fraction: str = "0.01",
     max_position_fraction: str = "0.25",
+    max_total_exposure_fraction: str = "0.5",
 ) -> tuple[RiskManager, Portfolio]:
     portfolio = Portfolio(Decimal(balance))
     config = RiskConfig(
         risk_per_trade_fraction=Decimal(risk_fraction),
         max_position_fraction=Decimal(max_position_fraction),
+        max_total_exposure_fraction=Decimal(max_total_exposure_fraction),
         fee_buffer_fraction=Decimal("0.005"),
     )
     return RiskManager(config, portfolio), portfolio
 
 
-def open_position(portfolio: Portfolio, price: str, quantity: str) -> None:
+def open_position(
+    portfolio: Portfolio, price: str, quantity: str, symbol: str = "BTC/USDT"
+) -> None:
     portfolio.apply_fill(
         Fill(
             client_order_id="seed",
-            symbol="BTC/USDT",
+            symbol=symbol,
             side=Side.BUY,
             price_quote=Decimal(price),
             quantity_base=Decimal(quantity),
@@ -73,7 +77,10 @@ class TestEntrySizing:
         # Risk budget alone would size 100 units (5000 risk / 50 stop distance),
         # a 10000 notional — but only 10000 * (1 - fee buffer) = 9950 is spendable.
         manager, _ = make_manager(
-            balance="10000", risk_fraction="0.50", max_position_fraction="1.0"
+            balance="10000",
+            risk_fraction="0.50",
+            max_position_fraction="1.0",
+            max_total_exposure_fraction="1.0",
         )
         order = manager.evaluate(make_signal(Side.BUY, stop="50"), Decimal("100"))
 
@@ -288,6 +295,57 @@ class TestMultiSymbolEquity:
         # No marks cached at all; the exit must still pass.
         exit_order = manager.evaluate(make_signal(Side.SELL, stop="100"), Decimal("100"))
         assert exit_order is not None
+
+
+class TestTotalExposureCap:
+    """Open positions are one correlated block: entries share one budget."""
+
+    def test_entry_is_downsized_to_the_remaining_exposure_headroom(self) -> None:
+        manager, portfolio = make_manager(risk_fraction="0.05", max_total_exposure_fraction="0.4")
+        open_position(portfolio, price="100", quantity="30")  # 3000 of 4000 budget
+        manager.on_candle(make_candle("100"))
+
+        order = manager.evaluate(
+            make_signal(Side.BUY, stop="95", symbol="ETH/USDT"), Decimal("100")
+        )
+
+        assert order is not None
+        # Risk budget alone would size 100 units, the per-position cap 25 —
+        # but only 1000 quote of exposure headroom remains: 10 units.
+        assert order.quantity_base == Decimal("10")
+
+    def test_entry_is_vetoed_when_the_exposure_budget_is_spent(self) -> None:
+        manager, portfolio = make_manager(max_total_exposure_fraction="0.5")
+        open_position(portfolio, price="100", quantity="50")  # exactly the budget
+        manager.on_candle(make_candle("100"))
+
+        assert (
+            manager.evaluate(make_signal(Side.BUY, stop="95", symbol="ETH/USDT"), Decimal("100"))
+            is None
+        )
+
+    def test_exposure_is_measured_at_marks_not_cost(self) -> None:
+        """A position that ran up consumes more budget than it cost."""
+        manager, portfolio = make_manager(risk_fraction="0.05", max_total_exposure_fraction="0.4")
+        open_position(portfolio, price="100", quantity="25")
+        manager.on_candle(make_candle("120"))  # 25 * 120 = 3000 exposure
+
+        order = manager.evaluate(
+            make_signal(Side.BUY, stop="95", symbol="ETH/USDT"), Decimal("100")
+        )
+
+        assert order is not None
+        # equity 7500 free + 3000 marked = 10500; budget 4200 - 3000 = 1200.
+        assert order.quantity_base == Decimal("12")
+
+    def test_exits_are_never_blocked_by_the_exposure_cap(self) -> None:
+        manager, portfolio = make_manager(max_total_exposure_fraction="0.1")
+        open_position(portfolio, price="100", quantity="60")  # far over budget
+
+        exit_order = manager.evaluate(make_signal(Side.SELL, stop="100"), Decimal("100"))
+
+        assert exit_order is not None
+        assert exit_order.quantity_base == Decimal("60")
 
 
 class TestExits:
