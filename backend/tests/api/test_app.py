@@ -780,6 +780,76 @@ class TestScenarioReplay:
         assert [row["scenario_id"] for row in body] == [scenario_id]
 
 
+class TestFindings:
+    """Findings carry the human accept/reject verdict — recorded, never repeated."""
+
+    @staticmethod
+    async def seed_finding(bot: StubBot) -> tuple[int, int]:
+        """Insert a run with one proposed finding; returns (run, finding) ids."""
+        from tradebot.evaluation.models import LearningFinding
+
+        config = EvaluationRunConfig(symbols=("BTC/USDT",))
+        run_id = await bot.evaluation_store.create_run(
+            ["BTC/USDT"], ["1h"], config.model_dump(), "test", 1, BASE_TIME
+        )
+        finding_id = await bot.evaluation_store.insert_finding(
+            LearningFinding(
+                run_id=run_id,
+                pattern="entries lose money when trend is ranging",
+                evidence_scenario_ids=(1, 2, 3),
+                affected_count=3,
+                average_r_impact=Decimal("-0.4"),
+                suggestion="gate entries behind extra confirmation when trend is ranging",
+                confidence="low",
+                created_at=BASE_TIME,
+            )
+        )
+        return run_id, finding_id
+
+    async def test_run_findings_are_listed(self, database: Database) -> None:
+        bot = StubBot(database)
+        run_id, finding_id = await self.seed_finding(bot)
+
+        async with make_client(bot) as client:
+            body = (await client.get(f"/evaluations/{run_id}/findings")).json()
+            missing = await client.get("/evaluations/9999/findings")
+
+        assert len(body) == 1
+        assert body[0]["id"] == finding_id
+        assert body[0]["status"] == "proposed"
+        assert body[0]["average_r_impact"] == "-0.4"
+        assert body[0]["evidence_scenario_ids"] == [1, 2, 3]
+        assert missing.status_code == 404
+
+    async def test_accept_records_the_verdict_once(self, database: Database) -> None:
+        bot = StubBot(database)
+        run_id, finding_id = await self.seed_finding(bot)
+
+        async with make_client(bot) as client:
+            accepted = await client.post(f"/evaluations/findings/{finding_id}/accept")
+            repeat = await client.post(f"/evaluations/findings/{finding_id}/reject")
+            listed = (await client.get(f"/evaluations/{run_id}/findings")).json()
+
+        assert accepted.status_code == 200
+        assert accepted.json()["status"] == "accepted"
+        # The verdict is lineage (§12.5): flipping it would rewrite history.
+        assert repeat.status_code == 409
+        assert "already accepted" in repeat.json()["detail"]
+        assert listed[0]["status"] == "accepted"
+
+    async def test_reject_and_unknown_finding(self, database: Database) -> None:
+        bot = StubBot(database)
+        _, finding_id = await self.seed_finding(bot)
+
+        async with make_client(bot) as client:
+            rejected = await client.post(f"/evaluations/findings/{finding_id}/reject")
+            missing = await client.post("/evaluations/findings/9999/accept")
+
+        assert rejected.status_code == 200
+        assert rejected.json()["status"] == "rejected"
+        assert missing.status_code == 404
+
+
 class TestFills:
     async def test_journal_is_returned_with_string_amounts(self, database: Database) -> None:
         bot = StubBot(database)

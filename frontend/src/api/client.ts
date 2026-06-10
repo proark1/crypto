@@ -10,6 +10,7 @@ import type {
   CommandResponse,
   DecisionResponse,
   FillResponse,
+  FindingResponse,
   ProposalResponse,
   ScenarioReplayResponse,
   ScenarioSummaryResponse,
@@ -152,4 +153,16 @@ export function fetchScenarios(runId: number): Promise<ScenarioSummaryResponse[]
 
 export function fetchScenarioReplay(scenarioId: number): Promise<ScenarioReplayResponse> {
   return request<ScenarioReplayResponse>(`/evaluations/scenarios/${String(scenarioId)}`, "GET");
+}
+
+export function fetchFindings(runId: number): Promise<FindingResponse[]> {
+  return request<FindingResponse[]>(`/evaluations/${String(runId)}/findings`, "GET");
+}
+
+export function acceptFinding(findingId: number): Promise<FindingResponse> {
+  return request<FindingResponse>(`/evaluations/findings/${String(findingId)}/accept`, "POST");
+}
+
+export function rejectFinding(findingId: number): Promise<FindingResponse> {
+  return request<FindingResponse>(`/evaluations/findings/${String(findingId)}/reject`, "POST");
 }

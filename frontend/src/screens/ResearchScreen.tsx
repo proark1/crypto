@@ -1,17 +1,22 @@
 import { useCallback, useEffect, useState } from "react";
 
 import {
+  acceptFinding,
   cancelEvaluation,
   fetchEvaluations,
+  fetchFindings,
   fetchScenarioReplay,
   fetchScenarios,
+  rejectFinding,
   startEvaluation,
 } from "../api/client";
 import type {
   EvaluationRunResponse,
+  FindingResponse,
   ScenarioReplayResponse,
   ScenarioSummaryResponse,
 } from "../api/types";
+import { FindingsPanel } from "../components/FindingsPanel";
 import { ScenarioReplay } from "../components/ScenarioReplay";
 
 const POLL_INTERVAL_MS = 3000;
@@ -178,6 +183,7 @@ export function ResearchScreen() {
   const [timeframe, setTimeframe] = useState("1h");
   const [notice, setNotice] = useState<string | null>(null);
   const [scenarios, setScenarios] = useState<ScenarioSummaryResponse[]>([]);
+  const [findings, setFindings] = useState<FindingResponse[]>([]);
   const [replay, setReplay] = useState<ScenarioReplayResponse | null>(null);
 
   const refresh = useCallback(async () => {
@@ -206,18 +212,34 @@ export function ResearchScreen() {
   useEffect(() => {
     setReplay(null);
     setScenarios([]);
+    setFindings([]);
     if (selectedRunId === null) {
       return;
     }
-    fetchScenarios(selectedRunId).then(setScenarios, () => {
-      // The overview screen owns auth/error UX; research polls quietly.
-    });
+    // The overview screen owns auth/error UX; research polls quietly.
+    fetchScenarios(selectedRunId).then(setScenarios, () => undefined);
+    fetchFindings(selectedRunId).then(setFindings, () => undefined);
   }, [selectedRunId, selectedRunStatus]);
 
   const openReplay = (scenarioId: number) => {
     fetchScenarioReplay(scenarioId).then(setReplay, (caught: unknown) => {
       setNotice(caught instanceof Error ? caught.message : "failed to load the replay");
     });
+  };
+
+  const decideFinding = (decide: (findingId: number) => Promise<FindingResponse>) => {
+    return (findingId: number) => {
+      decide(findingId).then(
+        (updated) => {
+          setFindings((current) =>
+            current.map((finding) => (finding.id === updated.id ? updated : finding)),
+          );
+        },
+        (caught: unknown) => {
+          setNotice(caught instanceof Error ? caught.message : "failed to record the verdict");
+        },
+      );
+    };
   };
 
   return (
@@ -334,6 +356,12 @@ export function ResearchScreen() {
           ) : selected ? (
             <div className="space-y-4">
               <RunReport run={selected} />
+              <FindingsPanel
+                findings={findings}
+                onAccept={decideFinding(acceptFinding)}
+                onReject={decideFinding(rejectFinding)}
+                onReplayEvidence={openReplay}
+              />
               <ScenarioTable scenarios={scenarios} onReplay={openReplay} />
             </div>
           ) : (

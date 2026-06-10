@@ -20,6 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from tradebot.core.models import CandleInterval, utc_now
 from tradebot.evaluation.engine import ScenarioEvaluator
 from tradebot.evaluation.generator import GeneratorConfig, generate_specs
+from tradebot.evaluation.learning import mine_findings
 from tradebot.evaluation.models import RunStatus, Scenario, ScenarioResult
 from tradebot.evaluation.reports import build_summary
 from tradebot.marketdata import aggregate_candles
@@ -71,8 +72,18 @@ class EvaluationRunner:
         try:
             await self._store.set_run_status(run_id, RunStatus.RUNNING)
             records = await self._evaluate_all(run_id, config)
+            # Findings land before the run flips to completed, so a
+            # "completed" run is always fully mined — never half-reported.
+            findings = mine_findings(run_id, records, utc_now())
+            for finding in findings:
+                await self._store.insert_finding(finding)
             await self._store.complete_run(run_id, build_summary(records))
-            logger.info("evaluation run %d completed: %d scenarios", run_id, len(records))
+            logger.info(
+                "evaluation run %d completed: %d scenarios, %d findings",
+                run_id,
+                len(records),
+                len(findings),
+            )
         except asyncio.CancelledError:
             # Shutdown or user cancel: say so, never look half-done silently.
             await self._store.set_run_status(run_id, RunStatus.INTERRUPTED)

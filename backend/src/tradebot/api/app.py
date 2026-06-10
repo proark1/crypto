@@ -22,6 +22,7 @@ from pydantic import BaseModel
 from tradebot.core.config import AppConfig
 from tradebot.core.models import Candle, CandleInterval
 from tradebot.engine import TradingEngine
+from tradebot.evaluation.models import LearningFinding
 from tradebot.evaluation.replay import load_replay
 from tradebot.evaluation.runner import EvaluationRunConfig
 from tradebot.persistence import CandleStore, DecisionStore, EvaluationStore, FillStore
@@ -289,6 +290,37 @@ def _scenario_summary(row: Mapping[str, Any]) -> ScenarioSummaryResponse:
         verdict=row["verdict"],
         r_multiple=_optional_str(row["r_multiple"]),
         timing=row["timing"],
+    )
+
+
+class FindingResponse(BaseModel):
+    """One mined mistake pattern awaiting (or carrying) the human verdict."""
+
+    id: int
+    run_id: int
+    pattern: str
+    evidence_scenario_ids: list[int]
+    affected_count: int
+    average_r_impact: str
+    suggestion: str
+    confidence: str
+    status: str
+    created_at: str
+
+
+def _finding_response(finding_id: int, finding: LearningFinding) -> FindingResponse:
+    """Serialize one finding for the API."""
+    return FindingResponse(
+        id=finding_id,
+        run_id=finding.run_id,
+        pattern=finding.pattern,
+        evidence_scenario_ids=list(finding.evidence_scenario_ids),
+        affected_count=finding.affected_count,
+        average_r_impact=str(finding.average_r_impact),
+        suggestion=finding.suggestion,
+        confidence=finding.confidence,
+        status=finding.status,
+        created_at=finding.created_at.isoformat(),
     )
 
 
@@ -737,6 +769,48 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
             window=[_candle_response(candle) for candle in window],
             horizon=[_candle_response(candle) for candle in horizon],
         )
+
+    @protected.get("/evaluations/{run_id}/findings")
+    async def list_evaluation_findings(run_id: int) -> list[FindingResponse]:
+        """List the run's mined mistake patterns, each awaiting accept/reject."""
+        if await state.evaluation_store.fetch_run(run_id) is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail=f"no evaluation run {run_id}"
+            )
+        findings = await state.evaluation_store.fetch_findings(run_id)
+        return [_finding_response(finding_id, finding) for finding_id, finding in findings]
+
+    async def decide_finding(finding_id: int, verdict: str) -> FindingResponse:
+        """Apply the human verdict; first answer wins, repeats are conflicts."""
+        finding = await state.evaluation_store.fetch_finding(finding_id)
+        if finding is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail=f"no finding {finding_id}"
+            )
+        if finding.status != "proposed":
+            # The verdict is part of the run's lineage (§12.5); silently
+            # flipping it would rewrite history, so repeats are refused.
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"finding {finding_id} is already {finding.status}",
+            )
+        await state.evaluation_store.set_finding_status(finding_id, verdict)
+        return _finding_response(finding_id, finding.model_copy(update={"status": verdict}))
+
+    @protected.post("/evaluations/findings/{finding_id}/accept")
+    async def accept_finding(finding_id: int) -> FindingResponse:
+        """Accept a finding — the human judgement, recorded for lineage.
+
+        Accepting records the judgement and nothing else: strategy
+        configuration is never touched by the evaluation system
+        (ARCHITECTURE.md section 12).
+        """
+        return await decide_finding(finding_id, "accepted")
+
+    @protected.post("/evaluations/findings/{finding_id}/reject")
+    async def reject_finding(finding_id: int) -> FindingResponse:
+        """Reject a finding; it stays on record with its verdict."""
+        return await decide_finding(finding_id, "rejected")
 
     @protected.post("/evaluations/{run_id}/cancel")
     async def cancel_evaluation(run_id: int) -> CommandResponse:

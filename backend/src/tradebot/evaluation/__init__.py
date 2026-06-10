@@ -10,6 +10,7 @@ changes trading rules; improvements always pass through a human.
 from tradebot.evaluation.classifier import classify_window, window_volatility
 from tradebot.evaluation.engine import EvaluatedDecision, ScenarioEvaluator, ScenarioSpec
 from tradebot.evaluation.generator import GeneratorConfig, generate_specs
+from tradebot.evaluation.learning import mine_findings
 from tradebot.evaluation.models import (
     EventLabel,
     LearningFinding,
@@ -47,5 +48,6 @@ __all__ = [
     "VolatilityLabel",
     "classify_window",
     "generate_specs",
+    "mine_findings",
     "window_volatility",
 ]
