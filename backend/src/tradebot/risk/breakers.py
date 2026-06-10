@@ -78,6 +78,7 @@ class CircuitBreakers:
         self._peak_equity_quote: Decimal | None = None
         self._consecutive_losses = 0
         self._cooldown_until: datetime | None = None
+        self._last_observed_time: datetime | None = None
 
     @property
     def tripped_reason(self) -> str | None:
@@ -102,6 +103,7 @@ class CircuitBreakers:
         resets the entry count; the peak only ever rises.
         """
         now = _require_aware(now)
+        self._last_observed_time = now
         today = now.date()
         if today != self._day:
             self._day = today
@@ -156,8 +158,18 @@ class CircuitBreakers:
         self._entries_today += 1
 
     def entry_block_reason(self, now: datetime) -> str | None:
-        """Why a new entry must be vetoed right now, or ``None`` to allow it."""
+        """Why a new entry must be vetoed right now, or ``None`` to allow it.
+
+        ``now`` is the signal's timestamp, which can be stale: a co-pilot
+        proposal approved hours after creation re-runs risk checks with the
+        original signal time. The brakes judge the latest market time the
+        breakers have observed instead, so an old signal can neither dodge a
+        cooldown that started after it nor stay blocked by one that has
+        since expired.
+        """
         now = _require_aware(now)
+        if self._last_observed_time is not None and self._last_observed_time > now:
+            now = self._last_observed_time
         if self._tripped_reason is not None:
             return f"circuit breaker tripped ({self._tripped_reason}); reset required"
         if self._cooldown_until is not None:

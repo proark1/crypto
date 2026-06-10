@@ -110,6 +110,28 @@ class TestLossStreakCooldown:
 
         assert breakers.entry_block_reason(BASE_TIME) is None
 
+    def test_stale_signal_time_cannot_dodge_an_active_cooldown(self) -> None:
+        """Co-pilot: a proposal created before the cooldown, approved during it."""
+        breakers = make_breakers(streak=1, cooldown_hours=4)
+        breakers.record_closed_trade(Decimal("-10"), BASE_TIME + timedelta(hours=1))
+        # Market time has advanced into the cooldown window...
+        breakers.observe(BASE_TIME + timedelta(hours=2), Decimal("10000"))
+
+        # ...so the signal's pre-cooldown creation time must not slip through.
+        assert breakers.entry_block_reason(BASE_TIME) is not None
+
+    def test_stale_signal_time_cannot_resurrect_an_expired_cooldown(self) -> None:
+        """Co-pilot: a proposal created during the cooldown, approved after it."""
+        breakers = make_breakers(streak=1, cooldown_hours=4)
+        breakers.record_closed_trade(Decimal("-10"), BASE_TIME)
+        created_during_cooldown = BASE_TIME + timedelta(hours=1)
+        assert breakers.entry_block_reason(created_during_cooldown) is not None
+
+        # Market time has moved past the cooldown; the old signal time must
+        # not keep the entry blocked at approval.
+        breakers.observe(BASE_TIME + timedelta(hours=5), Decimal("10000"))
+        assert breakers.entry_block_reason(created_during_cooldown) is None
+
     def test_reset_clears_an_active_cooldown(self) -> None:
         breakers = make_breakers(streak=1, cooldown_hours=4)
         breakers.record_closed_trade(Decimal("-10"), BASE_TIME)

@@ -207,6 +207,44 @@ class TestBreakerIntegration:
         )
         assert manager.evaluate(late, Decimal("100")) is not None
 
+    def test_partial_exit_fills_count_as_one_round_trip(self) -> None:
+        """One losing exit filled in parts must not be a streak of losses."""
+        manager, portfolio = self.make_braked_manager(
+            BreakerConfig(
+                loss_streak_threshold=2,
+                loss_streak_cooldown=timedelta(hours=4),
+                max_daily_loss_fraction=Decimal("0.99"),
+                max_drawdown_fraction=Decimal("0.99"),
+            )
+        )
+        buy = Fill(
+            client_order_id="buy",
+            symbol="BTC/USDT",
+            side=Side.BUY,
+            price_quote=Decimal("100"),
+            quantity_base=Decimal("2"),
+            fee_quote=Decimal("0"),
+            filled_at=SIGNAL_TIME,
+        )
+        portfolio.apply_fill(buy)
+        manager.on_fill(buy)
+        # The exit fills in two losing parts; threshold 2 would trip if each
+        # part were (wrongly) counted as its own losing round trip.
+        for part in range(2):
+            partial = buy.model_copy(
+                update={
+                    "client_order_id": f"sell-{part}",
+                    "side": Side.SELL,
+                    "price_quote": Decimal("90"),
+                    "quantity_base": Decimal("1"),
+                }
+            )
+            portfolio.apply_fill(partial)
+            manager.on_fill(partial)
+
+        # One completed round trip = streak of 1: no cooldown yet.
+        assert manager.evaluate(make_signal(Side.BUY, stop="95"), Decimal("100")) is not None
+
 
 class TestExits:
     def test_exit_returns_full_position_market_sell(self) -> None:

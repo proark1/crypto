@@ -62,6 +62,7 @@ class RiskManager:
         self._portfolio = portfolio
         self._breakers = CircuitBreakers(config.breakers)
         self._observed_realized_pnl: dict[str, Decimal] = {}
+        self._open_round_trip_pnl: dict[str, Decimal] = {}
 
     @property
     def breakers(self) -> CircuitBreakers:
@@ -80,15 +81,22 @@ class RiskManager:
     def on_fill(self, fill: Fill) -> None:
         """Feed one applied fill to the loss-streak tracker.
 
-        A sell realizes PnL; the delta since this manager last looked is the
-        round trip's result. Buys only move the baseline forward.
+        Sells realize PnL, but one exit order can fill in several parts — a
+        round trip is only complete (and only counts once toward the loss
+        streak) when the position is fully closed, so partial fills of one
+        losing exit can never be miscounted as a streak of losses.
         """
         if fill.side != Side.SELL:
             return
         realized = self._portfolio.realized_pnl_quote(fill.symbol)
         delta = realized - self._observed_realized_pnl.get(fill.symbol, Decimal(0))
         self._observed_realized_pnl[fill.symbol] = realized
-        self._breakers.record_closed_trade(delta, fill.filled_at)
+        self._open_round_trip_pnl[fill.symbol] = (
+            self._open_round_trip_pnl.get(fill.symbol, Decimal(0)) + delta
+        )
+        if self._portfolio.position(fill.symbol) is None:
+            round_trip_pnl = self._open_round_trip_pnl.pop(fill.symbol)
+            self._breakers.record_closed_trade(round_trip_pnl, fill.filled_at)
 
     def evaluate(self, signal: Signal, current_price_quote: Decimal) -> Order | None:
         """Size ``signal`` against current equity, or return ``None`` to veto.
