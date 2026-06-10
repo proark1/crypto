@@ -204,6 +204,16 @@ class CandleStore:
             value: datetime | None = (await connection.execute(statement)).scalar()
         return value
 
+    async def earliest_open_time(self, symbol: str, interval: CandleInterval) -> datetime | None:
+        """Return the oldest stored open time — how deep history reaches."""
+        statement = select(func.min(candles_table.c.open_time)).where(
+            candles_table.c.symbol == symbol,
+            candles_table.c.interval == interval.value,
+        )
+        async with self._database.engine.connect() as connection:
+            value: datetime | None = (await connection.execute(statement)).scalar()
+        return value
+
 
 class CoinStore:
     """The actively traded pairs, surviving restarts and config changes."""

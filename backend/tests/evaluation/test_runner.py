@@ -125,8 +125,10 @@ class TestRunner:
         findings = await store.fetch_findings(run_id)
         assert all(finding.status == "proposed" for _, finding in findings)
 
-    async def test_run_with_no_candles_completes_empty_not_failed(self, database: Database) -> None:
-        """Too little history is a skipped series, not a crashed run."""
+    async def test_run_with_no_candles_fails_instead_of_quietly_completing(
+        self, database: Database
+    ) -> None:
+        """All series empty is a data problem; "completed, 0 scenarios" hides it."""
         runner, store = make_runner(database)
         run_id = await store.create_run(
             ["BTC/USDT"], ["1m"], CONFIG.model_dump(), "test", 12, utc_now()
@@ -135,8 +137,23 @@ class TestRunner:
         await runner.execute(run_id, CONFIG)
 
         run = await store.fetch_run(run_id)
+        assert run is not None and run["status"] == "failed"
+
+    async def test_partially_skipped_series_still_complete(self, database: Database) -> None:
+        """One starved timeframe skips; the series with data still grade."""
+        await seed_candles(database)  # 600 minutes: plenty for 1m, 10 buckets on 1h
+        runner, store = make_runner(database)
+        config = CONFIG.model_copy(update={"timeframes": ("1m", "1h")})
+        run_id = await store.create_run(
+            ["BTC/USDT"], ["1m", "1h"], config.model_dump(), "test", 24, utc_now()
+        )
+
+        await runner.execute(run_id, config)
+
+        run = await store.fetch_run(run_id)
         assert run is not None and run["status"] == "completed"
-        assert run["summary"]["scenario_count"] == 0
+        assert run["summary"]["scenario_count"] == CONFIG.scenario_count  # 1m only
+        assert "1h" not in run["summary"]["by_timeframe"]
 
 
 class TestManager:

@@ -149,7 +149,7 @@ class LiveMarketDataFeed:
         self._stopping = True
 
     async def backfill(self) -> int:
-        """Page forward from the newest stored candle until caught up.
+        """Repair history both ways: deepen the past, then page to now.
 
         Pagination matters: an outage longer than one REST page (typically
         500-1000 candles) must still repair completely. Each page's last row
@@ -157,7 +157,7 @@ class LiveMarketDataFeed:
         because a *closed* last row is simply re-fetched as the first row of
         the next page (the resume point is the last *inserted* candle).
         """
-        total_inserted = 0
+        total_inserted = await self._deepen_history() if self._history_days > 0 else 0
         latest = await self._store.latest_open_time(self._symbol, self._interval)
         while True:
             since_ms: int | None = None
@@ -186,6 +186,47 @@ class LiveMarketDataFeed:
             total_inserted += len(candles)
             latest = candles[-1].open_time
         return total_inserted
+
+    async def _deepen_history(self) -> int:
+        """Extend stored history *backward* to the configured horizon.
+
+        The forward pass alone never revisits the past, so a database that
+        predates a deeper ``history_days`` setting would keep its shallow
+        history forever — the research system would quietly evaluate on a
+        sliver. Pages forward from the horizon up to the earliest stored
+        candle; idempotent inserts make any overlap harmless.
+        """
+        earliest = await self._store.earliest_open_time(self._symbol, self._interval)
+        if earliest is None:
+            return 0  # nothing stored: the forward pass does the deep crawl
+        horizon_start = datetime.now(UTC) - timedelta(days=self._history_days)
+        if earliest <= horizon_start:
+            return 0
+        inserted = 0
+        since_ms = utc_ms(horizon_start)
+        while True:
+            rows = await self._exchange.fetch_ohlcv(
+                self._symbol, self._interval.value, since=since_ms
+            )
+            candles = [
+                _row_to_candle(row, self._symbol, self._interval)
+                for row in rows
+                if _is_well_formed(row)
+            ]
+            candles = [c for c in candles if c.open_time < earliest]
+            if not candles:
+                break  # reached the already-stored range (or the venue's depth)
+            await self._store.insert_batch(candles)
+            inserted += len(candles)
+            since_ms = utc_ms(candles[-1].open_time + self._interval.duration)
+        if inserted:
+            logger.info(
+                "deepened %s history by %d candles back to the %d-day horizon",
+                self._symbol,
+                inserted,
+                self._history_days,
+            )
+        return inserted
 
     async def run(self) -> None:
         """Stream until :meth:`stop` is called, reconnecting with backoff.
