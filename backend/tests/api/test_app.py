@@ -643,6 +643,143 @@ class TestEvaluations:
         assert missing.status_code == 404
 
 
+class TestScenarioReplay:
+    """The replay endpoints rebuild a scenario's candles from the store."""
+
+    @staticmethod
+    async def seed_graded_scenario(bot: StubBot) -> tuple[int, int]:
+        """Insert candles, a run, and one graded scenario; returns (run, scenario) ids."""
+        from tradebot.evaluation.models import (
+            MarketConditions,
+            Scenario,
+            ScenarioClass,
+            ScenarioResult,
+            TimingLabel,
+            TrendLabel,
+            Verdict,
+            VolatilityLabel,
+        )
+
+        candles = [
+            make_candle(close=str(100 + index)).model_copy(
+                update={
+                    "open_time": BASE_TIME + timedelta(minutes=index),
+                    "close_time": BASE_TIME + timedelta(minutes=index + 1),
+                }
+            )
+            for index in range(100)
+        ]
+        await bot.candle_store.insert_batch(candles)
+        config = EvaluationRunConfig(
+            symbols=("BTC/USDT",), timeframes=("1m",), lookback_candles=60, horizon_candles=30
+        )
+        run_id = await bot.evaluation_store.create_run(
+            ["BTC/USDT"], ["1m"], config.model_dump(), "test", 1, BASE_TIME
+        )
+        scenario = Scenario(
+            run_id=run_id,
+            symbol="BTC/USDT",
+            timeframe="1m",
+            decision_time=BASE_TIME + timedelta(minutes=60),
+            lookback_candles=60,
+            scenario_class=ScenarioClass.FLAT,
+            conditions=MarketConditions(
+                trend=TrendLabel.UP, volatility=VolatilityLabel.NORMAL, events=()
+            ),
+            seed=7,
+        )
+        (scenario_id,) = await bot.evaluation_store.insert_scenarios([scenario])
+        await bot.evaluation_store.insert_result(
+            ScenarioResult(
+                scenario_id=scenario_id,
+                decision="buy",
+                confidence=0.8,
+                reasons=("fast EMA crossed above slow EMA",),
+                entry_price_quote=Decimal("160.16"),
+                exit_price_quote=Decimal("189.81"),
+                r_multiple=Decimal("1.85"),
+                pnl_quote=Decimal("29.3"),
+                mfe_r=Decimal("2.1"),
+                mae_r=Decimal("-0.1"),
+                duration_candles=30,
+                stop_hit=False,
+                oracle_r=Decimal("2.2"),
+                verdict=Verdict.EXCELLENT,
+                timing=TimingLabel.ON_TIME,
+                created_at=BASE_TIME,
+            )
+        )
+        return run_id, scenario_id
+
+    async def test_run_scenarios_are_listed_with_their_grades(self, database: Database) -> None:
+        bot = StubBot(database)
+        run_id, scenario_id = await self.seed_graded_scenario(bot)
+
+        async with make_client(bot) as client:
+            body = (await client.get(f"/evaluations/{run_id}/scenarios")).json()
+
+        assert len(body) == 1
+        assert body[0]["scenario_id"] == scenario_id
+        assert body[0]["decision"] == "buy"
+        assert body[0]["verdict"] == "excellent"
+        assert body[0]["r_multiple"] == "1.85"
+        assert body[0]["trend"] == "up"
+
+    async def test_replay_rebuilds_window_and_horizon_candles(self, database: Database) -> None:
+        bot = StubBot(database)
+        _, scenario_id = await self.seed_graded_scenario(bot)
+
+        async with make_client(bot) as client:
+            body = (await client.get(f"/evaluations/scenarios/{scenario_id}")).json()
+
+        assert len(body["window"]) == 60
+        assert len(body["horizon"]) == 30  # the run config's horizon_candles
+        decision_time = (BASE_TIME + timedelta(minutes=60)).isoformat()
+        assert body["window"][-1]["open_time"] == (BASE_TIME + timedelta(minutes=59)).isoformat()
+        assert body["horizon"][0]["open_time"] == decision_time
+        assert body["scenario"]["decision_time"] == decision_time
+        assert body["entry_price_quote"] == "160.16"
+        assert body["reasons"] == ["fast EMA crossed above slow EMA"]
+        assert body["confidence"] == 0.8
+
+    async def test_unknown_run_and_scenario_are_404(self, database: Database) -> None:
+        bot = StubBot(database)
+        async with make_client(bot) as client:
+            assert (await client.get("/evaluations/9999/scenarios")).status_code == 404
+            assert (await client.get("/evaluations/scenarios/9999")).status_code == 404
+
+    async def test_ungraded_scenarios_are_not_listed(self, database: Database) -> None:
+        """Mid-flight scenarios without a result stay out of the browser."""
+        from tradebot.evaluation.models import (
+            MarketConditions,
+            Scenario,
+            ScenarioClass,
+            TrendLabel,
+            VolatilityLabel,
+        )
+
+        bot = StubBot(database)
+        run_id, scenario_id = await self.seed_graded_scenario(bot)
+        ungraded = Scenario(
+            run_id=run_id,
+            symbol="BTC/USDT",
+            timeframe="1m",
+            decision_time=BASE_TIME + timedelta(minutes=61),
+            lookback_candles=60,
+            scenario_class=ScenarioClass.FLAT,
+            conditions=MarketConditions(
+                trend=TrendLabel.UP, volatility=VolatilityLabel.NORMAL, events=()
+            ),
+            seed=7,
+        )
+        await bot.evaluation_store.insert_scenarios([ungraded])
+
+        async with make_client(bot) as client:
+            body = (await client.get(f"/evaluations/{run_id}/scenarios")).json()
+
+        assert [row["scenario_id"] for row in body] == [scenario_id]
+
+
 class TestFills:
     async def test_journal_is_returned_with_string_amounts(self, database: Database) -> None:
         bot = StubBot(database)

@@ -20,8 +20,9 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 
 from tradebot.core.config import AppConfig
-from tradebot.core.models import CandleInterval
+from tradebot.core.models import Candle, CandleInterval
 from tradebot.engine import TradingEngine
+from tradebot.evaluation.replay import load_replay
 from tradebot.evaluation.runner import EvaluationRunConfig
 from tradebot.persistence import CandleStore, DecisionStore, EvaluationStore, FillStore
 from tradebot.portfolio import Portfolio
@@ -223,6 +224,83 @@ def _run_response(run: dict[str, Any]) -> EvaluationRunResponse:
         progress_total=run["progress_total"],
         config=run["config"],
         summary=run["summary"],
+    )
+
+
+class ScenarioSummaryResponse(BaseModel):
+    """One graded scenario row for the replay browser, amounts as strings."""
+
+    scenario_id: int
+    run_id: int
+    symbol: str
+    timeframe: str
+    decision_time: str
+    scenario_class: str
+    trend: str
+    volatility: str
+    events: list[str]
+    decision: str
+    verdict: str
+    r_multiple: str | None
+    timing: str | None
+
+
+class ScenarioReplayResponse(BaseModel):
+    """Everything the replay viewer needs for one scenario.
+
+    ``window`` is the blind context the bot decided on (its last candle
+    closes at the decision time); ``horizon`` is the future it was graded
+    against, for the viewer to reveal candle by candle.
+    """
+
+    scenario: ScenarioSummaryResponse
+    confidence: float | None
+    reasons: list[str]
+    entry_price_quote: str | None
+    exit_price_quote: str | None
+    pnl_quote: str | None
+    mfe_r: str | None
+    mae_r: str | None
+    duration_candles: int | None
+    stop_hit: bool | None
+    oracle_r: str | None
+    window: list[CandleResponse]
+    horizon: list[CandleResponse]
+
+
+def _optional_str(value: Any) -> str | None:
+    """Stringify a nullable Decimal column without inventing a zero."""
+    return None if value is None else str(value)
+
+
+def _scenario_summary(row: Mapping[str, Any]) -> ScenarioSummaryResponse:
+    """Serialize one joined scenario+result row for the API."""
+    return ScenarioSummaryResponse(
+        scenario_id=row["scenario_id"],
+        run_id=row["run_id"],
+        symbol=row["symbol"],
+        timeframe=row["timeframe"],
+        decision_time=row["decision_time"].isoformat(),
+        scenario_class=row["scenario_class"],
+        trend=row["trend"],
+        volatility=row["volatility"],
+        events=list(row["events"]),
+        decision=row["decision"],
+        verdict=row["verdict"],
+        r_multiple=_optional_str(row["r_multiple"]),
+        timing=row["timing"],
+    )
+
+
+def _candle_response(candle: Candle) -> CandleResponse:
+    """Serialize one candle for charting, amounts as strings."""
+    return CandleResponse(
+        open_time=candle.open_time.isoformat(),
+        open_quote=str(candle.open_quote),
+        high_quote=str(candle.high_quote),
+        low_quote=str(candle.low_quote),
+        close_quote=str(candle.close_quote),
+        volume_base=str(candle.volume_base),
     )
 
 
@@ -550,17 +628,7 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
         candles = await state.candle_store.fetch_recent(
             resolve_symbol(symbol), CandleInterval.M1, limit
         )
-        return [
-            CandleResponse(
-                open_time=candle.open_time.isoformat(),
-                open_quote=str(candle.open_quote),
-                high_quote=str(candle.high_quote),
-                low_quote=str(candle.low_quote),
-                close_quote=str(candle.close_quote),
-                volume_base=str(candle.volume_base),
-            )
-            for candle in candles
-        ]
+        return [_candle_response(candle) for candle in candles]
 
     @protected.get("/decisions")
     async def get_decisions(
@@ -616,6 +684,59 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
                 status_code=status.HTTP_404_NOT_FOUND, detail=f"no evaluation run {run_id}"
             )
         return _run_response(run)
+
+    @protected.get("/evaluations/{run_id}/scenarios")
+    async def list_evaluation_scenarios(run_id: int) -> list[ScenarioSummaryResponse]:
+        """List the run's graded scenarios for the replay browser."""
+        if await state.evaluation_store.fetch_run(run_id) is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail=f"no evaluation run {run_id}"
+            )
+        rows = await state.evaluation_store.list_scenarios_with_results(run_id)
+        return [_scenario_summary(row) for row in rows]
+
+    @protected.get("/evaluations/scenarios/{scenario_id}")
+    async def get_scenario_replay(scenario_id: int) -> ScenarioReplayResponse:
+        """One scenario's blind window, revealed horizon, decision, and grade.
+
+        Candles are rebuilt from the candle store through the same
+        aggregation path the run used — scenarios reference candles, they
+        never copy them (ARCHITECTURE.md section 12.4).
+        """
+        row = await state.evaluation_store.fetch_scenario_with_result(scenario_id)
+        if row is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"no graded scenario {scenario_id}",
+            )
+        run = await state.evaluation_store.fetch_run(row["run_id"])
+        assert run is not None  # scenarios carry a foreign key to their run
+        # The horizon length lives only in the run's config snapshot — it is
+        # a run-level constant, not a per-scenario column.
+        horizon_candles = int(run["config"]["horizon_candles"])
+        window, horizon = await load_replay(
+            state.candle_store,
+            symbol=row["symbol"],
+            timeframe=row["timeframe"],
+            decision_time=row["decision_time"],
+            lookback_candles=row["lookback_candles"],
+            horizon_candles=horizon_candles,
+        )
+        return ScenarioReplayResponse(
+            scenario=_scenario_summary(row),
+            confidence=float(row["confidence"]) if row["confidence"] is not None else None,
+            reasons=list(row["reasons"]),
+            entry_price_quote=_optional_str(row["entry_price_quote"]),
+            exit_price_quote=_optional_str(row["exit_price_quote"]),
+            pnl_quote=_optional_str(row["pnl_quote"]),
+            mfe_r=_optional_str(row["mfe_r"]),
+            mae_r=_optional_str(row["mae_r"]),
+            duration_candles=row["duration_candles"],
+            stop_hit=row["stop_hit"],
+            oracle_r=_optional_str(row["oracle_r"]),
+            window=[_candle_response(candle) for candle in window],
+            horizon=[_candle_response(candle) for candle in horizon],
+        )
 
     @protected.post("/evaluations/{run_id}/cancel")
     async def cancel_evaluation(run_id: int) -> CommandResponse:

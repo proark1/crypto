@@ -185,6 +185,74 @@ class EvaluationStore:
             for row in rows
         ]
 
+    # Columns for the replay browser: each scenario joined with its graded
+    # result. Selected explicitly (and the scenario id labeled) because both
+    # tables carry ``id``/``created_at`` and a bare two-table select would
+    # leave the mapping keys ambiguous.
+    _SCENARIO_WITH_RESULT_COLUMNS = (
+        scenarios_table.c.id.label("scenario_id"),
+        scenarios_table.c.run_id,
+        scenarios_table.c.symbol,
+        scenarios_table.c.timeframe,
+        scenarios_table.c.decision_time,
+        scenarios_table.c.lookback_candles,
+        scenarios_table.c.scenario_class,
+        scenarios_table.c.trend,
+        scenarios_table.c.volatility,
+        scenarios_table.c.events,
+        scenario_results_table.c.decision,
+        scenario_results_table.c.confidence,
+        scenario_results_table.c.reasons,
+        scenario_results_table.c.entry_price_quote,
+        scenario_results_table.c.exit_price_quote,
+        scenario_results_table.c.r_multiple,
+        scenario_results_table.c.pnl_quote,
+        scenario_results_table.c.mfe_r,
+        scenario_results_table.c.mae_r,
+        scenario_results_table.c.duration_candles,
+        scenario_results_table.c.stop_hit,
+        scenario_results_table.c.oracle_r,
+        scenario_results_table.c.verdict,
+        scenario_results_table.c.timing,
+    )
+
+    async def list_scenarios_with_results(self, run_id: int) -> list[dict[str, Any]]:
+        """Return each of the run's graded scenarios joined with its result.
+
+        Scenarios without a result yet (the run is mid-flight) are omitted:
+        the replay browser shows decided-and-graded scenarios only.
+        """
+        statement = (
+            select(*self._SCENARIO_WITH_RESULT_COLUMNS)
+            .select_from(
+                scenarios_table.join(
+                    scenario_results_table,
+                    scenario_results_table.c.scenario_id == scenarios_table.c.id,
+                )
+            )
+            .where(scenarios_table.c.run_id == run_id)
+            .order_by(scenarios_table.c.id)
+        )
+        async with self._database.engine.connect() as connection:
+            rows = (await connection.execute(statement)).mappings().all()
+        return [dict(row) for row in rows]
+
+    async def fetch_scenario_with_result(self, scenario_id: int) -> dict[str, Any] | None:
+        """Return one graded scenario joined with its result, or ``None``."""
+        statement = (
+            select(*self._SCENARIO_WITH_RESULT_COLUMNS)
+            .select_from(
+                scenarios_table.join(
+                    scenario_results_table,
+                    scenario_results_table.c.scenario_id == scenarios_table.c.id,
+                )
+            )
+            .where(scenarios_table.c.id == scenario_id)
+        )
+        async with self._database.engine.connect() as connection:
+            row = (await connection.execute(statement)).mappings().first()
+        return None if row is None else dict(row)
+
     async def insert_result(self, result: ScenarioResult) -> None:
         """Persist one scenario's graded outcome (exactly one per scenario)."""
         row = result.model_dump()

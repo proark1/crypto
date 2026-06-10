@@ -24,6 +24,11 @@ from tradebot.evaluation.models import (
     VolatilityLabel,
 )
 
+# NOTE: ``runner`` and ``replay`` import the persistence layer, which itself
+# imports this package's models — they are imported by their full module
+# path (``tradebot.evaluation.runner`` / ``.replay``) to keep this __init__
+# import-cycle-free.
+
 __all__ = [
     "EvaluatedDecision",
     "EventLabel",

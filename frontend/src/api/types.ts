@@ -81,6 +81,40 @@ export interface DecisionResponse {
   created_at: string;
 }
 
+export interface ScenarioSummaryResponse {
+  scenario_id: number;
+  run_id: number;
+  symbol: string;
+  timeframe: string;
+  decision_time: string;
+  scenario_class: string;
+  trend: string;
+  volatility: string;
+  events: string[];
+  decision: string;
+  verdict: string;
+  r_multiple: string | null;
+  timing: string | null;
+}
+
+export interface ScenarioReplayResponse {
+  scenario: ScenarioSummaryResponse;
+  confidence: number | null;
+  reasons: string[];
+  entry_price_quote: string | null;
+  exit_price_quote: string | null;
+  pnl_quote: string | null;
+  mfe_r: string | null;
+  mae_r: string | null;
+  duration_candles: number | null;
+  stop_hit: boolean | null;
+  oracle_r: string | null;
+  /** The blind context the bot decided on; its last candle closes at the decision. */
+  window: CandleResponse[];
+  /** The future it was graded against, for the viewer to reveal step by step. */
+  horizon: CandleResponse[];
+}
+
 export interface EvaluationRunResponse {
   id: number;
   created_at: string;

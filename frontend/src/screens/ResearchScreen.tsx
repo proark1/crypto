@@ -1,7 +1,18 @@
 import { useCallback, useEffect, useState } from "react";
 
-import { cancelEvaluation, fetchEvaluations, startEvaluation } from "../api/client";
-import type { EvaluationRunResponse } from "../api/types";
+import {
+  cancelEvaluation,
+  fetchEvaluations,
+  fetchScenarioReplay,
+  fetchScenarios,
+  startEvaluation,
+} from "../api/client";
+import type {
+  EvaluationRunResponse,
+  ScenarioReplayResponse,
+  ScenarioSummaryResponse,
+} from "../api/types";
+import { ScenarioReplay } from "../components/ScenarioReplay";
 
 const POLL_INTERVAL_MS = 3000;
 const TIMEFRAMES = ["1m", "5m", "15m", "1h", "4h", "1d"];
@@ -107,6 +118,58 @@ export function RunReport(props: { run: EvaluationRunResponse }) {
   );
 }
 
+export function ScenarioTable(props: {
+  scenarios: ScenarioSummaryResponse[];
+  onReplay: (scenarioId: number) => void;
+}) {
+  if (props.scenarios.length === 0) {
+    return null;
+  }
+  return (
+    <div>
+      <h4 className="mb-1 text-xs uppercase tracking-wide text-zinc-500">
+        scenarios — pick one to replay it blind
+      </h4>
+      <div className="max-h-80 overflow-y-auto">
+        <table className="w-full text-left text-sm">
+          <thead className="text-xs text-zinc-500">
+            <tr>
+              <th className="py-1 pr-2">#</th>
+              <th className="py-1 pr-2">conditions</th>
+              <th className="py-1 pr-2">decision</th>
+              <th className="py-1 pr-2">verdict</th>
+              <th className="py-1 pr-2">R</th>
+              <th className="py-1">timing</th>
+            </tr>
+          </thead>
+          <tbody>
+            {props.scenarios.map((scenario) => (
+              <tr
+                key={scenario.scenario_id}
+                onClick={() => {
+                  props.onReplay(scenario.scenario_id);
+                }}
+                className="cursor-pointer border-t border-zinc-800/60 text-zinc-300 hover:bg-zinc-800/60"
+              >
+                <td className="py-1 pr-2">{scenario.scenario_id}</td>
+                <td className="py-1 pr-2 text-xs">
+                  {[scenario.trend, scenario.volatility, ...scenario.events]
+                    .join(" · ")
+                    .replace(/_/g, " ")}
+                </td>
+                <td className="py-1 pr-2">{scenario.decision}</td>
+                <td className="py-1 pr-2">{scenario.verdict.replace(/_/g, " ")}</td>
+                <td className="py-1 pr-2">{scenario.r_multiple ?? "—"}</td>
+                <td className="py-1">{scenario.timing?.replace(/_/g, " ") ?? "—"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 export function ResearchScreen() {
   const [runs, setRuns] = useState<EvaluationRunResponse[]>([]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
@@ -114,6 +177,8 @@ export function ResearchScreen() {
   const [count, setCount] = useState("200");
   const [timeframe, setTimeframe] = useState("1h");
   const [notice, setNotice] = useState<string | null>(null);
+  const [scenarios, setScenarios] = useState<ScenarioSummaryResponse[]>([]);
+  const [replay, setReplay] = useState<ScenarioReplayResponse | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -132,6 +197,28 @@ export function ResearchScreen() {
   }, [refresh]);
 
   const selected = runs.find((run) => run.id === selectedId) ?? runs[0] ?? null;
+  const selectedRunId = selected?.id ?? null;
+  const selectedRunStatus = selected?.status ?? null;
+
+  // The scenario list refreshes when the selection changes or the run
+  // reaches a terminal status — not on every poll, which would re-download
+  // hundreds of rows every few seconds while a run is in flight.
+  useEffect(() => {
+    setReplay(null);
+    setScenarios([]);
+    if (selectedRunId === null) {
+      return;
+    }
+    fetchScenarios(selectedRunId).then(setScenarios, () => {
+      // The overview screen owns auth/error UX; research polls quietly.
+    });
+  }, [selectedRunId, selectedRunStatus]);
+
+  const openReplay = (scenarioId: number) => {
+    fetchScenarioReplay(scenarioId).then(setReplay, (caught: unknown) => {
+      setNotice(caught instanceof Error ? caught.message : "failed to load the replay");
+    });
+  };
 
   return (
     <div className="space-y-4">
@@ -237,8 +324,18 @@ export function ResearchScreen() {
           </ul>
         </section>
         <section className="rounded-xl border border-zinc-800 bg-zinc-900 p-4">
-          {selected ? (
-            <RunReport run={selected} />
+          {replay ? (
+            <ScenarioReplay
+              replay={replay}
+              onBack={() => {
+                setReplay(null);
+              }}
+            />
+          ) : selected ? (
+            <div className="space-y-4">
+              <RunReport run={selected} />
+              <ScenarioTable scenarios={scenarios} onReplay={openReplay} />
+            </div>
           ) : (
             <div className="text-sm text-zinc-500">start a run to see its report here</div>
           )}
