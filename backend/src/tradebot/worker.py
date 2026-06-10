@@ -104,14 +104,33 @@ async def run_from_env() -> None:
     exchange_class = getattr(ccxt.pro, config.exchange_id, None)
     if exchange_class is None:
         raise ValueError(f"unknown CCXT exchange id {config.exchange_id!r}")
-    exchange = exchange_class()
+    # The built-in rate limiter shares a request budget across backfill and
+    # stream reconnects — without it, a long backfill can earn an IP ban.
+    exchange = exchange_class({"enableRateLimit": True})
     try:
         async with Database(config.database_url) as database:
             worker = Worker(config, database, exchange)
             loop = asyncio.get_running_loop()
-            for signal_number in (signal.SIGTERM, signal.SIGINT):
-                loop.add_signal_handler(signal_number, worker.stop)
-            await worker.run()
+            main_task = asyncio.current_task()
+
+            def handle_shutdown() -> None:
+                # Setting the stop flag is not enough: watch_ohlcv may be
+                # mid-await for the next candle, so cancel to unblock it and
+                # reach the finally that closes the exchange session.
+                worker.stop()
+                if main_task is not None:
+                    main_task.cancel()
+
+            try:
+                for signal_number in (signal.SIGTERM, signal.SIGINT):
+                    loop.add_signal_handler(signal_number, handle_shutdown)
+            except NotImplementedError:  # pragma: no cover - Windows dev boxes
+                pass
+
+            try:
+                await worker.run()
+            except asyncio.CancelledError:
+                logger.info("worker cancelled by shutdown signal")
     finally:
         await exchange.close()
 
