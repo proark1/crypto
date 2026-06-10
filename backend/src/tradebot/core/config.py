@@ -82,8 +82,9 @@ class AppConfig(BaseSettings):
     when the pings stop. Unset means no heartbeat (fail-safe default: the
     bot never phones anywhere it was not pointed at)."""
 
-    heartbeat_interval_seconds: int = 60
-    """Seconds between heartbeat pings while healthy."""
+    heartbeat_interval_seconds: int = Field(default=60, gt=0)
+    """Seconds between heartbeat pings while healthy. Validated here so a
+    bad value fails at config load, before any client or task exists."""
 
     telegram_bot_token: str | None = None
     """Telegram bot token; alerts are disabled unless token and chat id are set."""

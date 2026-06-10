@@ -38,6 +38,13 @@ def test_explicit_api_port_beats_platform_port(monkeypatch: pytest.MonkeyPatch) 
     assert AppConfig().api_port == 9000
 
 
+def test_non_positive_heartbeat_interval_fails_at_load(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A bad interval must fail config load, before any client or task exists."""
+    monkeypatch.setenv("TRADEBOT_HEARTBEAT_INTERVAL_SECONDS", "0")
+    with pytest.raises(ValidationError):
+        AppConfig()
+
+
 def test_config_is_frozen(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("TRADEBOT_MODE", raising=False)
     config = AppConfig()

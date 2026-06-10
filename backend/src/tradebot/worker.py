@@ -93,18 +93,30 @@ class Worker:
             self.portfolio.quote_balance,
         )
         self.engine.attach_to(self.bus)
-        api_task = self._start_api()
-        notifier_client = await self._start_notifier_if_configured()
-        heartbeat_task, heartbeat_client = self._start_heartbeat_if_configured()
+        # Started inside the try so a failure in any later startup step still
+        # tears down whatever already runs (no leaked tasks or clients).
+        api_task: asyncio.Task[None] | None = None
+        notifier_client: httpx.AsyncClient | None = None
+        heartbeat_task: asyncio.Task[None] | None = None
+        heartbeat_client: httpx.AsyncClient | None = None
         try:
+            api_task = self._start_api()
+            notifier_client = await self._start_notifier_if_configured()
+            heartbeat_task, heartbeat_client = self._start_heartbeat_if_configured()
             await self.feed.run()
         finally:
             for task in (api_task, heartbeat_task):
                 if task is None:
                     continue
                 task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
+                try:
                     await task
+                except asyncio.CancelledError:
+                    pass
+                except Exception:
+                    # A task that already crashed re-raises here; the rest
+                    # of shutdown (other tasks, client close) must still run.
+                    logger.exception("background task failed during shutdown")
             for client in (notifier_client, heartbeat_client):
                 if client is not None:
                     await client.aclose()
@@ -153,7 +165,20 @@ class Worker:
             interval=timedelta(seconds=self.config.heartbeat_interval_seconds),
         )
         pinger.attach_to(self.bus)
-        return asyncio.create_task(pinger.run()), client
+        task = asyncio.create_task(pinger.run())
+
+        def log_heartbeat_outcome(finished: asyncio.Task[None]) -> None:
+            # A silently dead heartbeat is the one failure mode this feature
+            # exists to prevent — its own crash must be loud in the logs.
+            try:
+                finished.result()
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logger.exception("dead-man's switch heartbeat task crashed")
+
+        task.add_done_callback(log_heartbeat_outcome)
+        return task, client
 
     def _start_api(self) -> asyncio.Task[None]:
         """Serve HTTP as a background task.
