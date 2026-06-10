@@ -110,6 +110,30 @@ class AppConfig(BaseSettings):
     regime_reference_symbol: str = "BTC/USDT"
     """The market-wide reference whose regime gates all entries."""
 
+    cryptopanic_token: str | None = None
+    """CryptoPanic API token. Unset disables news polling; the news gate
+    still runs (scheduled-event windows work without any news source)."""
+
+    news_poll_seconds: int = Field(default=90, ge=30)
+    """News poll interval (ARCHITECTURE.md 5.3: every 1-2 minutes); floored
+    at 30s to stay polite to free-tier APIs."""
+
+    news_flag_ttl_hours: int = Field(default=24, gt=0)
+    """How long a negative-news flag blocks a coin's entries unless renewed."""
+
+    event_calendar_json: str = ""
+    """Scheduled no-entry windows (FOMC/CPI/unlocks) as JSON:
+    ``[{"name": "FOMC", "time": "2026-06-17T18:00:00Z", "window_minutes": 120}]``.
+    Validated at load — a typo stops the deploy, it never silently disables
+    event awareness."""
+
+    @model_validator(mode="after")
+    def _calendar_must_parse(self) -> AppConfig:
+        from tradebot.news.calendar import EventCalendar
+
+        EventCalendar.from_json(self.event_calendar_json)
+        return self
+
     history_backfill_days: int = Field(default=0, ge=0)
     """How many days of candle history to fetch for a symbol that has none
     stored yet (first boot, newly added coin). Binance-class venues serve

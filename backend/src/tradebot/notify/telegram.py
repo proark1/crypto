@@ -14,6 +14,7 @@ import logging
 import httpx
 
 from tradebot.core.events import EventBus, FillRecorded, ProposalCreated
+from tradebot.news import NewsFlagged
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +35,7 @@ class TelegramNotifier:
         """Subscribe to the events worth a push notification."""
         bus.subscribe(FillRecorded, self._on_fill)
         bus.subscribe(ProposalCreated, self._on_proposal)
+        bus.subscribe(NewsFlagged, self._on_news_flag)
 
     async def send(self, text: str) -> bool:
         """Send ``text``; returns False (and logs) on any failure.
@@ -80,6 +82,20 @@ class TelegramNotifier:
                 f"(stop {signal.stop_price_quote})\n{reasons}\n"
                 f"expires {event.proposal.expires_at.strftime('%H:%M:%S')} UTC — "
                 "approve or reject in the dashboard"
+            )
+        )
+        self._pending.add(task)
+        task.add_done_callback(self._pending.discard)
+
+    async def _on_news_flag(self, event: NewsFlagged) -> None:
+        flag = event.flag
+        task = asyncio.create_task(
+            self.send(
+                f"NEWS FLAG: {flag.event_type.value.upper()} on {flag.coin}\n"
+                f"{flag.headline}\n"
+                f"New entries are blocked until {flag.expires_at.strftime('%H:%M:%S')} UTC. "
+                "If you hold this coin, consider exiting — the bot will not sell on news "
+                "by itself."
             )
         )
         self._pending.add(task)

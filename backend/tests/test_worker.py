@@ -316,6 +316,58 @@ class TestWorker:
             await worker.remove_coin("BTC/USDT")
         await worker.remove_coin("ETH/USDT")  # only the reference is protected
 
+    async def test_scheduled_event_window_blocks_entries_end_to_end(
+        self, database: Database
+    ) -> None:
+        """A calendar window over the scripted run journals the BUY as gated."""
+        exchange = ScriptedExchange(CLOSES)
+        calendar_json = '[{"name": "FOMC", "time": "2026-01-02T01:00:00Z", "window_minutes": 120}]'
+        config = make_config(api_port=8904).model_copy(
+            update={"event_calendar_json": calendar_json}
+        )
+        worker = Worker(config, database, exchange)
+        exchange.worker = worker
+
+        await worker.run()
+
+        journal = await worker.fill_store.fetch_all("BTC/USDT")
+        assert journal == []  # the rally's entry fell inside the FOMC window
+        decisions = await worker.decision_store.fetch_recent("BTC/USDT", 50)
+        gated = [d for d in decisions if d.outcome.value == "gated"]
+        assert gated
+        assert any("FOMC window" in reason for d in gated for reason in d.reasons)
+
+    async def test_news_flag_blocks_only_the_flagged_coin(self, database: Database) -> None:
+        exchange = MultiSymbolScriptedExchange(
+            {"BTC/USDT": list(CLOSES), "ETH/USDT": [c / 10 for c in CLOSES]}
+        )
+        worker = Worker(make_config("BTC/USDT,ETH/USDT", api_port=8905), database, exchange)
+        exchange.worker = worker
+        from tradebot.news import NewsItem, classify
+
+        item = NewsItem(
+            external_id="1",
+            source="test",
+            title="Exchange will delist ETH pairs",
+            currencies=("ETH",),
+            published_at=BASE_TIME,
+        )
+        worker.news_flags.flag("ETH", classify(item), BASE_TIME)
+
+        await worker.run()
+
+        btc_journal = await worker.fill_store.fetch_all("BTC/USDT")
+        eth_journal = await worker.fill_store.fetch_all("ETH/USDT")
+        assert [f.side for f in btc_journal] == [Side.BUY, Side.SELL]  # unaffected
+        assert eth_journal == []  # flagged coin never entered
+        decisions = await worker.decision_store.fetch_recent("ETH/USDT", 50)
+        assert any(
+            "delisting flag on ETH" in reason
+            for d in decisions
+            if d.outcome.value == "gated"
+            for reason in d.reasons
+        )
+
     async def test_non_paper_modes_are_refused(self, database: Database) -> None:
         live_config = AppConfig(mode=TradingMode.LIVE)
         with pytest.raises(NotImplementedError, match="paper mode"):

@@ -34,6 +34,7 @@ from tradebot.evaluation.runner import EvaluationManager, EvaluationRunConfig, E
 from tradebot.evaluation.sweep import SweepConfig, SweepManager, SweepRunner, build_trend_strategy
 from tradebot.execution import FillSimulatorConfig, SimulatedExecutionAdapter
 from tradebot.marketdata.live_feed import LiveMarketDataFeed, OhlcvExchange
+from tradebot.news import CryptoPanicSource, EventCalendar, NewsFlags, NewsGate, NewsMonitor
 from tradebot.persistence import (
     CandleStore,
     CoinStore,
@@ -44,7 +45,7 @@ from tradebot.persistence import (
 )
 from tradebot.portfolio import Portfolio
 from tradebot.risk import RiskConfig, RiskManager
-from tradebot.signals import MarketRegimeDetector, RegimeGate
+from tradebot.signals import EntryGate, MarketRegimeDetector, RegimeGate
 from tradebot.strategies import TrendFollowingConfig, TrendFollowingStrategy
 
 logger = logging.getLogger(__name__)
@@ -120,6 +121,11 @@ class Worker:
             if config.regime_gate_enabled
             else None
         )
+        # News state is always built: the gate is a pass-through with no
+        # flags and an empty calendar, and event awareness must not depend
+        # on remembering to enable it.
+        self.news_flags = NewsFlags(ttl=timedelta(hours=config.news_flag_ttl_hours))
+        self.news_calendar = EventCalendar.from_json(config.event_calendar_json)
 
     def _spawn_background(self, coroutine: Coroutine[Any, Any, None]) -> asyncio.Task[None]:
         """Run a coroutine under the worker's TaskGroup (shutdown cancels it)."""
@@ -148,6 +154,13 @@ class Worker:
         """The actively traded pairs, in the order they were added."""
         return tuple(self.engines)
 
+    def _entry_gates(self) -> tuple[EntryGate, ...]:
+        """Build the §5.2 gate chain in pipeline order: regime, then news."""
+        gates: tuple[EntryGate, ...] = ()
+        if self.regime_detector is not None:
+            gates += (RegimeGate(self.regime_detector),)
+        return (*gates, NewsGate(self.news_flags, self.news_calendar))
+
     def _activate(self, symbol: str) -> None:
         """Build and wire one coin's engine and feed; start the feed if running."""
         engine = TradingEngine(
@@ -163,9 +176,7 @@ class Worker:
                 ttl=timedelta(seconds=self.config.proposal_ttl_seconds),
                 max_drift_fraction=self.config.proposal_max_drift_fraction,
             ),
-            entry_gates=(
-                (RegimeGate(self.regime_detector),) if self.regime_detector is not None else ()
-            ),
+            entry_gates=self._entry_gates(),
         )
         engine.attach_to(self.bus)
         feed = LiveMarketDataFeed(
@@ -311,10 +322,13 @@ class Worker:
         notifier_client: httpx.AsyncClient | None = None
         heartbeat_task: asyncio.Task[None] | None = None
         heartbeat_client: httpx.AsyncClient | None = None
+        news_task: asyncio.Task[None] | None = None
+        news_client: httpx.AsyncClient | None = None
         try:
             api_task = self._start_api()
             notifier_client = await self._start_notifier_if_configured()
             heartbeat_task, heartbeat_client = self._start_heartbeat_if_configured()
+            news_task, news_client = self._start_news_monitor_if_configured()
             # TaskGroup, not gather: if one feed crashes, the others must be
             # cancelled with it — a bot trading some symbols while blind on
             # another would be worse than one that stops and restarts. The
@@ -327,7 +341,7 @@ class Worker:
                     self._feed_tasks[symbol] = task_group.create_task(feed.run())
         finally:
             self._task_group = None  # late add_coin calls must not target a closed group
-            for task in (api_task, heartbeat_task):
+            for task in (api_task, heartbeat_task, news_task):
                 if task is None:
                     continue
                 task.cancel()
@@ -339,7 +353,7 @@ class Worker:
                     # A task that already crashed re-raises here; the rest
                     # of shutdown (other tasks, client close) must still run.
                     logger.exception("background task failed during shutdown")
-            for client in (notifier_client, heartbeat_client):
+            for client in (notifier_client, heartbeat_client, news_client):
                 if client is not None:
                     await client.aclose()
         logger.info("worker stopped cleanly")
@@ -400,6 +414,46 @@ class Worker:
                 logger.exception("dead-man's switch heartbeat task crashed")
 
         task.add_done_callback(log_heartbeat_outcome)
+        return task, client
+
+    def _start_news_monitor_if_configured(
+        self,
+    ) -> tuple[asyncio.Task[None] | None, httpx.AsyncClient | None]:
+        """Start news polling when a CryptoPanic token is configured.
+
+        Its own httpx client: a slow news API must never share a pool with
+        alerts or the heartbeat. Without a token the news *gate* still runs
+        (calendar windows need no news source) — only polling is skipped.
+        """
+        token = self.config.cryptopanic_token
+        if not token:
+            # Truthiness: an empty-string env var disables polling
+            # gracefully, same convention as the other optional services.
+            logger.info("news polling disabled: no TRADEBOT_CRYPTOPANIC_TOKEN")
+            return None, None
+        client = httpx.AsyncClient(timeout=15)
+        monitor = NewsMonitor(
+            CryptoPanicSource(token, client),
+            self.news_flags,
+            # Read fresh per poll: coins are added and removed at runtime.
+            tracked_coins=lambda: self.symbols,
+            bus=self.bus,
+            poll_interval=timedelta(seconds=self.config.news_poll_seconds),
+        )
+        task = asyncio.create_task(monitor.run())
+
+        def log_news_outcome(finished: asyncio.Task[None]) -> None:
+            # The monitor catches its own poll errors; reaching here other
+            # than by cancellation means event awareness died — say so.
+            try:
+                finished.result()
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logger.exception("news monitor crashed; event awareness lost")
+
+        task.add_done_callback(log_news_outcome)
+        logger.info("news polling enabled (every %ds)", self.config.news_poll_seconds)
         return task, client
 
     def _start_api(self) -> asyncio.Task[None]:
