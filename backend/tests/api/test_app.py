@@ -8,7 +8,7 @@ from decimal import Decimal
 import httpx
 import pytest
 
-from tradebot.api import create_app
+from tradebot.api import create_app, create_health_only_app
 from tradebot.core.config import AppConfig, TradingMode
 from tradebot.core.models import (
     Candle,
@@ -132,6 +132,16 @@ class TestAuth:
     async def test_empty_token_refuses_to_build(self, database: Database) -> None:
         with pytest.raises(ValueError, match="non-empty token"):
             create_app(StubBot(database), "")
+
+    async def test_health_only_app_serves_nothing_but_health(self) -> None:
+        """Without a token the deploy healthcheck still works — and only that."""
+        app = create_health_only_app()
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://control"
+        ) as client:
+            assert (await client.get("/health")).json() == {"status": "ok"}
+            assert (await client.get("/status")).status_code == 404
+            assert (await client.post("/kill")).status_code == 404
 
 
 class TestStatus:
