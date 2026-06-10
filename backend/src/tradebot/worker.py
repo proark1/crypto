@@ -14,6 +14,7 @@ fault-injection coverage — not a config flip away from an unfinished path.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import signal
 
@@ -87,6 +88,8 @@ class Worker:
         finally:
             if api_task is not None:
                 api_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await api_task
         logger.info("worker stopped cleanly")
 
     def _start_api_if_configured(self) -> asyncio.Task[None] | None:
@@ -94,16 +97,43 @@ class Worker:
         if self.config.api_token is None:
             logger.info("control API disabled: TRADEBOT_API_TOKEN is not set")
             return None
+        from collections.abc import Generator
+
         import uvicorn  # local import: only the running worker serves HTTP
 
         from tradebot.api import create_app
 
+        class NoSignalCaptureServer(uvicorn.Server):
+            """Leave signal handling to the worker, which owns SIGTERM.
+
+            uvicorn's default ``capture_signals`` installs its own handlers
+            via ``signal.signal``, silently replacing the worker's shutdown
+            wiring — the API would stop on SIGTERM while the bot kept trading.
+            """
+
+            @contextlib.contextmanager
+            def capture_signals(self) -> Generator[None, None, None]:
+                yield
+
         app = create_app(self, self.config.api_token)
-        server = uvicorn.Server(
+        server = NoSignalCaptureServer(
             uvicorn.Config(app, host="0.0.0.0", port=self.config.api_port, log_level="warning")
         )
+        task = asyncio.create_task(server.serve())
+
+        def log_api_outcome(finished: asyncio.Task[None]) -> None:
+            # A crashed API (port conflict, bad config) must be loud: the bot
+            # would otherwise trade on with its control plane silently dead.
+            try:
+                finished.result()
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logger.exception("control API server crashed or failed to start")
+
+        task.add_done_callback(log_api_outcome)
         logger.info("control API listening on port %d", self.config.api_port)
-        return asyncio.create_task(server.serve())
+        return task
 
     def stop(self) -> None:
         """Request shutdown (also wired to SIGTERM for Railway deploys)."""
