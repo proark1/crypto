@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
   ApiError,
+  fetchCandles,
   fetchDecisions,
   fetchFills,
   fetchStatus,
@@ -11,7 +12,13 @@ import {
   postResume,
   storeToken,
 } from "../api/client";
-import type { DecisionResponse, FillResponse, StatusResponse } from "../api/types";
+import type {
+  CandleResponse,
+  DecisionResponse,
+  FillResponse,
+  StatusResponse,
+} from "../api/types";
+import { CandleChart } from "../components/CandleChart";
 import { Controls } from "../components/Controls";
 import { DecisionsPanel } from "../components/DecisionsPanel";
 import { FillsTable } from "../components/FillsTable";
@@ -23,6 +30,7 @@ export function OverviewScreen() {
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [fills, setFills] = useState<FillResponse[]>([]);
   const [decisions, setDecisions] = useState<DecisionResponse[]>([]);
+  const [candles, setCandles] = useState<CandleResponse[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [needsToken, setNeedsToken] = useState(getStoredToken() === "");
   const [tokenDraft, setTokenDraft] = useState("");
@@ -37,10 +45,11 @@ export function OverviewScreen() {
     try {
       // Decisions are explainability, not safety: their endpoint failing
       // must never take down status/fills or the kill switch with it.
-      const [nextStatus, nextFills, nextDecisions] = await Promise.all([
+      const [nextStatus, nextFills, nextDecisions, nextCandles] = await Promise.all([
         fetchStatus(),
         fetchFills(),
         fetchDecisions().catch(() => null),
+        fetchCandles().catch(() => null),
       ]);
       if (requestId !== requestIdRef.current) {
         return;
@@ -49,6 +58,9 @@ export function OverviewScreen() {
       setFills(nextFills);
       if (nextDecisions !== null) {
         setDecisions(nextDecisions);
+      }
+      if (nextCandles !== null) {
+        setCandles(nextCandles);
       }
       setError(null);
       setNeedsToken(false);
@@ -154,6 +166,7 @@ export function OverviewScreen() {
       ) : (
         <div className="text-sm text-zinc-500">loading…</div>
       )}
+      <CandleChart candles={candles} fills={fills} />
       <DecisionsPanel decisions={decisions} />
       <FillsTable fills={fills} />
     </div>

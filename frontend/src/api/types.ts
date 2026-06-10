@@ -41,6 +41,15 @@ export interface CommandResponse {
   detail: string;
 }
 
+export interface CandleResponse {
+  open_time: string;
+  open_quote: string;
+  high_quote: string;
+  low_quote: string;
+  close_quote: string;
+  volume_base: string;
+}
+
 export interface DecisionResponse {
   signal_id: string;
   strategy_name: string;
