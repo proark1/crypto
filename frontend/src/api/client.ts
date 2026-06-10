@@ -18,11 +18,21 @@ export class ApiError extends Error {
 }
 
 export function getStoredToken(): string {
-  return localStorage.getItem(TOKEN_STORAGE_KEY) ?? "";
+  // localStorage can throw in restricted contexts (sandboxed iframes,
+  // blocked storage); degrade to "no token" instead of crashing at load.
+  try {
+    return localStorage.getItem(TOKEN_STORAGE_KEY) ?? "";
+  } catch {
+    return "";
+  }
 }
 
 export function storeToken(token: string): void {
-  localStorage.setItem(TOKEN_STORAGE_KEY, token);
+  try {
+    localStorage.setItem(TOKEN_STORAGE_KEY, token);
+  } catch {
+    // storage unavailable: the session works until reload
+  }
 }
 
 const BASE_URL: string = (import.meta.env.VITE_API_URL as string | undefined) ?? "";

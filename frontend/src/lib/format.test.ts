@@ -12,8 +12,9 @@ describe("trimAmount", () => {
     expect(trimAmount("10000")).toBe("10000");
   });
 
-  it("collapses zero representations", () => {
+  it("collapses zero representations, including negative zero", () => {
     expect(trimAmount("0.000000")).toBe("0");
+    expect(trimAmount("-0.000000")).toBe("0");
   });
 });
 

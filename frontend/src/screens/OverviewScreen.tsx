@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
   ApiError,
@@ -24,15 +24,26 @@ export function OverviewScreen() {
   const [needsToken, setNeedsToken] = useState(getStoredToken() === "");
   const [tokenDraft, setTokenDraft] = useState("");
   const [notice, setNotice] = useState<string | null>(null);
+  const [commandPending, setCommandPending] = useState(false);
+  const requestIdRef = useRef(0);
 
   const refresh = useCallback(async () => {
+    // Slow polls can resolve out of order; only the newest request may
+    // touch state, so stale data never overwrites fresh data.
+    const requestId = ++requestIdRef.current;
     try {
       const [nextStatus, nextFills] = await Promise.all([fetchStatus(), fetchFills()]);
+      if (requestId !== requestIdRef.current) {
+        return;
+      }
       setStatus(nextStatus);
       setFills(nextFills);
       setError(null);
       setNeedsToken(false);
     } catch (caught) {
+      if (requestId !== requestIdRef.current) {
+        return;
+      }
       if (caught instanceof ApiError && caught.status === 401) {
         setNeedsToken(true);
       } else {
@@ -54,12 +65,15 @@ export function OverviewScreen() {
 
   const runCommand = useCallback(
     async (command: () => Promise<{ detail: string }>) => {
+      setCommandPending(true);
       try {
         const result = await command();
         setNotice(result.detail);
         await refresh();
       } catch (caught) {
         setNotice(caught instanceof Error ? caught.message : "command failed");
+      } finally {
+        setCommandPending(false);
       }
     },
     [refresh],
@@ -106,6 +120,7 @@ export function OverviewScreen() {
         {status && (
           <Controls
             paused={status.paused}
+            disabled={commandPending}
             onPause={() => void runCommand(postPause)}
             onResume={() => void runCommand(postResume)}
             onKill={() => void runCommand(postKill)}
