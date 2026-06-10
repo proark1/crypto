@@ -23,6 +23,7 @@ import type {
   StatusResponse,
 } from "../api/types";
 import { CandleChart } from "../components/CandleChart";
+import { CoinTabs } from "../components/CoinTabs";
 import { Controls } from "../components/Controls";
 import { DecisionsPanel } from "../components/DecisionsPanel";
 import { FillsTable } from "../components/FillsTable";
@@ -42,21 +43,25 @@ export function OverviewScreen() {
   const [tokenDraft, setTokenDraft] = useState("");
   const [notice, setNotice] = useState<string | null>(null);
   const [commandPending, setCommandPending] = useState(false);
+  // null until the first status arrives: the backend's first configured
+  // coin is the default, and the frontend must not hardcode one.
+  const [selectedSymbol, setSelectedSymbol] = useState<string | null>(null);
   const requestIdRef = useRef(0);
 
   const refresh = useCallback(async () => {
     // Slow polls can resolve out of order; only the newest request may
     // touch state, so stale data never overwrites fresh data.
     const requestId = ++requestIdRef.current;
+    const symbol = selectedSymbol ?? undefined;
     try {
       // Decisions are explainability, not safety: their endpoint failing
       // must never take down status/fills or the kill switch with it.
       const [nextStatus, nextFills, nextDecisions, nextCandles, nextProposals] =
         await Promise.all([
-          fetchStatus(),
+          fetchStatus(symbol),
           fetchFills(),
-          fetchDecisions().catch(() => null),
-          fetchCandles().catch(() => null),
+          fetchDecisions(symbol).catch(() => null),
+          fetchCandles(symbol).catch(() => null),
           fetchProposals().catch(() => null),
         ]);
       if (requestId !== requestIdRef.current) {
@@ -85,7 +90,7 @@ export function OverviewScreen() {
         setError(caught instanceof Error ? caught.message : "request failed");
       }
     }
-  }, []);
+  }, [selectedSymbol]);
 
   useEffect(() => {
     if (needsToken) {
@@ -172,6 +177,14 @@ export function OverviewScreen() {
           {error}
         </div>
       )}
+      {status && (
+        <CoinTabs
+          symbols={status.symbols}
+          selected={status.symbol}
+          disabled={commandPending}
+          onSelect={setSelectedSymbol}
+        />
+      )}
       {status ? (
         <StatusCard status={status} />
       ) : (
@@ -183,7 +196,11 @@ export function OverviewScreen() {
         onApprove={(signalId) => void runCommand(() => approveProposal(signalId))}
         onReject={(signalId) => void runCommand(() => rejectProposal(signalId))}
       />
-      <CandleChart candles={candles} fills={fills} />
+      <CandleChart
+        candles={candles}
+        // Markers must match the charted coin; the journal spans them all.
+        fills={status ? fills.filter((fill) => fill.symbol === status.symbol) : fills}
+      />
       <DecisionsPanel decisions={decisions} />
       <FillsTable fills={fills} />
     </div>

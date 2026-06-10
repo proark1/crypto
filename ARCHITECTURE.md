@@ -21,8 +21,8 @@ This document is the target design. Implementation status as of June 2026
 | Control API: status, pause/resume, kill, data endpoints (§6.4) | **Done** — bearer auth, public /health, CORS; SSE/WS push missing (dashboard polls) |
 | Co-pilot mode: proposal queue, approve/reject, TTL + drift guards (§6.3) | **Done** — entries only; exits never wait for approval |
 | Telegram notifications (§6.2) | **Done** — alerts only; command handling missing |
-| Dashboard: status, chart, decisions, proposals, controls (§6.1) | **Done** — single symbol; wizard, journal, research screens missing |
-| Multi-coin support (§4.2) | **Partial** — N symbols via `TRADEBOT_SYMBOLS` (per-symbol feed+engine, shared account/breakers); runtime add-a-coin flow and per-coin UI missing |
+| Dashboard: status, chart, decisions, proposals, controls (§6.1) | **Done** — per-coin view with coin switcher; wizard, journal, research screens missing |
+| Multi-coin support (§4.2) | **Partial** — N symbols via `TRADEBOT_SYMBOLS` (per-symbol feed+engine, shared account/breakers) with per-coin dashboard; runtime add-a-coin flow missing |
 | News pipeline, regime gates, signal fusion (§4.6, §4.7) | **Missing** |
 | Observability: dead-man's switch, metrics, DB backups (§7.3) | **Partial** — heartbeat ping gated on feed freshness done; metrics and backups missing |
 | Live trading (§8 Phase 3) | **Missing** — blockers enumerated in LIVE_TRADING_CHECKLIST.md |

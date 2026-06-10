@@ -15,6 +15,7 @@ export function FillsTable(props: { fills: FillResponse[] }) {
         <thead className="border-b border-zinc-800 text-xs uppercase tracking-wide text-zinc-500">
           <tr>
             <th className="px-4 py-3">time</th>
+            <th className="px-4 py-3">coin</th>
             <th className="px-4 py-3">side</th>
             <th className="px-4 py-3">quantity</th>
             <th className="px-4 py-3">price</th>
@@ -29,6 +30,7 @@ export function FillsTable(props: { fills: FillResponse[] }) {
               className="border-b border-zinc-800/50"
             >
               <td className="px-4 py-2 text-zinc-400">{formatTime(fill.filled_at)}</td>
+              <td className="px-4 py-2 text-zinc-300">{fill.symbol}</td>
               <td
                 className={`px-4 py-2 font-bold uppercase ${
                   fill.side === "buy" ? "text-emerald-400" : "text-red-400"
