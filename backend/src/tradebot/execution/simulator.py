@@ -11,7 +11,9 @@ Fill assumptions err against the strategy on purpose (ARCHITECTURE.md §8,
 - **Stop-limit** orders trigger when the candle range crosses the stop, then
   fill at the limit price with taker fees — unless the candle *opens* beyond
   the limit (gapped through), in which case they stay unfilled: stop-limit
-  gap risk is real and must show up in backtests.
+  gap risk is real and must show up in backtests. Triggering is permanent,
+  as on a real exchange: a gapped-through stop remains an active limit order
+  and fills if price later returns to its limit.
 
 Partial fills are not modeled here; the fault-injection mock exchange covers
 them when the live adapter lands.
@@ -52,6 +54,7 @@ class SimulatedExecutionAdapter:
         self._config = config
         self._pending_market: dict[str, Order] = {}
         self._resting: dict[str, Order] = {}
+        self._triggered: set[str] = set()
         self._fill_handler: FillHandler | None = None
 
     def set_fill_handler(self, handler: FillHandler) -> None:
@@ -76,6 +79,7 @@ class SimulatedExecutionAdapter:
         if self._pending_market.pop(client_order_id, None) is not None:
             return
         if self._resting.pop(client_order_id, None) is not None:
+            self._triggered.discard(client_order_id)
             return
         raise ValueError(f"cannot cancel unknown order {client_order_id!r}")
 
@@ -97,6 +101,7 @@ class SimulatedExecutionAdapter:
             fill = self._try_fill_resting(order, candle)
             if fill is not None:
                 del self._resting[order.client_order_id]
+                self._triggered.discard(order.client_order_id)
                 fills.append(fill)
         if self._fill_handler is None:
             if fills:
@@ -127,13 +132,28 @@ class SimulatedExecutionAdapter:
 
         assert order.stop_price_quote is not None  # validated at submit
         stop = order.stop_price_quote
-        if order.side == Side.SELL:
-            triggered = candle.low_quote <= stop
-            gapped_through = candle.open_quote < limit
-        else:
-            triggered = candle.high_quote >= stop
-            gapped_through = candle.open_quote > limit
-        if not triggered or gapped_through:
+        order_id = order.client_order_id
+        if order_id not in self._triggered:
+            crossed = (
+                candle.low_quote <= stop if order.side == Side.SELL else candle.high_quote >= stop
+            )
+            if not crossed:
+                return None
+            # Triggering is permanent, like on a real exchange: from here on
+            # the order is an active limit order even if this candle gaps
+            # through the limit and cannot fill it.
+            self._triggered.add(order_id)
+            gapped_through = (
+                candle.open_quote < limit if order.side == Side.SELL else candle.open_quote > limit
+            )
+            if gapped_through:
+                return None
+            return self._make_fill(order, limit, self._config.taker_fee_bps, candle)
+        # Already triggered: behaves as a resting limit order awaiting its price.
+        reachable = (
+            candle.high_quote >= limit if order.side == Side.SELL else candle.low_quote <= limit
+        )
+        if not reachable:
             return None
         return self._make_fill(order, limit, self._config.taker_fee_bps, candle)
 

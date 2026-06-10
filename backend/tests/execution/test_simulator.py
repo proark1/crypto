@@ -187,6 +187,47 @@ class TestStopLimitOrders:
         assert collector.fills == []  # gap risk is preserved, not papered over
         assert len(adapter.open_orders()) == 1
 
+    async def test_gapped_stop_fills_on_recovery_without_recrossing_stop(self) -> None:
+        """Triggering is permanent: after a gap, the order is a live limit order.
+
+        The recovery candle here never crosses the stop again (low stays above
+        95); a stateless simulator would wrongly leave the order unfilled.
+        """
+        adapter, collector = make_adapter()
+        await adapter.submit(
+            make_order(Side.SELL, OrderType.STOP_LIMIT, stop_price="95", limit_price="94")
+        )
+        await adapter.process_candle(
+            make_candle(open_quote="90", high_quote="92", low_quote="88", close_quote="89")
+        )
+        assert collector.fills == []  # triggered but gapped through
+
+        await adapter.process_candle(
+            make_candle(
+                open_quote="96",
+                high_quote="97",
+                low_quote="95.5",
+                close_quote="96.5",
+                minutes_after_base=1,
+            )
+        )
+        (fill,) = collector.fills
+        assert fill.price_quote == Decimal("94")
+
+    async def test_cancel_clears_triggered_state(self) -> None:
+        adapter, collector = make_adapter()
+        await adapter.submit(
+            make_order(Side.SELL, OrderType.STOP_LIMIT, stop_price="95", limit_price="94")
+        )
+        await adapter.process_candle(
+            make_candle(open_quote="90", high_quote="92", low_quote="88", close_quote="89")
+        )
+        await adapter.cancel("order-1")
+
+        assert adapter.open_orders() == ()
+        await adapter.process_candle(make_candle(minutes_after_base=1))
+        assert collector.fills == []
+
     async def test_buy_stop_triggers_when_high_crosses_stop(self) -> None:
         adapter, collector = make_adapter()
         await adapter.submit(
