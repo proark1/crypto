@@ -381,22 +381,6 @@ class Worker:
 
     async def run(self) -> None:
         """Start the bot (and the control API, if configured) until stopped."""
-        replayed = await self.initialize()
-        positions = (
-            ", ".join(
-                f"{symbol}={position.quantity_base}"
-                for symbol, position in self.portfolio.positions.items()
-            )
-            or "flat"
-        )
-        logger.info(
-            "worker starting: %s on %s (paper), %d fills replayed, positions=%s, balance=%s",
-            ", ".join(self.symbols),
-            self.config.exchange_id,
-            replayed,
-            positions,
-            self.portfolio.quote_balance,
-        )
         # Started inside the try so a failure in any later startup step still
         # tears down whatever already runs (no leaked tasks or clients).
         api_task: asyncio.Task[None] | None = None
@@ -410,7 +394,28 @@ class Worker:
         sentiment_task: asyncio.Task[None] | None = None
         sentiment_client: httpx.AsyncClient | None = None
         try:
+            # The API comes up before initialize(): the first boot's deep
+            # history backfill can run for minutes, and the platform
+            # healthcheck must see /health long before that finishes. Data
+            # endpoints answer an honest 409 ("no coins are active") until
+            # the engines exist.
             api_task = self._start_api()
+            replayed = await self.initialize()
+            positions = (
+                ", ".join(
+                    f"{symbol}={position.quantity_base}"
+                    for symbol, position in self.portfolio.positions.items()
+                )
+                or "flat"
+            )
+            logger.info(
+                "worker starting: %s on %s (paper), %d fills replayed, positions=%s, balance=%s",
+                ", ".join(self.symbols),
+                self.config.exchange_id,
+                replayed,
+                positions,
+                self.portfolio.quote_balance,
+            )
             notifier_client = await self._start_notifier_if_configured()
             heartbeat_task, heartbeat_client = self._start_heartbeat_if_configured()
             news_task, news_client = self._start_news_monitor_if_configured()
