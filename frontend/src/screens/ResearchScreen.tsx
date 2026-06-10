@@ -72,34 +72,38 @@ function BreakdownTable(props: { title: string; data: Record<string, unknown> | 
   return (
     <div>
       <h4 className="mb-1 text-xs uppercase tracking-wide text-zinc-500">{props.title}</h4>
-      <table className="w-full text-left text-sm">
-        <thead className="text-xs text-zinc-500">
-          <tr>
-            <th className="py-1 pr-2">condition</th>
-            <th className="py-1 pr-2">scenarios</th>
-            <th className="py-1 pr-2">trades</th>
-            <th className="py-1 pr-2">expectancy (R)</th>
-            <th className="py-1">win rate</th>
-          </tr>
-        </thead>
-        <tbody>
-          {Object.entries(props.data).map(([label, raw]) => {
-            const row = asRecord(raw);
-            const tone = expectancyTone(row?.expectancy_r);
-            return (
-              <tr key={label} className="border-t border-zinc-800/60 text-zinc-300">
-                <td className="py-1 pr-2">{label.replace(/_/g, " ")}</td>
-                <td className="py-1 pr-2">{text(row?.scenario_count)}</td>
-                <td className="py-1 pr-2">{text(row?.trade_count)}</td>
-                <td className={`py-1 pr-2 ${tone === "neutral" ? "" : TONE_TEXT_CLASS[tone]}`}>
-                  {text(row?.expectancy_r)}
-                </td>
-                <td className="py-1">{text(row?.win_rate)}</td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
+      <div className="overflow-x-auto">
+        <table className="w-full text-left text-sm">
+          <thead className="text-xs text-zinc-500">
+            <tr>
+              <th className="py-1 pr-2">condition</th>
+              <th className="py-1 pr-2">scenarios</th>
+              <th className="py-1 pr-2">trades</th>
+              <th className="py-1 pr-2">expectancy (R)</th>
+              <th className="py-1">win rate</th>
+            </tr>
+          </thead>
+          <tbody>
+            {Object.entries(props.data).map(([label, raw]) => {
+              const row = asRecord(raw);
+              const tone = expectancyTone(row?.expectancy_r);
+              return (
+                <tr key={label} className="border-t border-zinc-800/60 text-zinc-300">
+                  <td className="py-1 pr-2">{label.replace(/_/g, " ")}</td>
+                  <td className="py-1 pr-2">{text(row?.scenario_count)}</td>
+                  <td className="py-1 pr-2">{text(row?.trade_count)}</td>
+                  <td
+                    className={`py-1 pr-2 ${tone === "neutral" ? "" : TONE_TEXT_CLASS[tone]}`}
+                  >
+                    {text(row?.expectancy_r)}
+                  </td>
+                  <td className="py-1">{text(row?.win_rate)}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }
@@ -194,7 +198,7 @@ export function ScenarioTable(props: {
       <h4 className="mb-1 text-xs uppercase tracking-wide text-zinc-500">
         scenarios — pick one to replay it blind
       </h4>
-      <div className="max-h-80 overflow-y-auto">
+      <div className="max-h-80 overflow-auto">
         <table className="w-full text-left text-sm">
           <thead className="text-xs text-zinc-500">
             <tr>

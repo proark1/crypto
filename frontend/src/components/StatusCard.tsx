@@ -17,7 +17,7 @@ export function StatusCard(props: { status: StatusResponse }) {
   const quote = status.quote_currency;
   return (
     <section className="rounded-xl border border-zinc-800 bg-zinc-900 p-5">
-      <div className="mb-4 flex items-center gap-3">
+      <div className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-1">
         <h2 className="text-xl font-bold text-zinc-100">{status.symbol}</h2>
         <span className="rounded bg-amber-500/20 px-2 py-0.5 text-xs font-bold uppercase text-amber-400">
           {status.mode}
@@ -27,7 +27,7 @@ export function StatusCard(props: { status: StatusResponse }) {
             paused
           </span>
         )}
-        <span className="ml-auto text-sm text-zinc-500">
+        <span className="w-full text-sm text-zinc-500 sm:ml-auto sm:w-auto sm:text-right">
           {status.exchange_id} · last candle {formatTime(status.last_candle_close_time)}
         </span>
       </div>

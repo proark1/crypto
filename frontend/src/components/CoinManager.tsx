@@ -31,7 +31,7 @@ export function CoinManager(props: {
         }}
         disabled={props.disabled}
         placeholder="add coin, e.g. ETH/USDT"
-        className="rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-1.5 text-sm text-zinc-100 placeholder:text-zinc-600"
+        className="w-full min-w-0 rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-1.5 text-sm text-zinc-100 placeholder:text-zinc-600 sm:w-56"
       />
       <button
         type="submit"

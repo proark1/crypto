@@ -33,7 +33,7 @@ export function DecisionsPanel(props: { decisions: DecisionResponse[] }) {
             key={decision.signal_id + decision.outcome}
             className="border-b border-zinc-800/50 px-4 py-3 last:border-b-0"
           >
-            <div className="flex items-center gap-3">
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
               <span
                 className={`rounded px-2 py-0.5 text-xs font-bold uppercase ${
                   OUTCOME_STYLES[decision.outcome] ?? "bg-zinc-500/20 text-zinc-400"
