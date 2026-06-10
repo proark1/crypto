@@ -125,13 +125,24 @@ class TestDownload:
 
         assert len(candles) == 2
 
-    async def test_history_rejects_month_boundary_gap(self) -> None:
+    async def test_history_tolerates_month_boundary_gap(self) -> None:
         june_row = "1719791940000,100,101,99,100,1,x,x,x,x,x,0\n"
-        # July starts one minute late: a download problem, not an outage.
+        # July starts one minute late: a real outage spanning the boundary —
+        # dumps contain exactly what traded, so this must be ingested.
         july_row = "1719792060000,100,101,99,100,1,x,x,x,x,x,0\n"
         july_url = DUMP_URL.replace("2024-06", "2024-07")
         client = make_mock_client({DUMP_URL: zip_bytes(june_row), july_url: zip_bytes(july_row)})
-        with pytest.raises(ValueError, match="month boundary mismatch"):
+        candles = await download_history(client, "BTC/USDT", 2024, 6, 2024, 7)
+
+        assert len(candles) == 2
+
+    async def test_history_rejects_overlapping_months(self) -> None:
+        june_row = "1719791940000,100,101,99,100,1,x,x,x,x,x,0\n"
+        # "July" starts before June ended: corrupt stitching must fail loudly.
+        july_row = "1719791880000,100,101,99,100,1,x,x,x,x,x,0\n"
+        july_url = DUMP_URL.replace("2024-06", "2024-07")
+        client = make_mock_client({DUMP_URL: zip_bytes(june_row), july_url: zip_bytes(july_row)})
+        with pytest.raises(ValueError, match="unsorted or duplicated"):
             await download_history(client, "BTC/USDT", 2024, 6, 2024, 7)
 
     async def test_history_rejects_empty_month(self) -> None:

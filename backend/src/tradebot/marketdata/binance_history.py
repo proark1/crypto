@@ -122,29 +122,22 @@ async def download_history(
     end_year: int,
     end_month: int,
 ) -> list[Candle]:
-    """Download a contiguous span of months and report data-quality findings.
+    """Download a contiguous span of months into one ordered series.
 
     Months are fetched sequentially (Binance rate-limits aggressive pulls and
-    backfills are not latency-sensitive). Raises if the stitched series is
-    out of order; intra-series gaps are possible in real exchange data
-    (outages) and are *allowed*, but the boundaries between months must line
-    up — a gap exactly at a month boundary means a download problem, not an
-    exchange outage, so it raises.
+    backfills are not latency-sensitive). Gaps — inside months *and* across
+    month boundaries — are tolerated: dumps contain exactly what traded, and
+    a clean late start means a real exchange outage, which must be ingested
+    honestly (a truncated download fails the zip CRC or row parsing instead).
+    Unsorted or duplicated data raises; callers wanting the gap inventory run
+    ``find_gaps`` on the result, as this function does for validation.
     """
     all_candles: list[Candle] = []
     for year, month in month_range(start_year, start_month, end_year, end_month):
         month_candles = await download_month(client, symbol, year, month)
         if not month_candles:
             raise ValueError(f"empty dump for {symbol} {year}-{month:02d}")
-        if all_candles:
-            boundary_gap = month_candles[0].open_time - all_candles[-1].open_time
-            if boundary_gap != CandleInterval.M1.duration:
-                raise ValueError(
-                    f"month boundary mismatch entering {year}-{month:02d}: "
-                    f"{all_candles[-1].open_time.isoformat()} -> "
-                    f"{month_candles[0].open_time.isoformat()}"
-                )
         all_candles.extend(month_candles)
-    # Validates ordering as a side effect; gaps inside months are tolerated.
+    # Raises on unsorted/duplicate data; gap inventory is the caller's to use.
     find_gaps(all_candles, CandleInterval.M1)
     return all_candles
