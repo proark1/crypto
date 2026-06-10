@@ -7,7 +7,7 @@ which ranges to fetch over REST, and ``validate_candle`` flags data the bot
 must quarantine rather than trade on (ARCHITECTURE.md section 11).
 """
 
-from tradebot.marketdata.aggregation import TimeframeAggregator
+from tradebot.marketdata.aggregation import TimeframeAggregator, aggregate_candles
 from tradebot.marketdata.binance_history import (
     download_history,
     download_month,
@@ -19,6 +19,7 @@ from tradebot.marketdata.validation import validate_candle
 
 __all__ = [
     "TimeframeAggregator",
+    "aggregate_candles",
     "download_history",
     "download_month",
     "find_gaps",

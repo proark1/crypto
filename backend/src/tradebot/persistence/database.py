@@ -9,8 +9,19 @@ from __future__ import annotations
 
 from types import TracebackType
 
-from sqlalchemy import BigInteger, Column, DateTime, MetaData, Numeric, Table, Text
-from sqlalchemy.dialects.postgresql import ARRAY
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    Column,
+    DateTime,
+    ForeignKey,
+    Integer,
+    MetaData,
+    Numeric,
+    Table,
+    Text,
+)
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 metadata = MetaData()
@@ -74,6 +85,94 @@ coins_table = Table(
 """The actively traded pairs — the runtime source of truth. The env var
 ``TRADEBOT_SYMBOLS`` only seeds this table on first boot; afterwards coins
 are added and removed through the control API."""
+
+
+evaluation_runs_table = Table(
+    "evaluation_runs",
+    metadata,
+    Column("id", BigInteger, primary_key=True, autoincrement=True),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("status", Text, nullable=False),
+    Column("symbols", ARRAY(Text), nullable=False),
+    Column("timeframes", ARRAY(Text), nullable=False),
+    Column("config", JSONB, nullable=False),
+    Column("code_version", Text, nullable=False),
+    Column("progress_done", Integer, nullable=False),
+    Column("progress_total", Integer, nullable=False),
+    Column("summary", JSONB, nullable=True),
+)
+"""One blind walk-forward evaluation run (ARCHITECTURE.md section 12).
+``config`` snapshots the full run + strategy configuration so results are
+never orphaned from the rules that produced them; old runs are never
+overwritten or rescored."""
+
+scenarios_table = Table(
+    "scenarios",
+    metadata,
+    Column("id", BigInteger, primary_key=True, autoincrement=True),
+    Column("run_id", BigInteger, ForeignKey("evaluation_runs.id"), nullable=False, index=True),
+    Column("symbol", Text, nullable=False),
+    Column("timeframe", Text, nullable=False),
+    Column("decision_time", DateTime(timezone=True), nullable=False),
+    Column("lookback_candles", Integer, nullable=False),
+    Column("scenario_class", Text, nullable=False),
+    Column("trend", Text, nullable=False),
+    Column("volatility", Text, nullable=False),
+    Column("events", ARRAY(Text), nullable=False),
+    Column("seed", BigInteger, nullable=False),
+)
+"""One blind decision point. Candles are referenced by coordinates
+(symbol, timeframe, decision_time, lookback) — never copied out of the
+candles table, which stays the single source of price truth."""
+
+scenario_results_table = Table(
+    "scenario_results",
+    metadata,
+    Column("id", BigInteger, primary_key=True, autoincrement=True),
+    Column(
+        "scenario_id",
+        BigInteger,
+        ForeignKey("scenarios.id"),
+        nullable=False,
+        index=True,
+        unique=True,
+    ),
+    Column("decision", Text, nullable=False),
+    Column("confidence", Numeric, nullable=True),
+    Column("reasons", ARRAY(Text), nullable=False),
+    Column("entry_price_quote", Numeric, nullable=True),
+    Column("exit_price_quote", Numeric, nullable=True),
+    Column("r_multiple", Numeric, nullable=True),
+    Column("pnl_quote", Numeric, nullable=True),
+    Column("mfe_r", Numeric, nullable=True),
+    Column("mae_r", Numeric, nullable=True),
+    Column("duration_candles", Integer, nullable=True),
+    Column("stop_hit", Boolean, nullable=True),
+    Column("oracle_r", Numeric, nullable=True),
+    Column("verdict", Text, nullable=False),
+    Column("timing", Text, nullable=True),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+)
+"""The decision the bot made blind, and its grade once the future was
+revealed. Trade fields are null for hold decisions; ``oracle_r`` is the
+hindsight-perfect benchmark (analysis only, never a simulated exit)."""
+
+learning_findings_table = Table(
+    "learning_findings",
+    metadata,
+    Column("id", BigInteger, primary_key=True, autoincrement=True),
+    Column("run_id", BigInteger, ForeignKey("evaluation_runs.id"), nullable=False, index=True),
+    Column("pattern", Text, nullable=False),
+    Column("evidence_scenario_ids", ARRAY(BigInteger), nullable=False),
+    Column("affected_count", Integer, nullable=False),
+    Column("average_r_impact", Numeric, nullable=False),
+    Column("suggestion", Text, nullable=False),
+    Column("confidence", Text, nullable=False),
+    Column("status", Text, nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+)
+"""Mined mistake patterns with their evidence. Findings recommend; a human
+accepts or rejects — the system never changes trading rules by itself."""
 
 
 _SYNC_SCHEME_PREFIXES = (

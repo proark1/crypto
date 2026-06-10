@@ -5,7 +5,7 @@ import pytest
 
 from tests.marketdata.conftest import BASE_TIME, MakeM1
 from tradebot.core.models import CandleInterval
-from tradebot.marketdata import TimeframeAggregator
+from tradebot.marketdata import TimeframeAggregator, aggregate_candles
 
 
 def test_five_minutes_aggregate_into_one_5m_candle(make_m1: MakeM1) -> None:
@@ -107,3 +107,35 @@ def test_non_1m_input_raises(make_m1: MakeM1) -> None:
 def test_1m_target_is_rejected() -> None:
     with pytest.raises(ValueError, match="coarser than the 1m base"):
         TimeframeAggregator(CandleInterval.M1)
+
+
+class TestBatchAggregation:
+    """The batch helper must mirror the incremental semantics exactly."""
+
+    def test_unordered_duplicated_input_aggregates_cleanly(self, make_m1: MakeM1) -> None:
+        candles = [make_m1(minute) for minute in range(11)]
+        shuffled = candles[5:] + candles[:5] + [candles[3]]  # disorder + duplicate
+
+        aggregated = aggregate_candles(shuffled, CandleInterval.M5)
+
+        # Minutes 0-9 form two complete buckets; minute 10 opens a third
+        # bucket that is still partial and therefore not emitted.
+        assert [c.open_time for c in aggregated] == [
+            BASE_TIME,
+            BASE_TIME + timedelta(minutes=5),
+        ]
+        assert all(c.interval == CandleInterval.M5 for c in aggregated)
+
+    def test_trailing_partial_bucket_is_never_emitted(self, make_m1: MakeM1) -> None:
+        aggregated = aggregate_candles([make_m1(m) for m in range(4)], CandleInterval.M5)
+        assert aggregated == []  # four minutes never make a 5m candle
+
+    def test_empty_input_is_empty_output(self) -> None:
+        assert aggregate_candles([], CandleInterval.H1) == []
+
+    def test_mixed_symbols_are_rejected_loudly(self, make_m1: MakeM1) -> None:
+        """De-duplication keys on open time, so mixed symbols would silently
+        swallow one symbol's candles — it must fail instead."""
+        mixed = [make_m1(0), make_m1(0, symbol="ETH/USDT")]
+        with pytest.raises(ValueError, match="one symbol at a time"):
+            aggregate_candles(mixed, CandleInterval.M5)
