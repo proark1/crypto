@@ -142,7 +142,42 @@ operational pain with zero benefit.
 - Notifications via Telegram (trade executed, stop hit, circuit breaker tripped,
   WS disconnected). The full interface design is in section 6.
 
-### 4.8 Observability
+### 4.8 Trade authorization & anti-accident safeguards
+
+Defense in depth against unintended orders, plus a per-coin **autonomy mode**:
+
+**Autonomy modes (set per coin, changeable any time):**
+- **Autonomous:** the bot executes everything within its risk limits (default design).
+- **Co-pilot (approval mode):** signals that pass every gate become **pending
+  proposals** instead of orders. The user is notified (Telegram + dashboard) with the
+  full context — side, size, entry, stop, target, and the reasons from each gate —
+  and must explicitly approve or reject. Proposals **expire** (configurable TTL,
+  e.g. 15 minutes) and are **auto-cancelled if price moves beyond a threshold** from
+  the proposal price, so a stale approval can never execute at a bad price. All risk
+  checks are **re-run at approval time**, not proposal time.
+- **Safety invariant in both modes:** protective actions — stop-losses, circuit
+  breakers, news-driven exits, the kill switch — always execute autonomously and
+  immediately. A human approval queue in front of a stop-loss is itself a risk.
+  Only entries and discretionary (take-profit/rebalance) exits go through approval.
+
+**Anti-accident safeguards (always on, regardless of mode):**
+- **Single chokepoint:** the execution engine accepts orders only from the risk
+  manager's queue, each carrying an intent record (signal ID + gate decisions).
+  There is deliberately no code path that can place an order without that lineage.
+- **Pre-submit sanity checks at the execution engine:** price band (reject any order
+  priced >X% away from current mid), per-order max notional cap, available-balance
+  check, and exchange-filter validation (lot size, min notional) before submission.
+- **Runaway-bot brakes:** global max orders per minute and max trades per day; the
+  bot halts itself and alerts if order rejection rate or trade frequency is abnormal.
+- **Duplicate suppression:** deterministic client order IDs make resubmits idempotent;
+  reconciliation cancels unknown/orphaned orders found on the exchange.
+- **Risk-limit changes are guarded:** increasing any limit (per-trade risk, exposure
+  caps, disabling a circuit breaker) requires typed confirmation in the UI and is
+  recorded in the audit log; decreases apply instantly.
+- **Full audit trail:** every proposal, approval, rejection, expiry, manual action,
+  and config change is journaled with timestamp and source (UI, Telegram, system).
+
+### 4.9 Observability
 - Structured JSON logging with event correlation (signal → order → fill chain).
 - Metrics: data-feed lag, order round-trip time, fill rate, rejection reasons,
   live-vs-backtest signal divergence (a key health metric).
@@ -188,6 +223,8 @@ A trade decision is a pipeline of gates, not a vote among equals:
 4. **News/event veto (see 5.3):** active negative-news flag or scheduled high-impact
    event window blocks new entries and may tighten stops on open positions.
 5. **Risk manager:** final sizing and portfolio-level checks as defined in 4.3.
+6. **Authorization (mode-dependent, see 4.8):** in autonomous mode the order goes to
+   execution; in co-pilot mode it becomes a pending proposal awaiting user approval.
 
 Every gate decision is logged with the signal, so backtests can attribute PnL impact
 to each filter individually and dead filters get removed.
@@ -223,16 +260,19 @@ a settings page; radical explainability is the UX differentiator here.
   (free, OSS, the standard look traders expect) for candles; live updates pushed over
   WebSocket from FastAPI. Responsive layout installable as a PWA so the phone
   experience is first-class. Dark mode as default (trading convention).
-- **Telegram** (push + emergency remote control): tiered notifications and a few
-  guarded commands — `/status`, `/pause <coin>`, `/killswitch`.
+- **Telegram** (push + emergency remote control): tiered notifications, a few guarded
+  commands — `/status`, `/pause <coin>`, `/killswitch` — and **trade proposals with
+  inline Approve / Reject buttons** for coins in co-pilot mode, so approvals work
+  from a phone in seconds.
 - **REST API**: everything the dashboard can do, for power users and automation.
 
 ### 6.2 Core screens
 
 1. **Overview:** total equity curve, today's/total net PnL, open positions, one card
-   per coin (paper/live badge, active regime, last action + reason), and a system
-   health strip (data feed, exchange connection, last heartbeat, circuit-breaker
-   state). Designed to answer "is everything okay?" in three seconds.
+   per coin (paper/live badge, **autonomy mode badge**, active regime, last action +
+   reason), a **pending approvals inbox** (proposals with countdown to expiry), and a
+   system health strip (data feed, exchange connection, last heartbeat,
+   circuit-breaker state). Designed to answer "is everything okay?" in three seconds.
 2. **Coin detail:** live candlestick chart with entries, exits, and current stop
    plotted on the chart; active indicator overlays; and the **decision pipeline view**
    — each gate from section 5.2 shown green/red with its live reason (e.g. "entry
@@ -240,7 +280,9 @@ a settings page; radical explainability is the UX differentiator here.
 3. **Add-a-coin wizard:** search pair → screening report (volume, spread, age —
    pass/fail with explanations) → pick strategy + risk preset (conservative /
    balanced / aggressive, described in plain language: "risks ~0.5% of equity per
-   trade") → backfill progress → starts in paper mode.
+   trade") → pick autonomy mode (autonomous / co-pilot) → backfill progress →
+   starts in paper mode. Recommended first-live path: **co-pilot mode**, then switch
+   to autonomous once the user trusts the bot's proposals.
 4. **Trade journal:** filterable table of every trade; each row expands to the full
    decision context (signal, gate decisions, fees, slippage vs. expectation).
 5. **Research:** run backtests from the UI, equity curve vs. buy-and-hold, walk-forward
@@ -326,10 +368,12 @@ walk-forward report. Exit criteria: a backtest run is reproducible end-to-end.
 
 **Phase 2 — Paper trading:**
 live data feed, paper execution adapter, risk manager, Telegram alerts, control API
-with the add-a-coin flow, and the **dashboard MVP** (overview screen, coin detail
-with decision pipeline view, kill switch — reviewing paper results requires a UI).
-Exit criteria: bot paper-trades a coin unattended for 2+ weeks with no crashes, no
-data gaps, and live signals matching backtest signals.
+with the add-a-coin flow, **autonomy modes with the approval workflow** (exercised in
+paper mode to build trust before any real money), and the **dashboard MVP** (overview
+screen with approvals inbox, coin detail with decision pipeline view, kill switch —
+reviewing paper results requires a UI). Exit criteria: bot paper-trades a coin
+unattended for 2+ weeks with no crashes, no data gaps, and live signals matching
+backtest signals.
 
 **Phase 3 — Live trading, small:**
 live execution adapter with reconciliation, circuit breakers and kill switch proven by
