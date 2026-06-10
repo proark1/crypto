@@ -9,6 +9,7 @@ paper, and going live is always an explicit, deliberate setting.
 from __future__ import annotations
 
 import enum
+from decimal import Decimal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -38,3 +39,15 @@ class AppConfig(BaseSettings):
 
     log_level: str = "INFO"
     """Root log level for structured logging."""
+
+    exchange_id: str = "binance"
+    """CCXT exchange id for market data (and, in Phase 3, execution)."""
+
+    symbol: str = "BTC/USDT"
+    """The pair the worker trades; multi-coin arrives with the control API."""
+
+    database_url: str | None = None
+    """Postgres DSN (``postgresql+asyncpg://...``); required to run the worker."""
+
+    paper_initial_balance_quote: Decimal = Decimal("10000")
+    """Starting paper balance in the quote currency."""
