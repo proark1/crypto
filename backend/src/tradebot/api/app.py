@@ -173,10 +173,11 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
     async def health() -> dict[str, str]:
         """Public liveness probe: platform healthchecks cannot send tokens.
 
-        Deliberately exposes nothing an attacker can use — no balances, no
-        positions, no controls. Everything else stays behind the bearer token.
+        Minimal by design: even mode and symbol are operational details an
+        unauthenticated scanner has no business learning. Everything real
+        stays behind the bearer token.
         """
-        return {"status": "ok", "mode": state.config.mode.value, "symbol": state.config.symbol}
+        return {"status": "ok"}
 
     @protected.get("/status")
     async def get_status() -> StatusResponse:

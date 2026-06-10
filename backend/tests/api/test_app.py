@@ -115,8 +115,9 @@ class TestAuth:
         ) as client:
             response = await client.get("/health")  # no Authorization header
         assert response.status_code == 200
-        assert response.json()["status"] == "ok"
-        assert "balance" not in response.text  # nothing sensitive leaks here
+        # Minimal by design: no mode, no symbol, no balances — nothing for
+        # an unauthenticated scanner to learn beyond "something is alive".
+        assert response.json() == {"status": "ok"}
 
     async def test_wrong_token_is_rejected(self, database: Database) -> None:
         app = create_app(StubBot(database), TOKEN)

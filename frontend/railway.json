@@ -4,7 +4,7 @@
     "builder": "RAILPACK"
   },
   "deploy": {
-    "startCommand": "npx serve -s dist -l $PORT",
+    "startCommand": "npx --no-install serve -s dist -l $PORT",
     "restartPolicyType": "ON_FAILURE"
   }
 }
