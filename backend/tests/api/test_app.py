@@ -272,6 +272,88 @@ class TestCandles:
             assert (await client.get("/candles?limit=99999")).status_code == 422
 
 
+class TestProposals:
+    @staticmethod
+    def make_copilot_bot(database: Database) -> StubBot:
+        from datetime import timedelta as td
+
+        from tradebot.authorization import ProposalQueue
+        from tradebot.core.models import AutonomyMode
+
+        bot = StubBot(database)
+        bot.engine = TradingEngine(
+            TrendFollowingStrategy(
+                TrendFollowingConfig(fast_ema_period=3, slow_ema_period=6, atr_period=3)
+            ),
+            RiskManager(RiskConfig(), bot.portfolio),
+            bot.portfolio,
+            SimulatedExecutionAdapter(FillSimulatorConfig()),
+            symbol="BTC/USDT",
+            autonomy_mode=AutonomyMode.COPILOT,
+            proposal_queue=ProposalQueue(ttl=td(minutes=60), max_drift_fraction=Decimal("0.10")),
+        )
+        return bot
+
+    async def drive_to_proposal(self, bot: StubBot) -> str:
+        closes = [100.0, 98.0, 96.0, 94.0, 92.0, 90.0, 100.0, 112.0, 126.0]
+        for index, close in enumerate(closes):
+            candle = make_candle(close=str(close)).model_copy(
+                update={
+                    "open_time": BASE_TIME + timedelta(minutes=index),
+                    "close_time": BASE_TIME + timedelta(minutes=index + 1),
+                    "high_quote": Decimal(str(close + 1)),
+                    "low_quote": Decimal(str(close - 1)),
+                }
+            )
+            await bot.engine.process_candle(candle)
+            if bot.engine.pending_proposals():
+                break  # stop before further candles drift-cancel the proposal
+        (proposal,) = bot.engine.pending_proposals()
+        return proposal.signal.signal_id
+
+    async def test_pending_proposals_are_listed(self, database: Database) -> None:
+        bot = self.make_copilot_bot(database)
+        signal_id = await self.drive_to_proposal(bot)
+
+        async with make_client(bot) as client:
+            body = (await client.get("/proposals")).json()
+
+        assert len(body) == 1
+        assert body[0]["signal_id"] == signal_id
+        assert body[0]["side"] == "buy"
+        assert body[0]["reasons"]
+
+    async def test_approve_submits_and_clears(self, database: Database) -> None:
+        bot = self.make_copilot_bot(database)
+        signal_id = await self.drive_to_proposal(bot)
+
+        async with make_client(bot) as client:
+            response = await client.post("/proposals/approve", json={"signal_id": signal_id})
+            remaining = (await client.get("/proposals")).json()
+
+        assert response.status_code == 200
+        assert "order submitted" in response.json()["detail"]
+        assert remaining == []
+
+    async def test_reject_clears_without_trading(self, database: Database) -> None:
+        bot = self.make_copilot_bot(database)
+        signal_id = await self.drive_to_proposal(bot)
+
+        async with make_client(bot) as client:
+            response = await client.post("/proposals/reject", json={"signal_id": signal_id})
+
+        assert response.status_code == 200
+        assert bot.engine.pending_proposals() == ()
+        assert bot.engine.fills == ()
+
+    async def test_unknown_proposal_is_404(self, database: Database) -> None:
+        bot = self.make_copilot_bot(database)
+        ghost = {"signal_id": "ghost"}
+        async with make_client(bot) as client:
+            assert (await client.post("/proposals/approve", json=ghost)).status_code == 404
+            assert (await client.post("/proposals/reject", json=ghost)).status_code == 404
+
+
 class TestFills:
     async def test_journal_is_returned_with_string_amounts(self, database: Database) -> None:
         bot = StubBot(database)

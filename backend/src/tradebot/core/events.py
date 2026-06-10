@@ -14,7 +14,7 @@ from typing import TypeVar, cast
 
 from pydantic import BaseModel, ConfigDict
 
-from tradebot.core.models import Candle, Fill
+from tradebot.core.models import Candle, Fill, Proposal
 
 E = TypeVar("E", bound=BaseModel)
 
@@ -31,6 +31,14 @@ class CandleClosed(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     candle: Candle
+
+
+class ProposalCreated(BaseModel):
+    """Published when a co-pilot proposal awaits the user's decision."""
+
+    model_config = ConfigDict(frozen=True)
+
+    proposal: Proposal
 
 
 class FillRecorded(BaseModel):

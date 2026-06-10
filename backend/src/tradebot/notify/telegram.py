@@ -13,7 +13,7 @@ import logging
 
 import httpx
 
-from tradebot.core.events import EventBus, FillRecorded
+from tradebot.core.events import EventBus, FillRecorded, ProposalCreated
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +33,7 @@ class TelegramNotifier:
     def attach_to(self, bus: EventBus) -> None:
         """Subscribe to the events worth a push notification."""
         bus.subscribe(FillRecorded, self._on_fill)
+        bus.subscribe(ProposalCreated, self._on_proposal)
 
     async def send(self, text: str) -> bool:
         """Send ``text``; returns False (and logs) on any failure.
@@ -64,6 +65,21 @@ class TelegramNotifier:
             self.send(
                 f"{fill.side.value.upper()} {fill.quantity_base} {fill.symbol} "
                 f"@ {fill.price_quote} (fee {fill.fee_quote})"
+            )
+        )
+        self._pending.add(task)
+        task.add_done_callback(self._pending.discard)
+
+    async def _on_proposal(self, event: ProposalCreated) -> None:
+        signal = event.proposal.signal
+        reasons = "\n".join(f"- {reason}" for reason in signal.reasons)
+        task = asyncio.create_task(
+            self.send(
+                f"PROPOSAL: {signal.side.value.upper()} {signal.symbol} "
+                f"@ ~{event.proposal.proposal_price_quote} "
+                f"(stop {signal.stop_price_quote})\n{reasons}\n"
+                f"expires {event.proposal.expires_at.strftime('%H:%M:%S')} UTC — "
+                "approve or reject in the dashboard"
             )
         )
         self._pending.add(task)

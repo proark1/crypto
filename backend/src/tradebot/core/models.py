@@ -200,6 +200,45 @@ class DecisionOutcome(enum.StrEnum):
     SUBMITTED = "submitted"
     VETOED = "vetoed"
     PAUSED = "paused"
+    PROPOSED = "proposed"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    EXPIRED = "expired"
+    DRIFTED = "drifted"
+
+
+class AutonomyMode(enum.StrEnum):
+    """Who has the final word on entries (ARCHITECTURE.md 4.8)."""
+
+    AUTONOMOUS = "autonomous"
+    COPILOT = "copilot"
+
+
+class ProposalStatus(enum.StrEnum):
+    """Lifecycle of a co-pilot proposal."""
+
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    EXPIRED = "expired"
+    DRIFTED = "drifted"
+
+
+class Proposal(BaseModel):
+    """An entry signal awaiting the user's word (co-pilot mode).
+
+    ``proposal_price_quote`` is the close at proposal time: approval is
+    refused if price has drifted too far from it, so a stale approval can
+    never execute at a price the user did not look at.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    signal: Signal
+    proposal_price_quote: PositiveAmount
+    created_at: UtcDatetime
+    expires_at: UtcDatetime
+    status: ProposalStatus = ProposalStatus.PENDING
 
 
 class Decision(BaseModel):

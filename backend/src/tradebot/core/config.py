@@ -13,6 +13,8 @@ from decimal import Decimal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from tradebot.core.models import AutonomyMode
+
 
 class TradingMode(enum.StrEnum):
     """Which execution adapter the bot runs against."""
@@ -65,3 +67,12 @@ class AppConfig(BaseSettings):
 
     telegram_chat_id: str | None = None
     """The only chat the bot talks to (allowlist of exactly one)."""
+
+    autonomy_mode: AutonomyMode = AutonomyMode.AUTONOMOUS
+    """Whether entries execute directly or wait for user approval (co-pilot)."""
+
+    proposal_ttl_seconds: int = 900
+    """Co-pilot proposals expire after this many seconds unanswered."""
+
+    proposal_max_drift_fraction: Decimal = Decimal("0.01")
+    """Approval refused once price moves this fraction from the proposal price."""

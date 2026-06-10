@@ -15,13 +15,17 @@ from __future__ import annotations
 
 import logging
 
-from tradebot.core.events import CandleClosed, EventBus, FillRecorded
+from tradebot.authorization import ProposalQueue
+from tradebot.core.events import CandleClosed, EventBus, FillRecorded, ProposalCreated
 from tradebot.core.models import (
+    AutonomyMode,
     Candle,
     CandleInterval,
     Decision,
     DecisionOutcome,
     Fill,
+    Proposal,
+    ProposalStatus,
     Side,
     Signal,
 )
@@ -53,8 +57,12 @@ class TradingEngine:
         interval: CandleInterval = CandleInterval.M1,
         fill_store: FillStore | None = None,
         decision_store: DecisionStore | None = None,
+        autonomy_mode: AutonomyMode = AutonomyMode.AUTONOMOUS,
+        proposal_queue: ProposalQueue | None = None,
     ) -> None:
         """Wire the components; ``symbol=None`` binds to the first candle seen."""
+        if autonomy_mode == AutonomyMode.COPILOT and proposal_queue is None:
+            raise ValueError("co-pilot mode requires a proposal queue")
         self._strategy = strategy
         self._risk_manager = risk_manager
         self._portfolio = portfolio
@@ -63,6 +71,8 @@ class TradingEngine:
         self._interval = interval
         self._fill_store = fill_store
         self._decision_store = decision_store
+        self._autonomy_mode = autonomy_mode
+        self._proposal_queue = proposal_queue
         self._fills: list[Fill] = []
         self._paused = False
         self._last_candle: Candle | None = None
@@ -172,6 +182,7 @@ class TradingEngine:
             raise ValueError(f"engine is bound to {self._symbol}, got {candle.symbol}")
         self._last_candle = candle
         await self._adapter.process_candle(candle)
+        await self._sweep_proposals(candle)
         # The strategy consumes every candle even when paused so indicators
         # stay warm for resume; only its output is discarded.
         signal = self._strategy.on_candle(candle, self._portfolio.position(candle.symbol))
@@ -185,6 +196,22 @@ class TradingEngine:
                 signal.symbol,
             )
             await self._record_decision(signal, DecisionOutcome.PAUSED)
+            return
+        if (
+            self._autonomy_mode == AutonomyMode.COPILOT
+            and self._proposal_queue is not None
+            and signal.side == Side.BUY
+        ):
+            # Entries wait for the user; exits never do (capital protection
+            # must not sit behind a human queue — ARCHITECTURE.md 4.8).
+            proposal = self._proposal_queue.create(signal, candle.close_quote, candle.close_time)
+            if proposal is None:
+                logger.info("proposal already pending for %s; signal dropped", signal.symbol)
+                return
+            logger.info("co-pilot proposal created: %s", signal.signal_id)
+            await self._record_decision(signal, DecisionOutcome.PROPOSED)
+            if self._bus is not None:
+                await self._bus.publish(ProposalCreated(proposal=proposal))
             return
         order = self._risk_manager.evaluate(signal, candle.close_quote)
         if order is None:
@@ -206,6 +233,60 @@ class TradingEngine:
         )
         await self._adapter.submit(order)
         await self._record_decision(signal, DecisionOutcome.SUBMITTED)
+
+    def pending_proposals(self) -> tuple[Proposal, ...]:
+        """Return co-pilot proposals awaiting an answer (empty if autonomous)."""
+        if self._proposal_queue is None:
+            return ()
+        return self._proposal_queue.pending()
+
+    async def approve_proposal(self, signal_id: str) -> str:
+        """Execute a pending proposal; risk checks re-run at approval time.
+
+        Returns a human-readable outcome. Raises ``KeyError`` for unknown
+        proposals and ``ValueError`` when the proposal expired or drifted —
+        approval of a stale market is refused, not silently honored.
+        """
+        if self._proposal_queue is None:
+            raise KeyError("no proposal queue: engine is autonomous")
+        if all(p.signal.signal_id != signal_id for p in self._proposal_queue.pending()):
+            # Unknown-id beats no-data: a ghost id is the caller's mistake and
+            # must be reported as such regardless of market state.
+            raise KeyError(f"no pending proposal {signal_id!r}")
+        if self._last_candle is None:
+            raise ValueError("no market data yet; cannot price an approval")
+        current_price = self._last_candle.close_quote
+        proposal = self._proposal_queue.approve(
+            signal_id, self._last_candle.close_time, current_price
+        )
+        order = self._risk_manager.evaluate(proposal.signal, current_price)
+        if order is None:
+            await self._record_decision(proposal.signal, DecisionOutcome.VETOED)
+            return "approved, but risk checks vetoed at approval time"
+        await self._adapter.submit(order)
+        await self._record_decision(proposal.signal, DecisionOutcome.APPROVED)
+        logger.info("proposal %s approved; order %s submitted", signal_id, order.client_order_id)
+        return "approved; order submitted, fills on next candle"
+
+    async def reject_proposal(self, signal_id: str) -> None:
+        """Reject a pending proposal; raises ``KeyError`` if unknown."""
+        if self._proposal_queue is None:
+            raise KeyError("no proposal queue: engine is autonomous")
+        proposal = self._proposal_queue.reject(signal_id)
+        await self._record_decision(proposal.signal, DecisionOutcome.REJECTED)
+        logger.info("proposal %s rejected by user", signal_id)
+
+    async def _sweep_proposals(self, candle: Candle) -> None:
+        if self._proposal_queue is None:
+            return
+        for stale in self._proposal_queue.sweep(candle.close_time, candle.close_quote):
+            outcome = (
+                DecisionOutcome.EXPIRED
+                if stale.status == ProposalStatus.EXPIRED
+                else DecisionOutcome.DRIFTED
+            )
+            logger.info("proposal %s removed: %s", stale.signal.signal_id, outcome.value)
+            await self._record_decision(stale.signal, outcome)
 
     async def _record_decision(self, signal: Signal, outcome: DecisionOutcome) -> None:
         """Journal a signal's fate for the decision-pipeline view.

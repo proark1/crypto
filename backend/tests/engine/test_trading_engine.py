@@ -7,8 +7,16 @@ from decimal import Decimal
 
 import pytest
 
+from tradebot.authorization import ProposalQueue
 from tradebot.core.events import CandleClosed, EventBus, FillRecorded
-from tradebot.core.models import Candle, CandleInterval, DecisionOutcome, Fill, Side
+from tradebot.core.models import (
+    AutonomyMode,
+    Candle,
+    CandleInterval,
+    DecisionOutcome,
+    Fill,
+    Side,
+)
 from tradebot.engine import TradingEngine
 from tradebot.execution import FillSimulatorConfig, SimulatedExecutionAdapter
 from tradebot.persistence import Database, DecisionStore, FillStore
@@ -66,6 +74,8 @@ def make_engine(
     fill_store: FillStore | None = None,
     symbol: str | None = "BTC/USDT",
     decision_store: DecisionStore | None = None,
+    autonomy_mode: AutonomyMode = AutonomyMode.AUTONOMOUS,
+    proposal_queue: ProposalQueue | None = None,
 ) -> TradingEngine:
     strategy = TrendFollowingStrategy(
         TrendFollowingConfig(fast_ema_period=3, slow_ema_period=6, atr_period=3)
@@ -78,6 +88,8 @@ def make_engine(
         symbol=symbol,
         fill_store=fill_store,
         decision_store=decision_store,
+        autonomy_mode=autonomy_mode,
+        proposal_queue=proposal_queue,
     )
 
 
@@ -184,6 +196,108 @@ class TestDecisionJournal:
         assert DecisionOutcome.SUBMITTED in outcomes
         assert DecisionOutcome.PAUSED in outcomes
         assert all(d.reasons for d in decisions)  # explainability: never empty
+
+
+def make_copilot_engine(
+    portfolio: Portfolio, ttl_minutes: int = 60, drift: str = "1.0"
+) -> TradingEngine:
+    from datetime import timedelta as td
+
+    return make_engine(
+        portfolio,
+        autonomy_mode=AutonomyMode.COPILOT,
+        proposal_queue=ProposalQueue(
+            ttl=td(minutes=ttl_minutes), max_drift_fraction=Decimal(drift)
+        ),
+    )
+
+
+async def drive_until_proposal(engine: TradingEngine) -> int:
+    """Feed CLOSES until the entry proposal appears; returns the next index."""
+    for index, close in enumerate(CLOSES):
+        await engine.process_candle(make_candle(index, close))
+        if engine.pending_proposals():
+            return index + 1
+    raise AssertionError("series never produced a proposal")
+
+
+class TestCopilotMode:
+    async def test_entry_becomes_proposal_not_order(self) -> None:
+        portfolio = Portfolio(INITIAL_BALANCE)
+        engine = make_copilot_engine(portfolio)
+        await drive_until_proposal(engine)
+
+        assert engine.fills == ()  # nothing executed without approval
+        (proposal,) = engine.pending_proposals()
+        assert proposal.signal.side == Side.BUY
+        assert proposal.signal.reasons  # explainability carried through
+
+    async def test_approval_executes_with_rechecked_risk(self) -> None:
+        portfolio = Portfolio(INITIAL_BALANCE)
+        engine = make_copilot_engine(portfolio)
+        next_index = await drive_until_proposal(engine)
+        (proposal,) = engine.pending_proposals()
+
+        detail = await engine.approve_proposal(proposal.signal.signal_id)
+        assert "order submitted" in detail
+        await engine.process_candle(make_candle(next_index, CLOSES[next_index]))
+        assert [f.side for f in engine.fills] == [Side.BUY]
+
+    async def test_rejection_executes_nothing(self) -> None:
+        portfolio = Portfolio(INITIAL_BALANCE)
+        engine = make_copilot_engine(portfolio)
+        next_index = await drive_until_proposal(engine)
+        (proposal,) = engine.pending_proposals()
+
+        await engine.reject_proposal(proposal.signal.signal_id)
+        for offset, close in enumerate(CLOSES[next_index:]):
+            await engine.process_candle(make_candle(next_index + offset, close))
+        assert engine.fills == ()
+        assert engine.pending_proposals() == ()
+
+    async def test_unanswered_proposal_expires_via_sweep(self) -> None:
+        portfolio = Portfolio(INITIAL_BALANCE)
+        engine = make_copilot_engine(portfolio, ttl_minutes=2)
+        next_index = await drive_until_proposal(engine)
+
+        # Three flat 1m candles pass the 2-minute TTL unanswered.
+        last_close = CLOSES[next_index - 1]
+        for offset in range(3):
+            await engine.process_candle(make_candle(next_index + offset, last_close))
+        assert engine.pending_proposals() == ()
+        assert engine.fills == ()
+
+    async def test_drifted_proposal_is_swept(self) -> None:
+        portfolio = Portfolio(INITIAL_BALANCE)
+        engine = make_copilot_engine(portfolio, drift="0.02")
+        next_index = await drive_until_proposal(engine)
+
+        # The rally keeps running: price soon drifts >2% past the proposal.
+        for offset, close in enumerate(CLOSES[next_index:]):
+            await engine.process_candle(make_candle(next_index + offset, close))
+            if not engine.pending_proposals():
+                break
+        assert engine.pending_proposals() == ()
+        assert engine.fills == ()  # never executed at a price the user didn't see
+
+    async def test_exits_bypass_the_queue(self) -> None:
+        """Capital protection never waits for a human (ARCHITECTURE.md 4.8)."""
+        portfolio = Portfolio(INITIAL_BALANCE)
+        engine = make_copilot_engine(portfolio)
+        next_index = await drive_until_proposal(engine)
+        (proposal,) = engine.pending_proposals()
+        await engine.approve_proposal(proposal.signal.signal_id)
+
+        # Ride through the collapse: the cross-down exit executes directly.
+        for offset, close in enumerate(CLOSES[next_index:]):
+            await engine.process_candle(make_candle(next_index + offset, close))
+        assert [f.side for f in engine.fills] == [Side.BUY, Side.SELL]
+        assert portfolio.position("BTC/USDT") is None
+
+    async def test_copilot_requires_a_queue(self) -> None:
+        portfolio = Portfolio(INITIAL_BALANCE)
+        with pytest.raises(ValueError, match="requires a proposal queue"):
+            make_engine(portfolio, autonomy_mode=AutonomyMode.COPILOT)
 
 
 class TestPauseAndKill:
