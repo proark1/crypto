@@ -32,7 +32,7 @@ from tradebot.core.models import (
 from tradebot.execution.simulator import SimulatedExecutionAdapter
 from tradebot.persistence import DecisionStore, FillStore
 from tradebot.portfolio import Portfolio
-from tradebot.risk import RiskManager
+from tradebot.risk import CircuitBreakers, RiskManager
 from tradebot.strategies import Strategy
 
 logger = logging.getLogger(__name__)
@@ -88,6 +88,15 @@ class TradingEngine:
     def paused(self) -> bool:
         """True while the strategy is muted (orders/stops keep working)."""
         return self._paused
+
+    @property
+    def breakers(self) -> CircuitBreakers:
+        """Circuit-breaker state, for the control plane's status view."""
+        return self._risk_manager.breakers
+
+    def reset_breakers(self) -> None:
+        """Operator reset of a tripped breaker; an explicit, logged action."""
+        self._risk_manager.breakers.reset()
 
     def pause(self) -> None:
         """Mute the strategy: no new signals; resting orders stay live.
@@ -182,6 +191,9 @@ class TradingEngine:
             raise ValueError(f"engine is bound to {self._symbol}, got {candle.symbol}")
         self._last_candle = candle
         await self._adapter.process_candle(candle)
+        # Post-fill equity mark: the breakers must judge the same books the
+        # strategy is about to see.
+        self._risk_manager.on_candle(candle)
         await self._sweep_proposals(candle)
         # The strategy consumes every candle even when paused so indicators
         # stay warm for resume; only its output is discarded.
@@ -340,6 +352,7 @@ class TradingEngine:
         if self._fill_store is not None:
             await self._fill_store.append(fill)
         self._portfolio.apply_fill(fill)
+        self._risk_manager.on_fill(fill)
         self._fills.append(fill)
         if self._bus is not None:
             await self._bus.publish(FillRecorded(fill=fill))

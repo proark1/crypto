@@ -233,6 +233,33 @@ class TestStatus:
         assert body["position"]["unrealized_pnl_quote"] is None
 
 
+class TestBreakers:
+    async def test_status_reports_untripped_breakers(self, database: Database) -> None:
+        bot = StubBot(database)
+        async with make_client(bot) as client:
+            body = (await client.get("/status")).json()
+
+        assert body["breakers"]["tripped_reason"] is None
+        assert body["breakers"]["cooldown_until"] is None
+        assert body["breakers"]["entries_today"] == 0
+
+    async def test_reset_clears_a_tripped_breaker(self, database: Database) -> None:
+        bot = StubBot(database)
+        # Trip the daily-loss breaker directly: 10000 -> 9000 is past -3%.
+        bot.engine.breakers.observe(BASE_TIME, Decimal("10000"))
+        bot.engine.breakers.observe(BASE_TIME + timedelta(minutes=1), Decimal("9000"))
+
+        async with make_client(bot) as client:
+            tripped = (await client.get("/status")).json()
+            response = await client.post("/breakers/reset")
+            cleared = (await client.get("/status")).json()
+
+        assert "daily loss" in tripped["breakers"]["tripped_reason"]
+        assert response.status_code == 200
+        assert response.json()["detail"] == "circuit breakers reset"
+        assert cleared["breakers"]["tripped_reason"] is None
+
+
 class TestCommands:
     async def test_pause_and_resume_toggle_status(self, database: Database) -> None:
         bot = StubBot(database)

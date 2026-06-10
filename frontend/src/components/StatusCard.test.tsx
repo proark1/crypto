@@ -16,6 +16,7 @@ const FLAT_STATUS: StatusResponse = {
   last_candle_close_time: "2026-01-02T00:01:00+00:00",
   mark_price_quote: "67000.50000000",
   equity_quote: "10000",
+  breakers: { tripped_reason: null, cooldown_until: null, entries_today: 0 },
 };
 
 describe("StatusCard", () => {
@@ -34,5 +35,38 @@ describe("StatusCard", () => {
   it("refuses to invent equity when the backend reports null", () => {
     render(<StatusCard status={{ ...FLAT_STATUS, equity_quote: null }} />);
     expect(screen.getByText("unknown")).toBeDefined();
+  });
+
+  it("shows a tripped circuit breaker prominently", () => {
+    render(
+      <StatusCard
+        status={{
+          ...FLAT_STATUS,
+          breakers: {
+            tripped_reason: "daily loss limit: equity fell below day start",
+            cooldown_until: null,
+            entries_today: 2,
+          },
+        }}
+      />,
+    );
+    expect(screen.getByText("circuit breaker tripped")).toBeDefined();
+    expect(screen.getByText(/daily loss limit/)).toBeDefined();
+  });
+
+  it("shows the loss-streak cooldown when not tripped", () => {
+    render(
+      <StatusCard
+        status={{
+          ...FLAT_STATUS,
+          breakers: {
+            tripped_reason: null,
+            cooldown_until: "2026-01-02T04:00:00+00:00",
+            entries_today: 3,
+          },
+        }}
+      />,
+    );
+    expect(screen.getByText("loss-streak cooldown")).toBeDefined();
   });
 });

@@ -1,9 +1,9 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
-from tradebot.core.models import Fill, OrderType, Side, Signal
+from tradebot.core.models import Candle, CandleInterval, Fill, OrderType, Side, Signal
 from tradebot.portfolio import Portfolio
-from tradebot.risk import RiskConfig, RiskManager
+from tradebot.risk import BreakerConfig, RiskConfig, RiskManager
 
 SIGNAL_TIME = datetime(2026, 1, 2, 3, 4, tzinfo=UTC)
 
@@ -106,6 +106,144 @@ class TestEntrySizing:
                 assert order.quantity_base > 0
                 assert order.quantity_base * (price - stop) <= equity * Decimal("0.02")
                 assert order.quantity_base * price <= equity * Decimal("0.25")
+
+
+def make_candle(close: str, minute: int = 0) -> Candle:
+    open_time = SIGNAL_TIME + timedelta(minutes=minute)
+    return Candle(
+        symbol="BTC/USDT",
+        interval=CandleInterval.M1,
+        open_time=open_time,
+        close_time=open_time + timedelta(minutes=1),
+        open_quote=Decimal(close),
+        high_quote=Decimal(close),
+        low_quote=Decimal(close),
+        close_quote=Decimal(close),
+        volume_base=Decimal("1"),
+    )
+
+
+class TestBreakerIntegration:
+    @staticmethod
+    def make_braked_manager(breakers: BreakerConfig) -> tuple[RiskManager, Portfolio]:
+        portfolio = Portfolio(Decimal("10000"))
+        return RiskManager(RiskConfig(breakers=breakers), portfolio), portfolio
+
+    def test_tripped_breaker_vetoes_entries_but_not_exits(self) -> None:
+        manager, portfolio = self.make_braked_manager(
+            BreakerConfig(max_daily_loss_fraction=Decimal("0.03"))
+        )
+        open_position(portfolio, price="100", quantity="50")
+        manager.on_candle(make_candle("100", minute=0))
+        # The position marks down hard: equity 10000 -> 7500, past -3%.
+        manager.on_candle(make_candle("50", minute=1))
+        assert manager.breakers.tripped_reason is not None
+
+        exit_order = manager.evaluate(make_signal(Side.SELL, stop="50"), Decimal("50"))
+        assert exit_order is not None  # capital protection is never braked
+        assert exit_order.quantity_base == Decimal("50")
+
+        # Flatten, so only the breaker can veto the next entry attempt.
+        portfolio.apply_fill(
+            Fill(
+                client_order_id="flatten",
+                symbol="BTC/USDT",
+                side=Side.SELL,
+                price_quote=Decimal("50"),
+                quantity_base=Decimal("50"),
+                fee_quote=Decimal("0"),
+                filled_at=SIGNAL_TIME,
+            )
+        )
+        assert manager.evaluate(make_signal(Side.BUY, stop="45"), Decimal("50")) is None
+
+    def test_daily_entry_cap_counts_only_sized_entries(self) -> None:
+        manager, portfolio = self.make_braked_manager(BreakerConfig(max_entries_per_day=1))
+        manager.on_candle(make_candle("100"))
+
+        first = manager.evaluate(make_signal(Side.BUY, stop="95"), Decimal("100"))
+        assert first is not None
+        # The cap is now reached; the next entry is vetoed even though flat.
+        portfolio_is_still_flat = portfolio.position("BTC/USDT") is None
+        assert portfolio_is_still_flat
+        assert manager.evaluate(make_signal(Side.BUY, stop="95"), Decimal("100")) is None
+
+    def test_loss_streak_from_fills_blocks_entries(self) -> None:
+        manager, portfolio = self.make_braked_manager(
+            BreakerConfig(
+                loss_streak_threshold=2,
+                loss_streak_cooldown=timedelta(hours=4),
+                # Loosen the equity brakes so only the streak can block.
+                max_daily_loss_fraction=Decimal("0.99"),
+                max_drawdown_fraction=Decimal("0.99"),
+            )
+        )
+        for round_trip in range(2):  # two losing round trips: buy 100, sell 90
+            buy = Fill(
+                client_order_id=f"buy-{round_trip}",
+                symbol="BTC/USDT",
+                side=Side.BUY,
+                price_quote=Decimal("100"),
+                quantity_base=Decimal("1"),
+                fee_quote=Decimal("0"),
+                filled_at=SIGNAL_TIME,
+            )
+            sell = buy.model_copy(
+                update={
+                    "client_order_id": f"sell-{round_trip}",
+                    "side": Side.SELL,
+                    "price_quote": Decimal("90"),
+                }
+            )
+            portfolio.apply_fill(buy)
+            manager.on_fill(buy)
+            portfolio.apply_fill(sell)
+            manager.on_fill(sell)
+
+        assert manager.evaluate(make_signal(Side.BUY, stop="95"), Decimal("100")) is None
+        # After the cooldown the same signal sizes again.
+        late = make_signal(Side.BUY, stop="95").model_copy(
+            update={"created_at": SIGNAL_TIME + timedelta(hours=5)}
+        )
+        assert manager.evaluate(late, Decimal("100")) is not None
+
+    def test_partial_exit_fills_count_as_one_round_trip(self) -> None:
+        """One losing exit filled in parts must not be a streak of losses."""
+        manager, portfolio = self.make_braked_manager(
+            BreakerConfig(
+                loss_streak_threshold=2,
+                loss_streak_cooldown=timedelta(hours=4),
+                max_daily_loss_fraction=Decimal("0.99"),
+                max_drawdown_fraction=Decimal("0.99"),
+            )
+        )
+        buy = Fill(
+            client_order_id="buy",
+            symbol="BTC/USDT",
+            side=Side.BUY,
+            price_quote=Decimal("100"),
+            quantity_base=Decimal("2"),
+            fee_quote=Decimal("0"),
+            filled_at=SIGNAL_TIME,
+        )
+        portfolio.apply_fill(buy)
+        manager.on_fill(buy)
+        # The exit fills in two losing parts; threshold 2 would trip if each
+        # part were (wrongly) counted as its own losing round trip.
+        for part in range(2):
+            partial = buy.model_copy(
+                update={
+                    "client_order_id": f"sell-{part}",
+                    "side": Side.SELL,
+                    "price_quote": Decimal("90"),
+                    "quantity_base": Decimal("1"),
+                }
+            )
+            portfolio.apply_fill(partial)
+            manager.on_fill(partial)
+
+        # One completed round trip = streak of 1: no cooldown yet.
+        assert manager.evaluate(make_signal(Side.BUY, stop="95"), Decimal("100")) is not None
 
 
 class TestExits:

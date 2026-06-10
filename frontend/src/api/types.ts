@@ -12,6 +12,12 @@ export interface PositionResponse {
   unrealized_pnl_quote: string | null;
 }
 
+export interface BreakersResponse {
+  tripped_reason: string | null;
+  cooldown_until: string | null;
+  entries_today: number;
+}
+
 export interface StatusResponse {
   mode: string;
   paused: boolean;
@@ -24,6 +30,7 @@ export interface StatusResponse {
   last_candle_close_time: string | null;
   mark_price_quote: string | null;
   equity_quote: string | null;
+  breakers: BreakersResponse;
 }
 
 export interface FillResponse {

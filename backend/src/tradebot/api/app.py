@@ -67,6 +67,14 @@ class PositionResponse(BaseModel):
     unrealized_pnl_quote: str | None
 
 
+class BreakersResponse(BaseModel):
+    """Circuit-breaker state: why entries are blocked, if they are."""
+
+    tripped_reason: str | None
+    cooldown_until: str | None
+    entries_today: int
+
+
 class StatusResponse(BaseModel):
     """The three-second answer to "is everything okay?"."""
 
@@ -81,6 +89,7 @@ class StatusResponse(BaseModel):
     last_candle_close_time: str | None
     mark_price_quote: str | None
     equity_quote: str | None
+    breakers: BreakersResponse
 
 
 class CommandResponse(BaseModel):
@@ -247,9 +256,19 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
                     else None
                 ),
             )
+        breakers = state.engine.breakers
         return StatusResponse(
             mode=state.config.mode.value,
             paused=state.engine.paused,
+            breakers=BreakersResponse(
+                tripped_reason=breakers.tripped_reason,
+                cooldown_until=(
+                    breakers.cooldown_until.isoformat()
+                    if breakers.cooldown_until is not None
+                    else None
+                ),
+                entries_today=breakers.entries_today,
+            ),
             symbol=symbol,
             exchange_id=state.config.exchange_id,
             quote_currency=state.config.quote_currency,
@@ -285,6 +304,16 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
             else "halted; no position to flatten"
         )
         return CommandResponse(paused=True, detail=detail)
+
+    @protected.post("/breakers/reset")
+    async def reset_breakers() -> CommandResponse:
+        """Clear a tripped circuit breaker — the explicit human reset.
+
+        Deliberately does not resume a paused engine or forget the equity
+        peak: it re-permits entries, nothing more.
+        """
+        state.engine.reset_breakers()
+        return CommandResponse(paused=state.engine.paused, detail="circuit breakers reset")
 
     @protected.get("/proposals")
     async def get_proposals() -> list[ProposalResponse]:

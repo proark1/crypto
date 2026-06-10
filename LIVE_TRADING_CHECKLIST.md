@@ -49,11 +49,12 @@ to a way real money is lost that paper trading never exercises.
       acceptable when the journal is the audit trail for real money).
 
 ### 6. Runaway brakes (risk manager completion)
-- [ ] Circuit breakers: max daily loss, max drawdown from equity peak — trip
-      to halted, require explicit human reset.
-- [ ] Loss-streak cooldown and max-trades-per-day cap.
-- [ ] All of the above live in the risk manager and therefore work
-      identically in paper mode — ship them **before** the soak so the soak
+- [x] Circuit breakers: max daily loss, max drawdown from equity peak — block
+      all new entries until an explicit human reset (`POST /breakers/reset`).
+      Exits and the kill switch keep working while tripped.
+- [x] Loss-streak cooldown and max-entries-per-day cap.
+- [x] All of the above live in the risk manager and therefore work
+      identically in paper mode — shipped **before** the soak so the soak
       exercises them.
 
 ### 7. Operational safety
