@@ -70,15 +70,15 @@ class TestEntrySizing:
         assert order.quantity_base == Decimal("10")  # 10% of 10000 / price 100
 
     def test_quantity_is_capped_by_spendable_balance(self) -> None:
-        manager, portfolio = make_manager(
+        # Risk budget alone would size 100 units (5000 risk / 50 stop distance),
+        # a 10000 notional — but only 10000 * (1 - fee buffer) = 9950 is spendable.
+        manager, _ = make_manager(
             balance="10000", risk_fraction="0.50", max_position_fraction="1.0"
         )
-        open_position(portfolio, price="100", quantity="50")  # 5000 spent
-        portfolio_free = portfolio.quote_balance
-        # Risk budget would buy far more than the remaining balance affords.
         order = manager.evaluate(make_signal(Side.BUY, stop="50"), Decimal("100"))
 
-        assert order is None or order.quantity_base * Decimal("100") <= portfolio_free
+        assert order is not None
+        assert order.quantity_base == Decimal("99.5")  # 9950 / price 100
 
     def test_stop_at_or_above_price_is_vetoed(self) -> None:
         manager, _ = make_manager()

@@ -39,6 +39,14 @@ class RiskManager:
     Exits are not vetoed: a proposal to close an open position always passes
     (capital protection must never be blocked by entry-oriented limits) and
     is sized to the full held quantity.
+
+    Phase 1 scope (single-symbol backtests). Three known extensions arrive
+    with the paper/live engine and are deliberately not faked here:
+    ``evaluate`` will take a price map once portfolios hold multiple symbols;
+    balance committed to resting orders will be subtracted from spendable
+    once an order-state tracker exists; exchange lot-size/min-notional
+    rounding stays in the execution engine's pre-submit checks
+    (ARCHITECTURE.md 4.8) where the venue rules live.
     """
 
     def __init__(self, config: RiskConfig, portfolio: Portfolio) -> None:
@@ -47,7 +55,13 @@ class RiskManager:
         self._portfolio = portfolio
 
     def evaluate(self, signal: Signal, current_price_quote: Decimal) -> Order | None:
-        """Size ``signal`` against current equity, or return ``None`` to veto."""
+        """Size ``signal`` against current equity, or return ``None`` to veto.
+
+        ``current_price_quote`` must be positive; model-validated prices
+        upstream guarantee it, so a violation here is a caller bug, not a veto.
+        """
+        if current_price_quote <= 0:
+            raise ValueError(f"current price must be positive, got {current_price_quote}")
         if signal.side == Side.SELL:
             return self._size_exit(signal)
         return self._size_entry(signal, current_price_quote)

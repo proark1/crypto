@@ -9,6 +9,7 @@ manager turns into position size.
 
 from __future__ import annotations
 
+from datetime import datetime
 from decimal import ROUND_HALF_EVEN, Decimal
 
 from pydantic import BaseModel, ConfigDict
@@ -49,6 +50,7 @@ class TrendFollowingStrategy:
         self._slow = Ema(config.slow_ema_period)
         self._atr = Atr(config.atr_period)
         self._previous_fast_above: bool | None = None
+        self._last_open_time: datetime | None = None
 
     @property
     def name(self) -> str:
@@ -56,7 +58,20 @@ class TrendFollowingStrategy:
         return "trend_following"
 
     def on_candle(self, candle: Candle, position: Position | None) -> Signal | None:
-        """Update indicators and propose an entry/exit on EMA crosses."""
+        """Update indicators and propose an entry/exit on EMA crosses.
+
+        Candles must arrive in strictly increasing time order: the indicators
+        are stateful, so a duplicate or out-of-order candle would corrupt
+        them silently. The feed layer dedupes; if one reaches this far it is
+        a bug and raises rather than poisoning every later signal.
+        """
+        if self._last_open_time is not None and candle.open_time <= self._last_open_time:
+            raise ValueError(
+                f"out-of-order or duplicate candle: {candle.open_time.isoformat()} after "
+                f"{self._last_open_time.isoformat()}"
+            )
+        self._last_open_time = candle.open_time
+
         close = float(candle.close_quote)
         fast = self._fast.update(close)
         slow = self._slow.update(close)

@@ -57,9 +57,19 @@ class BacktestRunner:
         self._portfolio = portfolio
         self._adapter = adapter
         self._fills: list[Fill] = []
+        self._consumed = False
 
     async def run(self, candles: Sequence[Candle]) -> BacktestResult:
-        """Replay ``candles`` (one symbol, time-ordered) and report the outcome."""
+        """Replay ``candles`` (one symbol, time-ordered) and report the outcome.
+
+        A runner is single-use: strategy indicators, portfolio, and adapter
+        all carry state from the run, so reuse would produce plausible-looking
+        but wrong results. Build a fresh runner (with fresh components) per
+        run; resetting only this object's state would hide the stale rest.
+        """
+        if self._consumed:
+            raise RuntimeError("BacktestRunner is single-use; build a fresh one per run")
+        self._consumed = True
         if not candles:
             raise ValueError("cannot backtest an empty candle series")
         symbols = {candle.symbol for candle in candles}

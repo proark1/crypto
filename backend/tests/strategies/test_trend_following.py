@@ -101,6 +101,18 @@ class TestSignals:
         # Stops come from float indicator math, so compare with a tolerance.
         assert float(distance_at_3) == pytest.approx(float(distance_at_2) * 1.5, rel=1e-9)
 
+    def test_duplicate_candle_raises_instead_of_corrupting_indicators(self) -> None:
+        strategy = TrendFollowingStrategy(FAST_CONFIG)
+        strategy.on_candle(make_candle(0, 100.0), None)
+        with pytest.raises(ValueError, match="out-of-order or duplicate"):
+            strategy.on_candle(make_candle(0, 100.0), None)
+
+    def test_out_of_order_candle_raises(self) -> None:
+        strategy = TrendFollowingStrategy(FAST_CONFIG)
+        strategy.on_candle(make_candle(5, 100.0), None)
+        with pytest.raises(ValueError, match="out-of-order or duplicate"):
+            strategy.on_candle(make_candle(4, 100.0), None)
+
 
 class TestConfig:
     def test_fast_period_must_be_shorter_than_slow(self) -> None:

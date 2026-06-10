@@ -97,6 +97,18 @@ class TestEndToEnd:
         ]
         assert first.equity_curve == second.equity_curve
 
+    async def test_runner_is_single_use(self) -> None:
+        portfolio = Portfolio(INITIAL_BALANCE)
+        runner = BacktestRunner(
+            TrendFollowingStrategy(TrendFollowingConfig(fast_ema_period=3, slow_ema_period=6)),
+            RiskManager(RiskConfig(), portfolio),
+            portfolio,
+            SimulatedExecutionAdapter(FillSimulatorConfig()),
+        )
+        await runner.run(make_candles())
+        with pytest.raises(RuntimeError, match="single-use"):
+            await runner.run(make_candles())
+
     async def test_empty_series_is_rejected(self) -> None:
         portfolio = Portfolio(INITIAL_BALANCE)
         runner = BacktestRunner(
