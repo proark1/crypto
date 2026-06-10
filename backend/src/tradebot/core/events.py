@@ -68,6 +68,18 @@ class EventBus:
         """
         self._handlers.setdefault(event_type, []).append(cast(Handler[BaseModel], handler))
 
+    def unsubscribe(self, event_type: type[E], handler: Handler[E]) -> None:
+        """Remove a previously registered handler.
+
+        Exists for runtime coin removal: a detached engine must never see
+        another event, or re-adding the coin would double-process candles
+        (two engines, two orders). Raises ``ValueError`` if the handler was
+        not subscribed — silently "removing" nothing would hide exactly the
+        bug this method prevents.
+        """
+        handlers = self._handlers.get(event_type, [])
+        handlers.remove(cast(Handler[BaseModel], handler))
+
     async def publish(self, event: BaseModel) -> None:
         """Deliver ``event`` to its subscribers in subscription order.
 

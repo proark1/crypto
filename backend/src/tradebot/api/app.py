@@ -54,6 +54,14 @@ class BotState(Protocol):
         """One trading loop per symbol, for pause/resume/kill commands."""
         ...
 
+    async def add_coin(self, symbol: str) -> None:
+        """Start trading a coin at runtime (``ValueError`` on bad input)."""
+        ...
+
+    async def remove_coin(self, symbol: str) -> None:
+        """Stop trading a coin (``KeyError`` unknown, ``RuntimeError`` unsafe)."""
+        ...
+
     @property
     def decision_store(self) -> DecisionStore:
         """The explainability trail: every signal and its fate."""
@@ -113,6 +121,12 @@ class DecisionResponse(BaseModel):
     reasons: list[str]
     outcome: str
     created_at: str
+
+
+class CoinActionRequest(BaseModel):
+    """Names the coin to add or remove (in the body: symbols contain ``/``)."""
+
+    symbol: str
 
 
 class ProposalActionRequest(BaseModel):
@@ -205,33 +219,42 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
                 detail="missing or invalid bearer token",
             )
 
-    configured_symbols = list(state.config.symbol_list())
+    def active_symbols() -> list[str]:
+        """Return the live coin set.
+
+        Read fresh per request, never captured: coins are added and removed
+        at runtime.
+        """
+        return list(state.engines)
 
     def resolve_symbol(symbol: str | None) -> str:
-        """Default to the first configured symbol; 404 unknown ones."""
+        """Default to the first active symbol; 404 unknown ones."""
+        symbols = active_symbols()
+        if not symbols:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="no coins are active")
         if symbol is None:
-            return configured_symbols[0]
+            return symbols[0]
         if symbol not in state.engines:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"unknown symbol {symbol!r}; configured: {configured_symbols}",
+                detail=f"unknown symbol {symbol!r}; active: {symbols}",
             )
         return symbol
 
     async def account_equity() -> Decimal | None:
         """Mark every open position at its latest stored close; ``None`` if any lacks one.
 
-        Marks are gathered for every *configured* symbol first, and only then
+        Marks are gathered for every *active* symbol first, and only then
         is the portfolio read — synchronously, with no awaits in between. An
         await between reading positions and valuing them would let a fill on
         the trading loop open a position the marks don't cover, turning a
         status request into a 500.
         """
         marks: dict[str, Decimal] = {}
-        for configured in configured_symbols:
-            candle = await state.candle_store.latest_candle(configured, CandleInterval.M1)
+        for active in active_symbols():
+            candle = await state.candle_store.latest_candle(active, CandleInterval.M1)
             if candle is not None:
-                marks[configured] = candle.close_quote
+                marks[active] = candle.close_quote
         for open_symbol in state.portfolio.positions:
             if open_symbol not in marks:
                 return None  # refuse to guess, never wrong
@@ -303,7 +326,7 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
                 entries_today=breakers.entries_today,
             ),
             symbol=selected,
-            symbols=configured_symbols,
+            symbols=active_symbols(),
             exchange_id=state.config.exchange_id,
             quote_currency=state.config.quote_currency,
             quote_balance=str(portfolio.quote_balance),
@@ -359,6 +382,36 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
             else "halted; no position to flatten"
         )
         return CommandResponse(paused=True, detail=detail)
+
+    @protected.post("/coins")
+    async def add_coin(request: CoinActionRequest) -> CommandResponse:
+        """Start trading a coin at runtime; persists across restarts."""
+        try:
+            await state.add_coin(request.symbol)
+        except ValueError as error:
+            # Bad pair, wrong quote currency, duplicate, or unlisted on the
+            # exchange — the caller's input, so 400, with the reason verbatim.
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)
+            ) from error
+        first_engine = next(iter(state.engines.values()))
+        return CommandResponse(paused=first_engine.paused, detail=f"{request.symbol.strip()} added")
+
+    @protected.post("/coins/remove")
+    async def remove_coin(request: CoinActionRequest) -> CommandResponse:
+        """Stop trading a coin; its candles, fills, and decisions stay queryable."""
+        try:
+            await state.remove_coin(request.symbol)
+        except KeyError as error:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+        except RuntimeError as error:
+            # Open position, pending proposal, or last coin: truthful
+            # conflict — the operator must act first, not be silently obeyed.
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+        first_engine = next(iter(state.engines.values()))
+        return CommandResponse(
+            paused=first_engine.paused, detail=f"{request.symbol.strip()} removed"
+        )
 
     @protected.post("/breakers/reset")
     async def reset_breakers() -> CommandResponse:

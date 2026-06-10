@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
+  addCoin,
   ApiError,
   approveProposal,
   fetchCandles,
@@ -13,6 +14,7 @@ import {
   postPause,
   postResume,
   rejectProposal,
+  removeCoin,
   storeToken,
 } from "../api/client";
 import type {
@@ -23,6 +25,7 @@ import type {
   StatusResponse,
 } from "../api/types";
 import { CandleChart } from "../components/CandleChart";
+import { CoinManager } from "../components/CoinManager";
 import { CoinTabs } from "../components/CoinTabs";
 import { Controls } from "../components/Controls";
 import { DecisionsPanel } from "../components/DecisionsPanel";
@@ -119,6 +122,29 @@ export function OverviewScreen() {
     [refresh],
   );
 
+  const handleRemoveCoin = useCallback(
+    async (symbol: string) => {
+      setCommandPending(true);
+      try {
+        const result = await removeCoin(symbol);
+        setNotice(result.detail);
+        // Fall back to the backend's default coin. When no fallback is
+        // needed (already on the default), refresh directly — refreshing
+        // with the just-removed coin selected would 404.
+        if (selectedSymbol === null) {
+          await refresh();
+        } else {
+          setSelectedSymbol(null);
+        }
+      } catch (caught) {
+        setNotice(caught instanceof Error ? caught.message : "command failed");
+      } finally {
+        setCommandPending(false);
+      }
+    },
+    [refresh, selectedSymbol],
+  );
+
   if (needsToken) {
     return (
       <div className="mx-auto mt-24 max-w-sm rounded-xl border border-zinc-800 bg-zinc-900 p-6">
@@ -183,6 +209,14 @@ export function OverviewScreen() {
           selected={status.symbol}
           disabled={commandPending}
           onSelect={setSelectedSymbol}
+        />
+      )}
+      {status && (
+        <CoinManager
+          selected={status.symbol}
+          disabled={commandPending}
+          onAdd={(symbol) => void runCommand(() => addCoin(symbol))}
+          onRemove={(symbol) => void handleRemoveCoin(symbol)}
         />
       )}
       {status ? (

@@ -4,7 +4,7 @@ from decimal import Decimal
 import pytest
 
 from tradebot.core.models import Candle, CandleInterval, Decision, DecisionOutcome, Fill, Side
-from tradebot.persistence import CandleStore, Database, DecisionStore, FillStore
+from tradebot.persistence import CandleStore, CoinStore, Database, DecisionStore, FillStore
 from tradebot.persistence.database import coerce_async_dsn
 
 BASE_TIME = datetime(2026, 1, 2, 0, 0, tzinfo=UTC)
@@ -149,6 +149,33 @@ class TestCandleStore:
             await store.fetch_range("BTC/USDT", CandleInterval.M1, naive, BASE_TIME)
         with pytest.raises(ValueError, match="naive datetime"):
             await store.fetch_range("BTC/USDT", CandleInterval.M1, BASE_TIME, naive)
+
+
+class TestCoinStore:
+    async def test_seed_runs_only_on_an_empty_table(self, database: Database) -> None:
+        store = CoinStore(database)
+        assert await store.seed_if_empty(["BTC/USDT", "ETH/USDT"], BASE_TIME) is True
+        # A later boot with a different env var must not resurrect coins.
+        assert await store.seed_if_empty(["BTC/USDT", "DOGE/USDT"], BASE_TIME) is False
+        assert await store.list_symbols() == ("BTC/USDT", "ETH/USDT")
+
+    async def test_add_remove_round_trip_in_added_order(self, database: Database) -> None:
+        store = CoinStore(database)
+        await store.add("BTC/USDT", BASE_TIME)
+        await store.add("ETH/USDT", BASE_TIME + timedelta(minutes=1))
+        await store.add("BTC/USDT", BASE_TIME + timedelta(minutes=2))  # idempotent
+
+        assert await store.list_symbols() == ("BTC/USDT", "ETH/USDT")
+        await store.remove("BTC/USDT")
+        assert await store.list_symbols() == ("ETH/USDT",)
+
+    async def test_naive_timestamps_are_rejected(self, database: Database) -> None:
+        store = CoinStore(database)
+        naive = datetime(2026, 1, 2, 0, 0)
+        with pytest.raises(ValueError, match="naive datetime"):
+            await store.add("BTC/USDT", naive)
+        with pytest.raises(ValueError, match="naive datetime"):
+            await store.seed_if_empty(["BTC/USDT"], naive)
 
 
 class TestFillStore:

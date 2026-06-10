@@ -107,6 +107,14 @@ export function fetchProposals(): Promise<ProposalResponse[]> {
   return request<ProposalResponse[]>("/proposals", "GET");
 }
 
+export function addCoin(symbol: string): Promise<CommandResponse> {
+  return request<CommandResponse>("/coins", "POST", { symbol });
+}
+
+export function removeCoin(symbol: string): Promise<CommandResponse> {
+  return request<CommandResponse>("/coins/remove", "POST", { symbol });
+}
+
 export function approveProposal(signalId: string): Promise<CommandResponse> {
   return request<CommandResponse>("/proposals/approve", "POST", { signal_id: signalId });
 }

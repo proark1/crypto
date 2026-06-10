@@ -17,6 +17,7 @@ from tradebot.core.models import Candle, CandleInterval, Decision, Fill
 from tradebot.persistence.database import (
     Database,
     candles_table,
+    coins_table,
     decisions_table,
     fills_table,
 )
@@ -120,6 +121,50 @@ class CandleStore:
         async with self._database.engine.connect() as connection:
             value: datetime | None = (await connection.execute(statement)).scalar()
         return value
+
+
+class CoinStore:
+    """The actively traded pairs, surviving restarts and config changes."""
+
+    def __init__(self, database: Database) -> None:
+        """Bind the store to ``database``."""
+        self._database = database
+
+    async def list_symbols(self) -> tuple[str, ...]:
+        """Return active symbols in the order they were added."""
+        statement = select(coins_table.c.symbol).order_by(coins_table.c.added_at)
+        async with self._database.engine.connect() as connection:
+            rows = (await connection.execute(statement)).scalars().all()
+        return tuple(rows)
+
+    async def add(self, symbol: str, added_at: datetime) -> None:
+        """Add ``symbol``; re-adding an active coin is harmless."""
+        _require_aware(added_at)
+        statement = pg_insert(coins_table).on_conflict_do_nothing(index_elements=["symbol"])
+        async with self._database.engine.begin() as connection:
+            await connection.execute(statement, [{"symbol": symbol, "added_at": added_at}])
+
+    async def remove(self, symbol: str) -> None:
+        """Remove ``symbol`` from the active set (its history stays)."""
+        async with self._database.engine.begin() as connection:
+            await connection.execute(coins_table.delete().where(coins_table.c.symbol == symbol))
+
+    async def seed_if_empty(self, symbols: Sequence[str], now: datetime) -> bool:
+        """Populate from config on first boot only; returns whether it seeded.
+
+        After the first boot the table is the source of truth: coins removed
+        through the API must not resurrect because an env var still lists
+        them.
+        """
+        _require_aware(now)
+        if await self.list_symbols():
+            return False
+        async with self._database.engine.begin() as connection:
+            await connection.execute(
+                pg_insert(coins_table).on_conflict_do_nothing(index_elements=["symbol"]),
+                [{"symbol": symbol, "added_at": now} for symbol in symbols],
+            )
+        return True
 
 
 class FillStore:

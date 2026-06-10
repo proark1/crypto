@@ -3,13 +3,14 @@
 import asyncio
 import os
 from collections.abc import AsyncIterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
 
 from tradebot.core.config import AppConfig, TradingMode
-from tradebot.core.models import Fill, Side
+from tradebot.core.events import CandleClosed
+from tradebot.core.models import Candle, CandleInterval, Fill, Side
 from tradebot.marketdata.live_feed import OhlcvRow
 from tradebot.persistence import Database, FillStore
 from tradebot.persistence.database import metadata
@@ -83,6 +84,9 @@ class ScriptedExchange:
     ) -> list[OhlcvRow]:
         return []
 
+    async def load_markets(self) -> dict[str, object]:
+        return {"BTC/USDT": {}, "ETH/USDT": {}}
+
 
 class MultiSymbolScriptedExchange:
     """Per-symbol scripted candles; stops the worker once all are exhausted."""
@@ -116,6 +120,9 @@ class MultiSymbolScriptedExchange:
         self, symbol: str, timeframe: str, since: int | None = None, limit: int | None = None
     ) -> list[OhlcvRow]:
         return []
+
+    async def load_markets(self) -> dict[str, object]:
+        return {symbol: {} for symbol in self._rows}
 
 
 class TestWorker:
@@ -180,6 +187,89 @@ class TestWorker:
         assert position is not None
         assert position.quantity_base == Decimal("2")
         assert worker.portfolio.quote_balance == Decimal("9799.8")
+
+    async def test_removal_survives_restart_despite_env_seed(self, database: Database) -> None:
+        """The env var seeds once; a removed coin must stay removed."""
+        first_boot = Worker(make_config("BTC/USDT,ETH/USDT"), database, ScriptedExchange([]))
+        await first_boot.initialize()
+        assert first_boot.symbols == ("BTC/USDT", "ETH/USDT")
+
+        await first_boot.remove_coin("ETH/USDT")
+        # Annotated: mypy otherwise carries the two-element narrowing from
+        # the assert above across the removal call.
+        symbols_after_removal: tuple[str, ...] = first_boot.symbols
+        assert symbols_after_removal == ("BTC/USDT",)
+
+        # Same env config on restart: ETH must not resurrect.
+        second_boot = Worker(make_config("BTC/USDT,ETH/USDT"), database, ScriptedExchange([]))
+        await second_boot.initialize()
+        assert second_boot.symbols == ("BTC/USDT",)
+
+    async def test_add_coin_validates_and_persists(self, database: Database) -> None:
+        worker = Worker(make_config("BTC/USDT"), database, ScriptedExchange([]))
+        await worker.initialize()
+
+        await worker.add_coin("ETH/USDT")
+        assert worker.symbols == ("BTC/USDT", "ETH/USDT")
+
+        with pytest.raises(ValueError, match="already being traded"):
+            await worker.add_coin("ETH/USDT")
+        with pytest.raises(ValueError, match="not quoted in"):
+            await worker.add_coin("BTC/EUR")
+        with pytest.raises(ValueError, match="not listed"):
+            await worker.add_coin("DOGE/USDT")  # absent from the market catalog
+
+        # Persisted: a restart picks the added coin up from the database.
+        restarted = Worker(make_config("BTC/USDT"), database, ScriptedExchange([]))
+        await restarted.initialize()
+        assert restarted.symbols == ("BTC/USDT", "ETH/USDT")
+
+    async def test_remove_coin_refuses_unsafe_states(self, database: Database) -> None:
+        worker = Worker(make_config("BTC/USDT,ETH/USDT"), database, ScriptedExchange([]))
+        await worker.initialize()
+        worker.portfolio.apply_fill(
+            Fill(
+                client_order_id="open",
+                symbol="ETH/USDT",
+                side=Side.BUY,
+                price_quote=Decimal("10"),
+                quantity_base=Decimal("1"),
+                fee_quote=Decimal("0"),
+                filled_at=BASE_TIME,
+            )
+        )
+
+        with pytest.raises(RuntimeError, match="open position"):
+            await worker.remove_coin("ETH/USDT")
+        with pytest.raises(KeyError, match="not being traded"):
+            await worker.remove_coin("DOGE/USDT")
+
+        await worker.remove_coin("BTC/USDT")  # flat: allowed
+        with pytest.raises(RuntimeError, match="last coin"):
+            await worker.remove_coin("ETH/USDT")
+
+    async def test_removed_engine_is_detached_from_the_bus(self, database: Database) -> None:
+        """A removed coin's engine must never see another candle."""
+        worker = Worker(make_config("BTC/USDT,ETH/USDT"), database, ScriptedExchange([]))
+        await worker.initialize()
+        removed_engine = worker.engines["ETH/USDT"]
+        await worker.remove_coin("ETH/USDT")
+
+        candle = Candle(
+            symbol="ETH/USDT",
+            interval=CandleInterval.M1,
+            open_time=BASE_TIME,
+            close_time=BASE_TIME + timedelta(minutes=1),
+            open_quote=Decimal("10"),
+            high_quote=Decimal("11"),
+            low_quote=Decimal("9"),
+            close_quote=Decimal("10"),
+            volume_base=Decimal("1"),
+        )
+        await worker.bus.publish(CandleClosed(candle=candle))
+        # The detached engine saw nothing: a kill on it still reports no
+        # market data rather than pricing an exit off the published candle.
+        assert removed_engine.fills == ()
 
     async def test_non_paper_modes_are_refused(self, database: Database) -> None:
         live_config = AppConfig(mode=TradingMode.LIVE)
