@@ -52,8 +52,14 @@ class Database:
     """Owns the async engine; use as an async context manager."""
 
     def __init__(self, url: str) -> None:
-        """Create an engine for ``url`` (``postgresql+asyncpg://...``)."""
-        self._engine: AsyncEngine = create_async_engine(url)
+        """Create an engine for ``url`` (``postgresql+asyncpg://...``).
+
+        ``pool_pre_ping`` because the bot runs for weeks against a managed
+        Postgres: pooled connections silently die across DB restarts and
+        idle timeouts, and the first query after that must not be the one
+        that fails.
+        """
+        self._engine: AsyncEngine = create_async_engine(url, pool_pre_ping=True)
 
     @property
     def engine(self) -> AsyncEngine:

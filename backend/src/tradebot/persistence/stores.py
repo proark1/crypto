@@ -13,8 +13,18 @@ from datetime import datetime
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from tradebot.core.models import Candle, CandleInterval, Fill, Side
+from tradebot.core.models import Candle, CandleInterval, Fill
 from tradebot.persistence.database import Database, candles_table, fills_table
+
+
+def _require_aware(moment: datetime) -> None:
+    """Reject naive datetimes (repo invariant: timestamps are UTC-aware).
+
+    A naive bound compared against ``timestamptz`` would be interpreted in
+    the session timezone — a silent off-by-hours bug, so it fails here.
+    """
+    if moment.tzinfo is None:
+        raise ValueError("naive datetime is not allowed; timestamps must be UTC-aware")
 
 
 class CandleStore:
@@ -48,6 +58,8 @@ class CandleStore:
         end: datetime,
     ) -> list[Candle]:
         """Return candles with ``start <= open_time < end``, time-ordered."""
+        _require_aware(start)
+        _require_aware(end)
         statement = (
             select(candles_table)
             .where(
@@ -92,15 +104,5 @@ class FillStore:
             statement = statement.where(fills_table.c.symbol == symbol)
         async with self._database.engine.connect() as connection:
             rows = (await connection.execute(statement)).mappings().all()
-        return [
-            Fill(
-                client_order_id=row["client_order_id"],
-                symbol=row["symbol"],
-                side=Side(row["side"]),
-                price_quote=row["price_quote"],
-                quantity_base=row["quantity_base"],
-                fee_quote=row["fee_quote"],
-                filled_at=row["filled_at"],
-            )
-            for row in rows
-        ]
+        # The surrogate ``id`` column is ignored by validation (not a model field).
+        return [Fill.model_validate(dict(row)) for row in rows]

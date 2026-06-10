@@ -1,6 +1,8 @@
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
+import pytest
+
 from tradebot.core.models import Candle, CandleInterval, Fill, Side
 from tradebot.persistence import CandleStore, Database, FillStore
 
@@ -101,6 +103,14 @@ class TestCandleStore:
 
     async def test_empty_batch_is_a_noop(self, database: Database) -> None:
         await CandleStore(database).insert_batch([])
+
+    async def test_naive_range_bounds_are_rejected(self, database: Database) -> None:
+        store = CandleStore(database)
+        naive = datetime(2026, 1, 2, 0, 0)
+        with pytest.raises(ValueError, match="naive datetime"):
+            await store.fetch_range("BTC/USDT", CandleInterval.M1, naive, BASE_TIME)
+        with pytest.raises(ValueError, match="naive datetime"):
+            await store.fetch_range("BTC/USDT", CandleInterval.M1, BASE_TIME, naive)
 
 
 class TestFillStore:
