@@ -101,7 +101,9 @@ class Worker:
         """Attach Telegram alerts when both token and chat id are set."""
         token = self.config.telegram_bot_token
         chat_id = self.config.telegram_chat_id
-        if token is None or chat_id is None:
+        if not token or not chat_id:
+            # Truthiness, not None-ness: empty-string env vars must disable
+            # alerts gracefully rather than crash the worker at startup.
             logger.info("telegram alerts disabled: token or chat id not set")
             return None
         from tradebot.notify import TelegramNotifier

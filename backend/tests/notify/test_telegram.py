@@ -79,6 +79,8 @@ class TestBusIntegration:
         notifier.attach_to(bus)
         async with client:
             await bus.publish(FillRecorded(fill=FILL))
+            assert transport.requests == []  # send is backgrounded, loop not blocked
+            await notifier.flush()
 
         body = json.loads(transport.requests[0].content)
         assert body["text"] == "BUY 0.05 BTC/USDT @ 67000.5 (fee 3.35)"
@@ -91,3 +93,4 @@ class TestBusIntegration:
         notifier.attach_to(bus)
         async with client:
             await bus.publish(FillRecorded(fill=FILL))  # must not raise
+            await notifier.flush()  # nor may the background task leak an error

@@ -8,6 +8,7 @@ not raise, because engine fill handling sits upstream of it.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 import httpx
@@ -27,6 +28,7 @@ class TelegramNotifier:
         self._url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
         self._chat_id = chat_id
         self._client = client
+        self._pending: set[asyncio.Task[bool]] = set()
 
     def attach_to(self, bus: EventBus) -> None:
         """Subscribe to the events worth a push notification."""
@@ -53,8 +55,21 @@ class TelegramNotifier:
         return True
 
     async def _on_fill(self, event: FillRecorded) -> None:
+        # Bus handlers run sequentially in the trading path, so the network
+        # call is fired as a background task: Telegram latency must never
+        # delay candle processing. References are held until completion so
+        # tasks cannot be garbage-collected mid-send.
         fill = event.fill
-        await self.send(
-            f"{fill.side.value.upper()} {fill.quantity_base} {fill.symbol} "
-            f"@ {fill.price_quote} (fee {fill.fee_quote})"
+        task = asyncio.create_task(
+            self.send(
+                f"{fill.side.value.upper()} {fill.quantity_base} {fill.symbol} "
+                f"@ {fill.price_quote} (fee {fill.fee_quote})"
+            )
         )
+        self._pending.add(task)
+        task.add_done_callback(self._pending.discard)
+
+    async def flush(self) -> None:
+        """Wait for in-flight notifications (shutdown and tests)."""
+        if self._pending:
+            await asyncio.gather(*tuple(self._pending), return_exceptions=True)
