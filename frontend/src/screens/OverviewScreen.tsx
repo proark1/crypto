@@ -35,17 +35,21 @@ export function OverviewScreen() {
     // touch state, so stale data never overwrites fresh data.
     const requestId = ++requestIdRef.current;
     try {
+      // Decisions are explainability, not safety: their endpoint failing
+      // must never take down status/fills or the kill switch with it.
       const [nextStatus, nextFills, nextDecisions] = await Promise.all([
         fetchStatus(),
         fetchFills(),
-        fetchDecisions(),
+        fetchDecisions().catch(() => null),
       ]);
       if (requestId !== requestIdRef.current) {
         return;
       }
       setStatus(nextStatus);
       setFills(nextFills);
-      setDecisions(nextDecisions);
+      if (nextDecisions !== null) {
+        setDecisions(nextDecisions);
+      }
       setError(null);
       setNeedsToken(false);
     } catch (caught) {

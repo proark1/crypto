@@ -246,6 +246,12 @@ class TestDecisions:
         assert body[0]["reasons"] == ["fast EMA crossed above slow EMA"]
         assert body[0]["stop_price_quote"] == "95"
 
+    async def test_out_of_range_limit_is_rejected(self, database: Database) -> None:
+        bot = StubBot(database)
+        async with make_client(bot) as client:
+            assert (await client.get("/decisions?limit=0")).status_code == 422
+            assert (await client.get("/decisions?limit=9999")).status_code == 422
+
 
 class TestFills:
     async def test_journal_is_returned_with_string_amounts(self, database: Database) -> None:

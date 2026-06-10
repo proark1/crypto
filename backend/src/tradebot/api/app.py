@@ -12,7 +12,7 @@ from __future__ import annotations
 import secrets
 from typing import Protocol
 
-from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi import Depends, FastAPI, HTTPException, Query, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 
@@ -203,7 +203,9 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
         return CommandResponse(paused=True, detail=detail)
 
     @app.get("/decisions")
-    async def get_decisions(limit: int = 50) -> list[DecisionResponse]:
+    async def get_decisions(
+        limit: int = Query(50, ge=1, le=200),
+    ) -> list[DecisionResponse]:
         decisions = await state.decision_store.fetch_recent(state.config.symbol, limit)
         return [
             DecisionResponse(

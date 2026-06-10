@@ -53,8 +53,8 @@ export function DecisionsPanel(props: { decisions: DecisionResponse[] }) {
               </span>
             </div>
             <ul className="mt-1 text-sm text-zinc-400">
-              {decision.reasons.map((reason) => (
-                <li key={reason}>· {reason}</li>
+              {decision.reasons.map((reason, index) => (
+                <li key={`${String(index)}-${reason}`}>· {reason}</li>
               ))}
               <li className="text-xs text-zinc-500">
                 stop {trimAmount(decision.stop_price_quote)}
