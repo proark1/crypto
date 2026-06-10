@@ -126,6 +126,43 @@ class TestDetector:
         assert hourly.required_m1_candles() == 241 * 60
 
 
+class TestFamilyRouting:
+    def test_ranging_allows_reversion_and_blocks_trend(self) -> None:
+        detector = MarketRegimeDetector("BTC/USDT", CONFIG)
+        feed(detector, [100.0 + (1.0 if i % 2 == 0 else -1.0) for i in range(20)])
+        gate = RegimeGate(detector)
+
+        reversion = make_signal(20).model_copy(update={"strategy_name": "mean_reversion"})
+        trend = make_signal(20)
+
+        assert gate.evaluate(reversion).allowed is True
+        assert gate.evaluate(trend).allowed is False
+
+    def test_trending_allows_trend_and_blocks_reversion(self) -> None:
+        detector = MarketRegimeDetector("BTC/USDT", CONFIG)
+        feed(detector, [100.0 + 2 * i for i in range(12)])
+        gate = RegimeGate(detector)
+
+        reversion = make_signal(12).model_copy(update={"strategy_name": "mean_reversion"})
+        trend = make_signal(12)
+
+        assert gate.evaluate(trend).allowed is True
+        blocked = gate.evaluate(reversion)
+        assert blocked.allowed is False
+        assert any("mean-reversion entries disabled" in r for r in blocked.reasons)
+
+    def test_risk_off_blocks_both_families(self) -> None:
+        detector = MarketRegimeDetector("BTC/USDT", CONFIG)
+        closes = [100.0 + 5 * i for i in range(10)] + [145.0 - 12 * i for i in range(1, 6)]
+        feed(detector, closes)
+        gate = RegimeGate(detector)
+
+        at = len(closes)
+        for name in ("trend_following", "mean_reversion"):
+            signal = make_signal(at).model_copy(update={"strategy_name": name})
+            assert gate.evaluate(signal).allowed is False
+
+
 class TestStaleness:
     def test_old_assessment_blocks_until_data_resumes(self) -> None:
         detector = MarketRegimeDetector("BTC/USDT", CONFIG)

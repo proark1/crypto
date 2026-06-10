@@ -53,7 +53,14 @@ from tradebot.signals import (
     RegimeGate,
     SentimentMonitor,
 )
-from tradebot.strategies import TrendFollowingConfig, TrendFollowingStrategy
+from tradebot.strategies import (
+    MeanReversionConfig,
+    MeanReversionStrategy,
+    RegimeStrategyRouter,
+    Strategy,
+    TrendFollowingConfig,
+    TrendFollowingStrategy,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -177,10 +184,28 @@ class Worker:
             gates += (RegimeGate(self.regime_detector, self.sentiment),)
         return (*gates, NewsGate(self.news_flags, self.news_calendar))
 
+    def _build_strategy(self) -> Strategy:
+        """One strategy per coin: regime-routed families when the gate runs.
+
+        With the regime detector on, the router activates trend following
+        in trending markets and mean reversion in ranging ones (§5.2);
+        without it there is no regime to route by, so the trend family
+        trades alone — exactly the pre-router behavior.
+        """
+        trend = TrendFollowingStrategy(TrendFollowingConfig())
+        if self.regime_detector is None:
+            return trend
+        detector = self.regime_detector
+        return RegimeStrategyRouter(
+            trend,
+            MeanReversionStrategy(MeanReversionConfig()),
+            regime_label=lambda: detector.regime.label,
+        )
+
     def _activate(self, symbol: str) -> None:
         """Build and wire one coin's engine and feed; start the feed if running."""
         engine = TradingEngine(
-            TrendFollowingStrategy(TrendFollowingConfig()),
+            self._build_strategy(),
             self.risk_manager,
             self.portfolio,
             SimulatedExecutionAdapter(FillSimulatorConfig()),

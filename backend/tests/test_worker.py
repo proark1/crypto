@@ -60,6 +60,9 @@ def make_config(
         paper_initial_balance_quote=Decimal("10000"),
         api_port=api_port,
         regime_gate_enabled=regime_gate_enabled,
+        # Never poll real sentiment APIs from tests; the gate is exercised
+        # through the regime and news paths, which are fully scripted.
+        sentiment_enabled=False,
     )
 
 
