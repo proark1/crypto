@@ -19,8 +19,9 @@ from tradebot.core.models import (
     Side,
 )
 from tradebot.engine import TradingEngine
+from tradebot.evaluation.runner import EvaluationRunConfig
 from tradebot.execution import FillSimulatorConfig, SimulatedExecutionAdapter
-from tradebot.persistence import CandleStore, Database, DecisionStore, FillStore
+from tradebot.persistence import CandleStore, Database, DecisionStore, EvaluationStore, FillStore
 from tradebot.persistence.database import metadata
 from tradebot.portfolio import Portfolio
 from tradebot.risk import RiskConfig, RiskManager
@@ -61,6 +62,28 @@ class StubBot:
             symbol: self._build_engine(symbol) for symbol in self.config.symbol_list()
         }
         self.engine = self.engines[self.config.symbol_list()[0]]
+        self.evaluation_store = EvaluationStore(database)
+        self._evaluation_running = False
+
+    async def start_evaluation(self, config: EvaluationRunConfig) -> int:
+        config.intervals()  # same validation order as the real manager
+        if self._evaluation_running:
+            raise RuntimeError("evaluation run 1 is already in progress")
+        self._evaluation_running = True
+        return await self.evaluation_store.create_run(
+            symbols=list(config.symbols),
+            timeframes=list(config.timeframes),
+            config=config.model_dump(),
+            code_version="test",
+            progress_total=config.scenario_count,
+            created_at=BASE_TIME,
+        )
+
+    def cancel_evaluation(self, run_id: int) -> bool:
+        if self._evaluation_running:
+            self._evaluation_running = False
+            return True
+        return False
 
     def _build_engine(self, symbol: str) -> TradingEngine:
         return TradingEngine(
@@ -574,6 +597,50 @@ class TestCoins:
         assert last.status_code == 409
         assert "last coin" in last.json()["detail"]
         assert list(bot.engines) == ["BTC/USDT"]
+
+
+class TestEvaluations:
+    async def test_start_list_and_fetch(self, database: Database) -> None:
+        bot = StubBot(database)
+        async with make_client(bot) as client:
+            started = await client.post("/evaluations", json={"scenario_count": 50})
+            run_id = started.json()["run_id"]
+            listed = (await client.get("/evaluations")).json()
+            fetched = (await client.get(f"/evaluations/{run_id}")).json()
+
+        assert started.status_code == 200
+        assert [run["id"] for run in listed] == [run_id]
+        assert fetched["status"] == "pending"
+        assert fetched["symbols"] == ["BTC/USDT"]  # defaulted to active coins
+        assert fetched["config"]["scenario_count"] == 50
+        assert fetched["summary"] is None
+
+    async def test_second_start_while_running_is_409(self, database: Database) -> None:
+        bot = StubBot(database)
+        async with make_client(bot) as client:
+            assert (await client.post("/evaluations", json={})).status_code == 200
+            second = await client.post("/evaluations", json={})
+        assert second.status_code == 409
+        assert "already in progress" in second.json()["detail"]
+
+    async def test_bad_timeframe_is_400(self, database: Database) -> None:
+        bot = StubBot(database)
+        async with make_client(bot) as client:
+            response = await client.post("/evaluations", json={"timeframes": ["7m"]})
+        assert response.status_code == 400
+
+    async def test_cancel_and_unknown_run(self, database: Database) -> None:
+        bot = StubBot(database)
+        async with make_client(bot) as client:
+            started = await client.post("/evaluations", json={})
+            run_id = started.json()["run_id"]
+            cancelled = await client.post(f"/evaluations/{run_id}/cancel")
+            again = await client.post(f"/evaluations/{run_id}/cancel")
+            missing = await client.get("/evaluations/9999")
+
+        assert cancelled.status_code == 200
+        assert again.status_code == 409  # nothing in flight any more
+        assert missing.status_code == 404
 
 
 class TestFills:

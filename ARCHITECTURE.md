@@ -23,7 +23,7 @@ This document is the target design. Implementation status as of June 2026
 | Telegram notifications (§6.2) | **Done** — alerts only; command handling missing |
 | Dashboard: status, chart, decisions, proposals, controls (§6.1) | **Done** — per-coin view with coin switcher; wizard, journal, research screens missing |
 | Multi-coin support (§4.2) | **Done** — per-symbol feed+engine, shared account/breakers, per-coin dashboard, runtime add/remove via API + UI (coins persisted in Postgres; env var seeds first boot) |
-| Evaluation & training: blind walk-forward (§12) | **Partial** — foundations done (timeframe aggregation, condition classifier, tables, frozen scoring spec); scenario engine, run API, research UI, learning layer pending |
+| Evaluation & training: blind walk-forward (§12) | **Partial** — foundations, scenario engine (leak-tested), run orchestration + API done; research UI, replay viewer, learning layer pending |
 | News pipeline, regime gates, signal fusion (§4.6, §4.7) | **Missing** |
 | Observability: dead-man's switch, metrics, DB backups (§7.3) | **Partial** — heartbeat ping gated on feed freshness done; metrics and backups missing |
 | Live trading (§8 Phase 3) | **Missing** — blockers enumerated in LIVE_TRADING_CHECKLIST.md |
