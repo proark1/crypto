@@ -84,6 +84,10 @@ class TrendFollowingStrategy:
         crossed_down = self._previous_fast_above is True and not fast_above
         self._previous_fast_above = fast_above
 
+        # Deterministic id: one signal per (strategy, symbol, candle) at most,
+        # so this is unique — and it makes backtests reproducible end to end,
+        # including order lineage (the golden backtest depends on it).
+        signal_id = f"{self.name}:{candle.symbol}:{candle.close_time.isoformat()}"
         if crossed_up and position is None:
             stop = Decimal(str(close - self._config.atr_stop_multiple * atr)).quantize(
                 ACCOUNTING_RESOLUTION, rounding=ROUND_HALF_EVEN
@@ -91,6 +95,7 @@ class TrendFollowingStrategy:
             if stop <= 0:
                 return None  # degenerate volatility; no defined invalidation point
             return Signal(
+                signal_id=signal_id,
                 strategy_name=self.name,
                 symbol=candle.symbol,
                 side=Side.BUY,
@@ -105,6 +110,7 @@ class TrendFollowingStrategy:
             )
         if crossed_down and position is not None:
             return Signal(
+                signal_id=signal_id,
                 strategy_name=self.name,
                 symbol=candle.symbol,
                 side=Side.SELL,
