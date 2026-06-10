@@ -23,6 +23,7 @@ crypto/
 │   │   ├── marketdata/      # WS/REST ingestion, candle building, gap-fill, validation
 │   │   ├── indicators/      # incremental indicators (EMA, RSI, ATR, ...)
 │   │   ├── strategies/      # pluggable strategies; one file per strategy
+│   │   ├── engine/          # per-candle loop: strategy -> risk -> execution (all modes)
 │   │   ├── signals/         # regime gates, confirmation filters, signal fusion
 │   │   ├── news/            # news ingestion, classification, event calendar
 │   │   ├── risk/            # position sizing, limits, circuit breakers, kill switch

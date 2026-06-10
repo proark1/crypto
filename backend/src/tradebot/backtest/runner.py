@@ -22,6 +22,7 @@ from decimal import Decimal
 from pydantic import BaseModel, ConfigDict
 
 from tradebot.core.models import Candle, Fill
+from tradebot.engine import TradingEngine
 from tradebot.execution import SimulatedExecutionAdapter
 from tradebot.portfolio import Portfolio
 from tradebot.risk import RiskManager
@@ -51,12 +52,14 @@ class BacktestRunner:
         portfolio: Portfolio,
         adapter: SimulatedExecutionAdapter,
     ) -> None:
-        """Wire the production components around the simulated adapter."""
-        self._strategy = strategy
-        self._risk_manager = risk_manager
+        """Wire the production components around the simulated adapter.
+
+        The per-candle loop is delegated to :class:`TradingEngine` — the
+        same object paper trading subscribes to live events — so a backtest
+        exercises exactly the code that trades.
+        """
         self._portfolio = portfolio
-        self._adapter = adapter
-        self._fills: list[Fill] = []
+        self._engine = TradingEngine(strategy, risk_manager, portfolio, adapter)
         self._consumed = False
 
     async def run(self, candles: Sequence[Candle]) -> BacktestResult:
@@ -76,15 +79,9 @@ class BacktestRunner:
         if len(symbols) > 1:
             raise ValueError(f"runner replays one symbol at a time, got {sorted(symbols)}")
 
-        self._adapter.set_fill_handler(self._on_fill)
         equity_curve: list[tuple[datetime, Decimal]] = []
         for candle in candles:
-            await self._adapter.process_candle(candle)
-            signal = self._strategy.on_candle(candle, self._portfolio.position(candle.symbol))
-            if signal is not None:
-                order = self._risk_manager.evaluate(signal, candle.close_quote)
-                if order is not None:
-                    await self._adapter.submit(order)
+            await self._engine.process_candle(candle)
             equity_curve.append(
                 (
                     candle.close_time,
@@ -93,12 +90,8 @@ class BacktestRunner:
             )
 
         return BacktestResult(
-            fills=tuple(self._fills),
+            fills=self._engine.fills,
             equity_curve=tuple(equity_curve),
             final_equity_quote=equity_curve[-1][1],
             realized_pnl_quote=self._portfolio.realized_pnl_quote(),
         )
-
-    async def _on_fill(self, fill: Fill) -> None:
-        self._portfolio.apply_fill(fill)
-        self._fills.append(fill)
