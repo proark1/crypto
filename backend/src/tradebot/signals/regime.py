@@ -30,6 +30,7 @@ from tradebot.core.models import Candle, CandleInterval, Signal
 from tradebot.indicators import Adx
 from tradebot.marketdata import TimeframeAggregator
 from tradebot.signals.base import GateDecision
+from tradebot.signals.sentiment import MarketSentiment
 
 logger = logging.getLogger(__name__)
 
@@ -200,9 +201,18 @@ class RegimeGate:
     instead of blocking; today there is only the trend family.
     """
 
-    def __init__(self, detector: MarketRegimeDetector) -> None:
-        """Gate entries on ``detector``'s current assessment."""
+    def __init__(
+        self, detector: MarketRegimeDetector, sentiment: MarketSentiment | None = None
+    ) -> None:
+        """Gate entries on ``detector``; ``sentiment`` can only tighten.
+
+        Sentiment (Fear & Greed extremes, BTC dominance surges, broad
+        negative news flow — §5.2 step 1's remaining inputs) is consulted
+        only when the price regime would allow the entry: advisory data
+        can veto, never approve, so a dead sentiment feed costs nothing.
+        """
         self._detector = detector
+        self._sentiment = sentiment
 
     def evaluate(self, signal: Signal) -> GateDecision:
         """Allow or block one entry signal; reasons are journaled verbatim.
@@ -224,6 +234,13 @@ class RegimeGate:
                 ),
             )
         if regime.label == TRENDING:
+            if self._sentiment is not None:
+                sentiment_reason = self._sentiment.risk_off_reason(signal.created_at)
+                if sentiment_reason is not None:
+                    return GateDecision(
+                        allowed=False,
+                        reasons=(f"regime gate: entries disabled — {sentiment_reason}",),
+                    )
             return GateDecision(allowed=True, reasons=regime.reasons)
         if regime.label == WARMING_UP:
             return GateDecision(

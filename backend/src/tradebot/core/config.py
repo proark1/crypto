@@ -110,6 +110,13 @@ class AppConfig(BaseSettings):
     regime_reference_symbol: str = "BTC/USDT"
     """The market-wide reference whose regime gates all entries."""
 
+    sentiment_enabled: bool = True
+    """Poll Fear & Greed and BTC dominance (free, keyless APIs) as advisory
+    tighteners for the regime gate. They can only block entries, never
+    allow them, so the fail-safe direction is on."""
+
+    sentiment_poll_minutes: int = Field(default=15, ge=1)
+
     cryptopanic_token: str | None = None
     """CryptoPanic API token. Unset disables news polling; the news gate
     still runs (scheduled-event windows work without any news source)."""

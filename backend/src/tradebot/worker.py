@@ -46,7 +46,13 @@ from tradebot.persistence import (
 )
 from tradebot.portfolio import Portfolio
 from tradebot.risk import RiskConfig, RiskManager
-from tradebot.signals import EntryGate, MarketRegimeDetector, RegimeGate
+from tradebot.signals import (
+    EntryGate,
+    MarketRegimeDetector,
+    MarketSentiment,
+    RegimeGate,
+    SentimentMonitor,
+)
 from tradebot.strategies import TrendFollowingConfig, TrendFollowingStrategy
 
 logger = logging.getLogger(__name__)
@@ -127,6 +133,13 @@ class Worker:
         # on remembering to enable it.
         self.news_flags = NewsFlags(ttl=timedelta(hours=config.news_flag_ttl_hours))
         self.news_calendar = EventCalendar.from_json(config.event_calendar_json)
+        # Sentiment can only tighten the regime gate, so it exists only
+        # alongside it; without the gate there is nothing for it to tighten.
+        self.sentiment: MarketSentiment | None = (
+            MarketSentiment()
+            if config.sentiment_enabled and self.regime_detector is not None
+            else None
+        )
         self.metrics = MetricsCollector()
         self.metrics.attach_to(self.bus)
 
@@ -161,7 +174,7 @@ class Worker:
         """Build the §5.2 gate chain in pipeline order: regime, then news."""
         gates: tuple[EntryGate, ...] = ()
         if self.regime_detector is not None:
-            gates += (RegimeGate(self.regime_detector),)
+            gates += (RegimeGate(self.regime_detector, self.sentiment),)
         return (*gates, NewsGate(self.news_flags, self.news_calendar))
 
     def _activate(self, symbol: str) -> None:
@@ -329,12 +342,15 @@ class Worker:
         news_client: httpx.AsyncClient | None = None
         backup_task: asyncio.Task[None] | None = None
         backup_client: httpx.AsyncClient | None = None
+        sentiment_task: asyncio.Task[None] | None = None
+        sentiment_client: httpx.AsyncClient | None = None
         try:
             api_task = self._start_api()
             notifier_client = await self._start_notifier_if_configured()
             heartbeat_task, heartbeat_client = self._start_heartbeat_if_configured()
             news_task, news_client = self._start_news_monitor_if_configured()
             backup_task, backup_client = self._start_backups_if_configured()
+            sentiment_task, sentiment_client = self._start_sentiment_if_configured()
             # TaskGroup, not gather: if one feed crashes, the others must be
             # cancelled with it — a bot trading some symbols while blind on
             # another would be worse than one that stops and restarts. The
@@ -347,7 +363,7 @@ class Worker:
                     self._feed_tasks[symbol] = task_group.create_task(feed.run())
         finally:
             self._task_group = None  # late add_coin calls must not target a closed group
-            for task in (api_task, heartbeat_task, news_task, backup_task):
+            for task in (api_task, heartbeat_task, news_task, backup_task, sentiment_task):
                 if task is None:
                     continue
                 task.cancel()
@@ -359,7 +375,13 @@ class Worker:
                     # A task that already crashed re-raises here; the rest
                     # of shutdown (other tasks, client close) must still run.
                     logger.exception("background task failed during shutdown")
-            for client in (notifier_client, heartbeat_client, news_client, backup_client):
+            for client in (
+                notifier_client,
+                heartbeat_client,
+                news_client,
+                backup_client,
+                sentiment_client,
+            ):
                 if client is not None:
                     await client.aclose()
         logger.info("worker stopped cleanly")
@@ -445,6 +467,7 @@ class Worker:
             tracked_coins=lambda: self.symbols,
             bus=self.bus,
             poll_interval=timedelta(seconds=self.config.news_poll_seconds),
+            sentiment=self.sentiment,
         )
         task = asyncio.create_task(monitor.run())
 
@@ -460,6 +483,37 @@ class Worker:
 
         task.add_done_callback(log_news_outcome)
         logger.info("news polling enabled (every %ds)", self.config.news_poll_seconds)
+        return task, client
+
+    def _start_sentiment_if_configured(
+        self,
+    ) -> tuple[asyncio.Task[None] | None, httpx.AsyncClient | None]:
+        """Start Fear & Greed / dominance polling when sentiment is in play.
+
+        Skipped when the regime gate ended up disabled (no reference feed):
+        the readings would tighten a gate that does not exist.
+        """
+        if self.sentiment is None or self.regime_detector is None:
+            logger.info("sentiment polling disabled: regime gate off or sentiment off")
+            return None, None
+        client = httpx.AsyncClient(timeout=15)
+        monitor = SentimentMonitor(
+            self.sentiment,
+            client,
+            poll_interval=timedelta(minutes=self.config.sentiment_poll_minutes),
+        )
+        task = asyncio.create_task(monitor.run())
+
+        def log_sentiment_outcome(finished: asyncio.Task[None]) -> None:
+            try:
+                finished.result()
+            except asyncio.CancelledError:
+                pass
+            except Exception:  # pragma: no cover - poll_once catches its own
+                logger.exception("sentiment monitor crashed; advisory inputs lost")
+
+        task.add_done_callback(log_sentiment_outcome)
+        logger.info("sentiment polling enabled (every %dm)", self.config.sentiment_poll_minutes)
         return task, client
 
     def _start_backups_if_configured(

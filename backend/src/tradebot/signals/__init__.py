@@ -17,6 +17,7 @@ from tradebot.signals.regime import (
     RegimeConfig,
     RegimeGate,
 )
+from tradebot.signals.sentiment import MarketSentiment, SentimentConfig, SentimentMonitor
 
 __all__ = [
     "RANGING",
@@ -26,7 +27,10 @@ __all__ = [
     "EntryGate",
     "GateDecision",
     "MarketRegimeDetector",
+    "MarketSentiment",
     "Regime",
     "RegimeConfig",
     "RegimeGate",
+    "SentimentConfig",
+    "SentimentMonitor",
 ]
