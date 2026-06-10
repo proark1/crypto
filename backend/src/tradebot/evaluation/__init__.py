@@ -8,6 +8,8 @@ changes trading rules; improvements always pass through a human.
 """
 
 from tradebot.evaluation.classifier import classify_window, window_volatility
+from tradebot.evaluation.engine import EvaluatedDecision, ScenarioEvaluator, ScenarioSpec
+from tradebot.evaluation.generator import GeneratorConfig, generate_specs
 from tradebot.evaluation.models import (
     EventLabel,
     LearningFinding,
@@ -23,17 +25,22 @@ from tradebot.evaluation.models import (
 )
 
 __all__ = [
+    "EvaluatedDecision",
     "EventLabel",
+    "GeneratorConfig",
     "LearningFinding",
     "MarketConditions",
     "RunStatus",
     "Scenario",
     "ScenarioClass",
+    "ScenarioEvaluator",
     "ScenarioResult",
+    "ScenarioSpec",
     "TimingLabel",
     "TrendLabel",
     "Verdict",
     "VolatilityLabel",
     "classify_window",
+    "generate_specs",
     "window_volatility",
 ]
