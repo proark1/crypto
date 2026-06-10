@@ -198,13 +198,16 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
     # Railway services), so without these headers the browser blocks every
     # request before it leaves the page. Credentials stay off: auth is a
     # bearer header the page attaches itself, never a cookie the browser
-    # would attach for an attacker.
+    # would attach for an attacker. With credentials off, wildcard methods
+    # and headers are safe — and they keep preflights working when the
+    # frontend grows headers (tracing, monitoring) or the API grows verbs;
+    # the real gate is the bearer token, not the preflight.
     app.add_middleware(
         CORSMiddleware,
         allow_origins=_parse_cors_origins(state.config.api_cors_origins),
         allow_credentials=False,
-        allow_methods=["GET", "POST"],
-        allow_headers=["Authorization", "Content-Type"],
+        allow_methods=["*"],
+        allow_headers=["*"],
     )
     protected = APIRouter(dependencies=[Depends(require_token)])
 
