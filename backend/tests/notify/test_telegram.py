@@ -85,6 +85,28 @@ class TestBusIntegration:
         body = json.loads(transport.requests[0].content)
         assert body["text"] == "BUY 0.05 BTC/USDT @ 67000.5 (fee 3.35)"
 
+    async def test_news_flag_event_produces_an_actionable_alert(self) -> None:
+        from tradebot.news import NewsEventType, NewsFlag, NewsFlagged
+
+        flag = NewsFlag(
+            coin="SOL",
+            event_type=NewsEventType.DELISTING,
+            headline="Exchange will delist SOL pairs",
+            flagged_at=datetime(2026, 1, 2, 3, 4, tzinfo=UTC),
+            expires_at=datetime(2026, 1, 3, 3, 4, tzinfo=UTC),
+        )
+        transport = RecordingTransport()
+        notifier, client = make_notifier(transport)
+        bus = EventBus()
+        notifier.attach_to(bus)
+        async with client:
+            await bus.publish(NewsFlagged(flag=flag))
+            await notifier.flush()
+
+        text = json.loads(transport.requests[0].content)["text"]
+        assert "DELISTING on SOL" in text
+        assert "will not sell on news by itself" in text  # the human decides exits
+
     async def test_telegram_outage_does_not_break_the_bus(self) -> None:
         """The notifier sits downstream of fill handling; it must never raise."""
         transport = RecordingTransport(raise_error=True)
