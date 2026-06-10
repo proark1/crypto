@@ -14,7 +14,7 @@ This document is the target design. Implementation status as of June 2026
 | Indicators: incremental EMA, RSI, ATR (§4.2) | **Done** — tested against reference values |
 | Strategies: trend-following EMA crossover (§4.2) | **Done** — one strategy; the pluggable registry is the pattern, more strategies pending |
 | Backtester: runner, pessimistic fill simulator, golden test (§5) | **Done** — walk-forward optimizer missing |
-| Risk manager: sizing, stop validation, per-trade limits (§4.3) | **Partial** — circuit breakers, loss-streak cooldown, daily trade caps missing |
+| Risk manager: sizing, per-trade limits, circuit breakers (§4.3) | **Done** — daily-loss + drawdown trips (human reset), loss-streak cooldown, daily entry cap |
 | Execution: simulated adapter (backtest + paper) (§4.4) | **Done for paper** — live adapter, exchange-native stops, partial-fill handling are Phase 3 (see LIVE_TRADING_CHECKLIST.md) |
 | Portfolio + persistence: positions, PnL, Postgres journal (§4.5) | **Done** — journal-replay restart recovery; nightly backups missing |
 | Trading engine + worker (§4.2, §7.1) | **Done** — single symbol, paper mode only by hard guard |

@@ -10,12 +10,16 @@ risk-limit pressure from the operator.
 
 from __future__ import annotations
 
+import logging
 from decimal import ROUND_DOWN, Decimal
 
 from pydantic import BaseModel, ConfigDict
 
-from tradebot.core.models import ACCOUNTING_RESOLUTION, Order, OrderType, Side, Signal
+from tradebot.core.models import ACCOUNTING_RESOLUTION, Candle, Fill, Order, OrderType, Side, Signal
 from tradebot.portfolio import Portfolio
+from tradebot.risk.breakers import BreakerConfig, CircuitBreakers
+
+logger = logging.getLogger(__name__)
 
 
 class RiskConfig(BaseModel):
@@ -31,6 +35,9 @@ class RiskConfig(BaseModel):
 
     fee_buffer_fraction: Decimal = Decimal("0.005")
     """Headroom kept when spending free balance, so fees can never overdraw."""
+
+    breakers: BreakerConfig = BreakerConfig()
+    """Account-level circuit breakers (daily loss, drawdown, streaks, caps)."""
 
 
 class RiskManager:
@@ -53,6 +60,35 @@ class RiskManager:
         """Bind the limits to the portfolio whose equity they protect."""
         self._config = config
         self._portfolio = portfolio
+        self._breakers = CircuitBreakers(config.breakers)
+        self._observed_realized_pnl: dict[str, Decimal] = {}
+
+    @property
+    def breakers(self) -> CircuitBreakers:
+        """Breaker state, for status reporting and the operator reset."""
+        return self._breakers
+
+    def on_candle(self, candle: Candle) -> None:
+        """Feed one closed candle's equity mark to the circuit breakers.
+
+        Called by the engine after fills are applied, so the breakers see
+        the same post-fill equity in backtest, paper, and live.
+        """
+        equity = self._portfolio.equity_quote({candle.symbol: candle.close_quote})
+        self._breakers.observe(candle.close_time, equity)
+
+    def on_fill(self, fill: Fill) -> None:
+        """Feed one applied fill to the loss-streak tracker.
+
+        A sell realizes PnL; the delta since this manager last looked is the
+        round trip's result. Buys only move the baseline forward.
+        """
+        if fill.side != Side.SELL:
+            return
+        realized = self._portfolio.realized_pnl_quote(fill.symbol)
+        delta = realized - self._observed_realized_pnl.get(fill.symbol, Decimal(0))
+        self._observed_realized_pnl[fill.symbol] = realized
+        self._breakers.record_closed_trade(delta, fill.filled_at)
 
     def evaluate(self, signal: Signal, current_price_quote: Decimal) -> Order | None:
         """Size ``signal`` against current equity, or return ``None`` to veto.
@@ -64,7 +100,16 @@ class RiskManager:
             raise ValueError(f"current price must be positive, got {current_price_quote}")
         if signal.side == Side.SELL:
             return self._size_exit(signal)
-        return self._size_entry(signal, current_price_quote)
+        block_reason = self._breakers.entry_block_reason(signal.created_at)
+        if block_reason is not None:
+            # Entries only: exits returned above so capital protection can
+            # never be blocked by an account-level brake.
+            logger.warning("entry vetoed for %s: %s", signal.symbol, block_reason)
+            return None
+        order = self._size_entry(signal, current_price_quote)
+        if order is not None:
+            self._breakers.record_entry(signal.created_at)
+        return order
 
     def _size_exit(self, signal: Signal) -> Order | None:
         position = self._portfolio.position(signal.symbol)

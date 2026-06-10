@@ -47,6 +47,18 @@ export function StatusCard(props: { status: StatusResponse }) {
           value={status.mark_price_quote === null ? "—" : trimAmount(status.mark_price_quote)}
         />
       </div>
+      {status.breakers.tripped_reason !== null && (
+        <div className="mt-4 rounded-lg border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-300">
+          <span className="font-bold uppercase">circuit breaker tripped</span> —{" "}
+          {status.breakers.tripped_reason}
+        </div>
+      )}
+      {status.breakers.tripped_reason === null && status.breakers.cooldown_until !== null && (
+        <div className="mt-4 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-300">
+          <span className="font-bold uppercase">loss-streak cooldown</span> — entries blocked
+          until {formatTime(status.breakers.cooldown_until)}
+        </div>
+      )}
       <div className="mt-4 border-t border-zinc-800 pt-4">
         {status.position === null ? (
           <div className="text-sm text-zinc-500">flat — no open position</div>

@@ -22,7 +22,7 @@ from tradebot.execution import FillSimulatorConfig, SimulatedExecutionAdapter
 from tradebot.persistence import Database, DecisionStore, FillStore
 from tradebot.persistence.database import metadata
 from tradebot.portfolio import Portfolio
-from tradebot.risk import RiskConfig, RiskManager
+from tradebot.risk import BreakerConfig, RiskConfig, RiskManager
 from tradebot.strategies import TrendFollowingConfig, TrendFollowingStrategy
 
 BASE_TIME = datetime(2026, 1, 2, 0, 0, tzinfo=UTC)
@@ -76,13 +76,14 @@ def make_engine(
     decision_store: DecisionStore | None = None,
     autonomy_mode: AutonomyMode = AutonomyMode.AUTONOMOUS,
     proposal_queue: ProposalQueue | None = None,
+    risk_config: RiskConfig | None = None,
 ) -> TradingEngine:
     strategy = TrendFollowingStrategy(
         TrendFollowingConfig(fast_ema_period=3, slow_ema_period=6, atr_period=3)
     )
     return TradingEngine(
         strategy,
-        RiskManager(RiskConfig(), portfolio),
+        RiskManager(risk_config or RiskConfig(), portfolio),
         portfolio,
         SimulatedExecutionAdapter(FillSimulatorConfig()),
         symbol=symbol,
@@ -176,7 +177,42 @@ class TestPaperFlowOverBus:
             await engine.process_candle(make_candle(1, 100.0, symbol="ETH/USDT"))
 
 
-class TestDecisionJournal:
+class TestCircuitBreakerWiring:
+    """The engine feeds the breakers; the breakers gate entries in the loop."""
+
+    async def test_blocked_entries_are_journaled_as_vetoed(self, database: Database) -> None:
+        portfolio = Portfolio(INITIAL_BALANCE)
+        decision_store = DecisionStore(database)
+        engine = make_engine(
+            portfolio,
+            decision_store=decision_store,
+            risk_config=RiskConfig(breakers=BreakerConfig(max_entries_per_day=0)),
+        )
+
+        for index, close in enumerate(CLOSES):
+            await engine.process_candle(make_candle(index, close))
+
+        assert engine.fills == ()  # the cap blocked the entry end to end
+        outcomes = {d.outcome for d in await decision_store.fetch_recent("BTC/USDT")}
+        assert DecisionOutcome.VETOED in outcomes
+
+    async def test_collapse_trips_breaker_but_exit_still_fills(self) -> None:
+        portfolio = Portfolio(INITIAL_BALANCE)
+        engine = make_engine(
+            portfolio,
+            risk_config=RiskConfig(
+                # Any visible dip trips; the exit must still go through.
+                breakers=BreakerConfig(max_daily_loss_fraction=Decimal("0.0001"))
+            ),
+        )
+
+        for index, close in enumerate(CLOSES):
+            await engine.process_candle(make_candle(index, close))
+
+        assert engine.breakers.tripped_reason is not None
+        assert [f.side for f in engine.fills] == [Side.BUY, Side.SELL]
+        assert portfolio.position("BTC/USDT") is None  # flat: exit was not braked
+
     async def test_submitted_and_paused_outcomes_are_recorded(self, database: Database) -> None:
         await database.create_schema()
         store = DecisionStore(database)
