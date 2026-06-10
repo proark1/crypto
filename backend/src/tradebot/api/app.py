@@ -171,7 +171,12 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
 
     @app.post("/kill")
     async def kill() -> CommandResponse:
-        exit_submitted = await state.engine.kill()
+        try:
+            exit_submitted = await state.engine.kill()
+        except RuntimeError as error:
+            # Halted but NOT flat — surface it as a clear conflict, never as
+            # a 500 and never as a misleading "nothing to flatten".
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
         detail = (
             "halted; exit order submitted, fills on next candle"
             if exit_submitted

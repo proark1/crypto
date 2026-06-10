@@ -179,6 +179,19 @@ class TestCommands:
         assert "no position" in body["detail"]
         assert bot.engine.paused is True
 
+    async def test_kill_with_position_but_no_candle_returns_conflict(
+        self, database: Database
+    ) -> None:
+        bot = StubBot(database)
+        bot.portfolio.apply_fill(make_fill(price="100", quantity="2"))
+        # The engine has processed no candle: kill cannot price an exit.
+        async with make_client(bot) as client:
+            response = await client.post("/kill")
+
+        assert response.status_code == 409
+        assert "NOT flat" in response.json()["detail"]
+        assert bot.engine.paused is True
+
     async def test_kill_with_position_submits_exit(self, database: Database) -> None:
         bot = StubBot(database)
         bot.portfolio.apply_fill(make_fill(price="100", quantity="2"))

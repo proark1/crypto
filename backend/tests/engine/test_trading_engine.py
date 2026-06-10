@@ -176,12 +176,31 @@ class TestPauseAndKill:
         await engine.process_candle(make_candle(16, CLOSES[16]))
         assert portfolio.position("BTC/USDT") is None  # flattened while paused
 
-    async def test_kill_before_any_candle_halts_without_exit(self) -> None:
+    async def test_kill_when_flat_before_any_candle_halts_without_exit(self) -> None:
         portfolio = Portfolio(INITIAL_BALANCE)
         engine = make_engine(portfolio)
         submitted = await engine.kill()
         assert submitted is False
         assert engine.paused is True
+
+    async def test_kill_with_position_but_no_candle_raises_not_flat(self) -> None:
+        """Halted-but-not-flat must never look like 'nothing to flatten'."""
+        portfolio = Portfolio(INITIAL_BALANCE)
+        portfolio.apply_fill(
+            Fill(
+                client_order_id="seed",
+                symbol="BTC/USDT",
+                side=Side.BUY,
+                price_quote=Decimal("100"),
+                quantity_base=Decimal("1"),
+                fee_quote=Decimal("0"),
+                filled_at=BASE_TIME,
+            )
+        )
+        engine = make_engine(portfolio)
+        with pytest.raises(RuntimeError, match="NOT flat"):
+            await engine.kill()
+        assert engine.paused is True  # still halted despite the error
 
 
 class TestParityWithBacktest:

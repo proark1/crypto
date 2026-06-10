@@ -89,11 +89,20 @@ class TradingEngine:
         candle, which the engine keeps processing while paused). Deliberately
         does not consult the strategy — the kill switch must work even if
         strategy logic is wedged (ARCHITECTURE.md 6.3).
+
+        Raises ``RuntimeError`` if a position is open but no candle has been
+        seen to price the exit: the bot is halted but **not** flat, and that
+        state must never be reportable as "nothing to flatten".
         """
         self.pause()
         for order in self._adapter.open_orders():
-            await self._adapter.cancel(order.client_order_id)
-            logger.warning("kill switch cancelled open order %s", order.client_order_id)
+            # One failed cancel (e.g. an order racing its own fill on a live
+            # venue) must not stop the kill switch from cancelling the rest.
+            try:
+                await self._adapter.cancel(order.client_order_id)
+                logger.warning("kill switch cancelled open order %s", order.client_order_id)
+            except Exception:
+                logger.exception("kill switch failed to cancel order %s", order.client_order_id)
         if self._symbol is None:
             return False
         position = self._portfolio.position(self._symbol)
@@ -101,8 +110,9 @@ class TradingEngine:
             logger.warning("kill switch: already flat, halted only")
             return False
         if self._last_candle is None:
-            logger.error("kill switch: position open but no candle seen yet; halted unflattened")
-            return False
+            raise RuntimeError(
+                "kill switch: position open but no candle seen yet; halted but NOT flat"
+            )
         last_close = self._last_candle.close_quote
         signal = Signal(
             signal_id=f"kill:{self._symbol}:{self._last_candle.close_time.isoformat()}",
