@@ -23,7 +23,7 @@ This document is the target design. Implementation status as of June 2026
 | Telegram notifications (§6.2) | **Done** — alerts only; command handling missing |
 | Dashboard: status, chart, decisions, proposals, controls (§6.1) | **Done** — per-coin view with coin switcher; wizard, journal, research screens missing |
 | Multi-coin support (§4.2) | **Done** — per-symbol feed+engine, shared account/breakers, per-coin dashboard, runtime add/remove via API + UI (coins persisted in Postgres; env var seeds first boot) |
-| Evaluation & training: blind walk-forward (§12) | **Partial** — foundations, scenario engine (leak-tested), run orchestration + API, research screen done; replay viewer and learning layer pending |
+| Evaluation & training: blind walk-forward (§12) | **Partial** — foundations, scenario engine (leak-tested), run orchestration + API, research screen, scenario replay viewer done; learning layer pending |
 | News pipeline, regime gates, signal fusion (§4.6, §4.7) | **Missing** |
 | Observability: dead-man's switch, metrics, DB backups (§7.3) | **Partial** — heartbeat ping gated on feed freshness done; metrics and backups missing |
 | Live trading (§8 Phase 3) | **Missing** — blockers enumerated in LIVE_TRADING_CHECKLIST.md |
@@ -589,6 +589,9 @@ its lineage: what changed, why, and whether validation confirmed it.
 
 ### 12.6 Delivery status
 
-Step 1 (this section, aggregation batch helper, condition classifier, the
-four tables) is implemented. Steps 2-6: scenario engine + scoring, run API,
-research screen, scenario replay viewer, learning layer + sweeps.
+Steps 1-5 are implemented: foundations (this section, aggregation batch
+helper, condition classifier, the four tables), scenario engine + scoring,
+run API, research screen, and the scenario replay viewer (scenarios are
+rebuilt from their stored coordinates through the run's own aggregation
+path and revealed candle by candle, grade last). Step 6 remains: learning
+layer + sweeps.

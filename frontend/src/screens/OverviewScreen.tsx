@@ -25,6 +25,7 @@ import type {
   StatusResponse,
 } from "../api/types";
 import { CandleChart } from "../components/CandleChart";
+import { toTradeMarkers } from "../lib/chart";
 import { ResearchScreen } from "./ResearchScreen";
 import { CoinManager } from "../components/CoinManager";
 import { CoinTabs } from "../components/CoinTabs";
@@ -257,7 +258,9 @@ export function OverviewScreen() {
           <CandleChart
             candles={candles}
             // Markers must match the charted coin; the journal spans them all.
-            fills={status ? fills.filter((fill) => fill.symbol === status.symbol) : fills}
+            markers={toTradeMarkers(
+              status ? fills.filter((fill) => fill.symbol === status.symbol) : fills,
+            )}
           />
           <DecisionsPanel decisions={decisions} />
           <FillsTable fills={fills} />

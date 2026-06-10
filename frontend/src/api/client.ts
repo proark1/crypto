@@ -11,6 +11,8 @@ import type {
   DecisionResponse,
   FillResponse,
   ProposalResponse,
+  ScenarioReplayResponse,
+  ScenarioSummaryResponse,
   StatusResponse,
 } from "./types";
 
@@ -142,4 +144,12 @@ export function startEvaluation(body: {
 
 export function cancelEvaluation(runId: number): Promise<CommandResponse> {
   return request<CommandResponse>(`/evaluations/${String(runId)}/cancel`, "POST");
+}
+
+export function fetchScenarios(runId: number): Promise<ScenarioSummaryResponse[]> {
+  return request<ScenarioSummaryResponse[]>(`/evaluations/${String(runId)}/scenarios`, "GET");
+}
+
+export function fetchScenarioReplay(scenarioId: number): Promise<ScenarioReplayResponse> {
+  return request<ScenarioReplayResponse>(`/evaluations/scenarios/${String(scenarioId)}`, "GET");
 }
