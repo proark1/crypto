@@ -123,7 +123,10 @@ operational pain with zero benefit.
 
 ### 4.5 Portfolio / State Manager
 - Single source of truth for positions, balances, open orders, realized/unrealized PnL.
-- Persisted in SQLite (later Postgres) so the bot resumes cleanly after a restart.
+- **All accounting in one configured quote currency (default USDT):** v1 trades only
+  pairs quoted in it, so equity, PnL, and risk limits are all directly comparable
+  with no FX conversion ambiguity. Multi-quote support is a later, deliberate feature.
+- Persisted in Postgres so the bot resumes cleanly after a restart.
 - Emits PnL and exposure metrics consumed by the risk manager and the UI.
 
 ### 4.6 Backtester & Research Loop
@@ -188,6 +191,10 @@ Defense in depth against unintended orders, plus a per-coin **autonomy mode**:
 - Metrics: data-feed lag, order round-trip time, fill rate, rejection reasons,
   live-vs-backtest signal divergence (a key health metric).
 - Heartbeat alert if the data feed or trading loop stalls.
+- **Dead-man's switch:** the bot cannot report its own death, so it pings an external
+  monitor (e.g. healthchecks.io, free tier) every minute; missed pings alert the user
+  through a channel independent of the bot and of Railway. Exchange-native stops mean
+  positions stay protected while the bot is down (section 4.4).
 
 ## 5. Data sources & signals
 
