@@ -1,12 +1,15 @@
 """Parameter sweeps with walk-forward validation (ARCHITECTURE.md §12.5).
 
-Candidate configurations are scored on a *training* slice of history; only
-the training winner (and the baseline it challenges) is then scored on the
-later, untouched *validation* slice. A candidate that wins training but
-loses validation is reported as **overfit**, in those words — the report
-never recommends a config on in-sample evidence alone. Like findings, a
-sweep only ever recommends: changing the live configuration stays a human
-action, outside this module.
+Candidate configurations — across strategy families — are scored on a
+*training* span of history; only the training winner (and the baseline it
+challenges) is then scored on the later, untouched *validation* slices,
+walked forward one window at a time. A candidate that wins training but
+loses validation is reported as **overfit**, in those words — and a winner
+whose validation edge is not statistically distinguishable from luck,
+after correcting for how many candidates had a shot at winning, is
+reported as unproven rather than crowned. Like findings, a sweep only
+ever recommends: changing the live configuration stays a human action,
+outside this module.
 
 Scenarios are generated, decided, and graded by the same blind pipeline as
 evaluation runs (one code path), so sweep numbers and run numbers are
@@ -24,15 +27,27 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from tradebot.backtest import split_rolling_by_fraction
 from tradebot.core.models import ACCOUNTING_RESOLUTION, Candle, CandleInterval, utc_now
 from tradebot.evaluation.engine import ScenarioEvaluator
 from tradebot.evaluation.generator import GeneratorConfig, generate_specs
 from tradebot.evaluation.models import RunStatus
 from tradebot.evaluation.reports import r_metrics
+from tradebot.evaluation.statistics import (
+    bootstrap_expectancy_interval,
+    corrected_significance,
+    superiority_p_value,
+)
 from tradebot.execution import FillSimulatorConfig
 from tradebot.marketdata import aggregate_candles
 from tradebot.persistence import CandleStore, EvaluationStore
-from tradebot.strategies import Strategy, TrendFollowingConfig, TrendFollowingStrategy
+from tradebot.strategies import (
+    MeanReversionConfig,
+    MeanReversionStrategy,
+    Strategy,
+    TrendFollowingConfig,
+    TrendFollowingStrategy,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -40,14 +55,49 @@ MIN_SWEEP_TRADES = 10
 """Candidates with fewer graded trades than this cannot be compared
 honestly; expectancy over a handful of trades is noise."""
 
+STRATEGY_FAMILIES: Mapping[str, tuple[type[BaseModel], Callable[..., Strategy]]] = {
+    "trend_following": (TrendFollowingConfig, TrendFollowingStrategy),
+    "mean_reversion": (MeanReversionConfig, MeanReversionStrategy),
+}
+"""Sweepable families: name -> (config model, strategy constructor). A
+candidate names its family, so one sweep can pit families against each
+other on identical scenarios."""
+
+
+def _validate_family_params(family: str, params: Mapping[str, Any]) -> None:
+    """Raise ``ValueError`` for an unknown family or parameter, loudly.
+
+    Pydantic ignores unknown keys by default; a typo'd parameter would
+    silently sweep the baseline against itself.
+    """
+    if family not in STRATEGY_FAMILIES:
+        raise ValueError(f"unknown strategy family {family!r}; known: {sorted(STRATEGY_FAMILIES)}")
+    config_model, _ = STRATEGY_FAMILIES[family]
+    unknown = set(params) - set(config_model.model_fields)
+    if unknown:
+        raise ValueError(f"unknown {family} parameters: {sorted(unknown)}")
+
 
 class SweepCandidate(BaseModel):
-    """One named parameter set competing in the sweep."""
+    """One named parameter set (of one strategy family) competing in the sweep."""
 
     model_config = ConfigDict(frozen=True)
 
     name: str
     params: dict[str, Any]
+    family: str = "trend_following"
+
+    @model_validator(mode="after")
+    def _family_and_params_must_exist(self) -> SweepCandidate:
+        _validate_family_params(self.family, self.params)
+        return self
+
+
+def build_candidate_strategy(candidate: SweepCandidate) -> Strategy:
+    """Build one fresh strategy instance for ``candidate``."""
+    _validate_family_params(candidate.family, candidate.params)
+    config_model, strategy_constructor = STRATEGY_FAMILIES[candidate.family]
+    return strategy_constructor(config_model(**candidate.params))
 
 
 class SweepConfig(BaseModel):
@@ -63,13 +113,23 @@ class SweepConfig(BaseModel):
     timeframe: str = "1h"
     history_days: int = Field(default=180, gt=0)
     scenario_count: int = Field(default=100, gt=0)
-    """Scenarios per candidate per period (training and validation)."""
+    """Scenarios per candidate per window side (training and validation)."""
 
     lookback_candles: int = Field(default=200, ge=60)
     horizon_candles: int = Field(default=60, gt=0)
     seed: int = 7
     training_fraction: float = Field(default=0.7, gt=0.0, lt=1.0)
-    """Chronological split: the first fraction trains, the rest validates."""
+    """Share of the series each rolling window trains on; the rest splits
+    into ``validation_windows`` chronological validation slices."""
+
+    validation_windows: int = Field(default=3, ge=1)
+    """How many chronological out-of-sample slices the held-out data is
+    split into. Candidates are selected once, on the training span that
+    strictly precedes *every* slice (re-selecting per window would train
+    on earlier windows' validation data); each slice then tests the same
+    challenger, so the report shows whether the edge persists through
+    successive periods or lived in one lucky stretch. One window
+    reproduces the old single chronological split."""
 
     candidates: tuple[SweepCandidate, ...] = Field(min_length=2)
     motivating_finding_ids: tuple[int, ...] = ()
@@ -88,7 +148,7 @@ class SweepConfig(BaseModel):
         return CandleInterval(self.timeframe)
 
 
-DEFAULT_TREND_CANDIDATES: tuple[SweepCandidate, ...] = (
+DEFAULT_SWEEP_CANDIDATES: tuple[SweepCandidate, ...] = (
     SweepCandidate(name="baseline_20_50", params=TrendFollowingConfig().model_dump()),
     SweepCandidate(
         name="faster_cross_10_30",
@@ -106,26 +166,21 @@ DEFAULT_TREND_CANDIDATES: tuple[SweepCandidate, ...] = (
         name="tighter_stop_1.5x",
         params=TrendFollowingConfig(atr_stop_multiple=1.5).model_dump(),
     ),
+    SweepCandidate(
+        name="reversion_rsi_14",
+        family="mean_reversion",
+        params=MeanReversionConfig().model_dump(),
+    ),
 )
-"""The trend-following family's default grid: the live defaults as the
-baseline, then one deliberate change per candidate so a verdict names the
-single knob that earned (or lost) it."""
-
-
-def build_trend_strategy(params: Mapping[str, Any]) -> Strategy:
-    """Build a trend-following variant from sweep params, loudly.
-
-    Pydantic ignores unknown keys by default; a typo'd parameter would
-    silently sweep the baseline against itself, so unknown keys raise.
-    """
-    unknown = set(params) - set(TrendFollowingConfig.model_fields)
-    if unknown:
-        raise ValueError(f"unknown trend-following parameters: {sorted(unknown)}")
-    return TrendFollowingStrategy(TrendFollowingConfig(**params))
+"""The default grid: the live trend defaults as the baseline, one
+deliberate change per trend candidate so a verdict names the single knob
+that earned (or lost) it — plus the mean-reversion family's defaults, so
+every default sweep also asks whether the other family beats the
+incumbent on the same scenarios."""
 
 
 class CandidateScore(BaseModel):
-    """One candidate's graded outcomes on one period."""
+    """One candidate's graded outcomes, pooled across the scored windows."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -145,6 +200,16 @@ class CandidateScore(BaseModel):
             return None
         return (sum(self.r_values, Decimal(0)) / Decimal(len(self.r_values))).quantize(
             ACCOUNTING_RESOLUTION, rounding=ROUND_HALF_EVEN
+        )
+
+    def merged_with(self, other: CandidateScore) -> CandidateScore:
+        """Pool another window's outcomes for the same candidate."""
+        if other.candidate != self.candidate:
+            raise ValueError("cannot merge scores of different candidates")
+        return CandidateScore(
+            candidate=self.candidate,
+            scenario_count=self.scenario_count + other.scenario_count,
+            r_values=self.r_values + other.r_values,
         )
 
 
@@ -173,10 +238,10 @@ class SweepRunner:
         self,
         candle_store: CandleStore,
         evaluation_store: EvaluationStore,
-        strategy_builder: Callable[[Mapping[str, Any]], Strategy],
+        strategy_builder: Callable[[SweepCandidate], Strategy],
         fills: FillSimulatorConfig | None = None,
     ) -> None:
-        """Bind the data sources and the params -> strategy builder."""
+        """Bind the data sources and the candidate -> strategy builder."""
         self._candles = candle_store
         self._store = evaluation_store
         self._build = strategy_builder
@@ -203,10 +268,14 @@ class SweepRunner:
         start = now - timedelta(days=config.history_days)
         base = await self._candles.fetch_range(config.symbol, CandleInterval.M1, start, now)
         series = base if interval == CandleInterval.M1 else aggregate_candles(base, interval)
-        split = int(len(series) * config.training_fraction)
-        training = list(series[:split])
-        validation = list(series[split:])
-
+        windows = split_rolling_by_fraction(
+            series, config.training_fraction, config.validation_windows
+        )
+        # Selection happens once, on the span strictly before every
+        # validation slice (the first window's training side). The later
+        # windows' training spans contain earlier validation slices, so
+        # re-selecting on them would leak validation data into training.
+        training = list(windows[0].train)
         training_scores = [
             await self._score(training, candidate, config) for candidate in config.candidates
         ]
@@ -216,11 +285,14 @@ class SweepRunner:
         report: dict[str, Any] = {
             "baseline": baseline.candidate.name,
             "split": {
-                "training_candles": len(training),
-                "validation_candles": len(validation),
+                "training_candles": len(windows[0].train),
+                "validation_candles": sum(len(window.validation) for window in windows),
                 "training_fraction": config.training_fraction,
+                "validation_windows": [len(window.validation) for window in windows],
             },
-            "training": {score.candidate.name: _score_block(score) for score in training_scores},
+            "training": {
+                score.candidate.name: _score_block(score, config.seed) for score in training_scores
+            },
             "validation": {},
         }
         if winner is None:
@@ -228,7 +300,7 @@ class SweepRunner:
             report["verdict"] = "insufficient_evidence"
             report["explanation"] = (
                 f"no candidate produced at least {MIN_SWEEP_TRADES} trades on the training "
-                "period; there is nothing to compare honestly"
+                "windows; there is nothing to compare honestly"
             )
             return report
 
@@ -237,21 +309,40 @@ class SweepRunner:
             report["verdict"] = "baseline_best"
             report["explanation"] = (
                 f"no variant beat the baseline {baseline.candidate.name} on the training "
-                "period; nothing to validate, keep the current configuration"
+                "windows; nothing to validate, keep the current configuration"
             )
             return report
 
         # Only the challenger and the baseline earn a look at the untouched
-        # validation period — scoring every variant there would quietly turn
+        # validation slices — scoring every variant there would quietly turn
         # validation into a second training set.
-        baseline_validation = await self._score(validation, baseline.candidate, config)
-        winner_validation = await self._score(validation, winner.candidate, config)
+        validation_slices = [list(window.validation) for window in windows]
+        baseline_by_window = [
+            await self._score(window_slice, baseline.candidate, config)
+            for window_slice in validation_slices
+        ]
+        winner_by_window = [
+            await self._score(window_slice, winner.candidate, config)
+            for window_slice in validation_slices
+        ]
+        baseline_validation = _pooled(baseline_by_window)
+        winner_validation = _pooled(winner_by_window)
         report["validation"] = {
-            baseline_validation.candidate.name: _score_block(baseline_validation),
-            winner_validation.candidate.name: _score_block(winner_validation),
+            baseline_validation.candidate.name: _score_block(baseline_validation, config.seed),
+            winner_validation.candidate.name: _score_block(winner_validation, config.seed),
         }
-        report["verdict"], report["explanation"] = validation_verdict(
-            baseline_validation, winner_validation
+        # Per-window expectancies show whether the edge persisted through
+        # successive periods or lived in one lucky stretch; the verdict
+        # stands on the pooled numbers below.
+        report["validation_by_window"] = [
+            {"baseline": _window_block(base), "winner": _window_block(win)}
+            for base, win in zip(baseline_by_window, winner_by_window, strict=True)
+        ]
+        # Every non-baseline candidate had a shot at winning training, so
+        # every one of them spends part of the significance budget.
+        comparisons = len(config.candidates) - 1
+        report["verdict"], report["explanation"], report["significance"] = validation_verdict(
+            baseline_validation, winner_validation, comparisons=comparisons, seed=config.seed
         )
         return report
 
@@ -259,7 +350,7 @@ class SweepRunner:
         self, series: list[Candle], candidate: SweepCandidate, config: SweepConfig
     ) -> CandidateScore:
         """Run the blind pipeline for one candidate over one period."""
-        evaluator = ScenarioEvaluator(lambda: self._build(candidate.params), self._fills)
+        evaluator = ScenarioEvaluator(lambda: self._build(candidate), self._fills)
         specs = generate_specs(
             series,
             GeneratorConfig(
@@ -281,37 +372,100 @@ class SweepRunner:
         )
 
 
-def _score_block(score: CandidateScore) -> dict[str, Any]:
-    """Serialize one candidate's quality for the report (strings, §12.3 format)."""
+def _pooled(scores: Sequence[CandidateScore]) -> CandidateScore:
+    """Merge one candidate's per-window scores into its pooled score."""
+    pooled = scores[0]
+    for score in scores[1:]:
+        pooled = pooled.merged_with(score)
+    return pooled
+
+
+def _window_block(score: CandidateScore) -> dict[str, Any]:
+    """One candidate's quality on one validation window, for the report."""
+    expectancy = score.expectancy_r
     return {
-        "params": score.candidate.params,
-        "scenario_count": score.scenario_count,
-        **r_metrics(list(score.r_values)),
+        "trade_count": score.trade_count,
+        "expectancy_r": str(expectancy) if expectancy is not None else None,
     }
 
 
-def validation_verdict(baseline: CandidateScore, winner: CandidateScore) -> tuple[str, str]:
-    """Phrase the walk-forward outcome in plain words (§12.5)."""
+def _score_block(score: CandidateScore, seed: int) -> dict[str, Any]:
+    """Serialize one candidate's quality for the report (strings, §12.3 format)."""
+    interval = bootstrap_expectancy_interval(score.r_values, seed)
+    return {
+        "params": score.candidate.params,
+        "family": score.candidate.family,
+        "scenario_count": score.scenario_count,
+        **r_metrics(list(score.r_values)),
+        "expectancy_ci_r": (
+            {"low": str(interval.low_r), "high": str(interval.high_r)}
+            if interval is not None
+            else None
+        ),
+    }
+
+
+def validation_verdict(
+    baseline: CandidateScore, winner: CandidateScore, comparisons: int, seed: int
+) -> tuple[str, str, dict[str, Any]]:
+    """Phrase the walk-forward outcome in plain words (§12.5).
+
+    Returns (verdict, explanation, significance block). "Validated" now
+    means *statistically* validated: the challenger's edge over the
+    baseline on the untouched slices must clear a one-sided bootstrap test
+    at the Bonferroni-corrected level — a grid of N variants does not get
+    N chances at a 5% fluke.
+    """
+    threshold = corrected_significance(comparisons)
+    significance: dict[str, Any] = {
+        "comparisons": comparisons,
+        "corrected_threshold": str(threshold),
+        "p_value": None,
+    }
     winner_r = winner.expectancy_r
     baseline_r = baseline.expectancy_r
     if winner.trade_count < MIN_SWEEP_TRADES or winner_r is None:
         return (
             "insufficient_evidence",
             f"{winner.candidate.name} won training but traded only {winner.trade_count} "
-            "times on the validation period; not enough evidence to recommend it",
+            "times on the validation windows; not enough evidence to recommend it",
+            significance,
         )
-    if baseline_r is None or winner_r > baseline_r:
+    if baseline_r is not None and winner_r <= baseline_r:
         return (
-            "validated",
-            f"{winner.candidate.name} beat {baseline.candidate.name} on the untouched "
-            f"validation period ({winner_r}R vs {baseline_r}R per trade); the improvement "
-            "survived walk-forward",
+            "overfit",
+            f"{winner.candidate.name} won the training windows but not the untouched "
+            f"validation windows ({winner_r}R vs {baseline_r}R per trade); it wins only on "
+            f"the data it was tuned on — keep {baseline.candidate.name}",
+            significance,
+        )
+    p_value = superiority_p_value(winner.r_values, baseline.r_values, seed)
+    if p_value is None:
+        # The baseline barely traded on validation: there is nothing to
+        # beat, but also nothing to test against — never call that proven.
+        return (
+            "insufficient_evidence",
+            f"{winner.candidate.name} beat {baseline.candidate.name} on the validation "
+            f"windows ({winner_r}R per trade), but the baseline produced only "
+            f"{baseline.trade_count} trades there — too few to test the edge against",
+            significance,
+        )
+    significance["p_value"] = str(p_value)
+    if p_value > threshold:
+        return (
+            "insufficient_evidence",
+            f"{winner.candidate.name} beat {baseline.candidate.name} on the validation "
+            f"windows ({winner_r}R vs {baseline_r}R per trade), but the edge is not "
+            f"distinguishable from luck after correcting for {comparisons} comparisons "
+            f"(p={p_value}, needs <= {threshold})",
+            significance,
         )
     return (
-        "overfit",
-        f"{winner.candidate.name} won the training period but not the untouched "
-        f"validation period ({winner_r}R vs {baseline_r}R per trade); it wins only on "
-        f"the data it was tuned on — keep {baseline.candidate.name}",
+        "validated",
+        f"{winner.candidate.name} beat {baseline.candidate.name} on the untouched "
+        f"validation windows ({winner_r}R vs {baseline_r}R per trade, p={p_value} at "
+        f"the {threshold} corrected level); the improvement survived walk-forward",
+        significance,
     )
 
 

@@ -33,6 +33,16 @@ class RiskConfig(BaseModel):
     max_position_fraction: Decimal = Decimal("0.25")
     """Maximum fraction of equity in any single position at entry."""
 
+    max_total_exposure_fraction: Decimal = Decimal("0.5")
+    """Maximum fraction of equity across *all* open positions at entry.
+
+    Correlation-aware in the conservative limit: crypto spot positions are
+    treated as one fully correlated block (majors routinely draw down
+    together), so per-coin caps alone understate account risk. A new entry
+    must fit under this account-wide ceiling however many coins are open;
+    estimating pairwise correlations to loosen it is deliberately out of
+    scope — a wrong correlation estimate fails toward more risk."""
+
     fee_buffer_fraction: Decimal = Decimal("0.005")
     """Headroom kept when spending free balance, so fees can never overdraw."""
 
@@ -191,6 +201,30 @@ class RiskManager:
 
         max_notional = equity * self._config.max_position_fraction
         quantity = min(quantity, max_notional / current_price_quote)
+
+        # Account-wide exposure cap: open positions are assumed fully
+        # correlated (see RiskConfig), so the new entry only gets whatever
+        # headroom they leave. Vetoing at zero headroom is deliberate and
+        # loud — silently sizing to dust would hide the pressure.
+        open_notional_quote = sum(
+            (
+                position.quantity_base * marks[symbol]
+                for symbol, position in self._portfolio.positions.items()
+            ),
+            Decimal(0),
+        )
+        exposure_headroom_quote = (
+            equity * self._config.max_total_exposure_fraction - open_notional_quote
+        )
+        if exposure_headroom_quote <= 0:
+            logger.warning(
+                "entry vetoed for %s: open positions hold %s quote of a %s total exposure budget",
+                signal.symbol,
+                open_notional_quote,
+                equity * self._config.max_total_exposure_fraction,
+            )
+            return None
+        quantity = min(quantity, exposure_headroom_quote / current_price_quote)
 
         spendable = self._portfolio.quote_balance * (1 - self._config.fee_buffer_fraction)
         quantity = min(quantity, spendable / current_price_quote)

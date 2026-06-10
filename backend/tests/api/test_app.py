@@ -948,11 +948,19 @@ class TestSweeps:
                 {"name": "same", "params": {}},
             ]
         }
+        unknown_family = {
+            "candidates": [
+                {"name": "incumbent", "params": {}},
+                {"name": "imaginary", "params": {}, "family": "momentum"},
+            ]
+        }
         async with make_client(bot) as client:
             bad_timeframe = await client.post("/sweeps", json={"timeframe": "7m"})
             duplicate_names = await client.post("/sweeps", json=duplicate)
+            bad_family = await client.post("/sweeps", json=unknown_family)
         assert bad_timeframe.status_code == 400
         assert duplicate_names.status_code == 400
+        assert bad_family.status_code == 400
 
     async def test_cancel_and_unknown_sweep(self, database: Database) -> None:
         bot = StubBot(database)

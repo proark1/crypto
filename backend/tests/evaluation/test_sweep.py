@@ -11,14 +11,14 @@ import pytest
 
 from tradebot.core.models import Candle, CandleInterval, utc_now
 from tradebot.evaluation.sweep import (
-    DEFAULT_TREND_CANDIDATES,
+    DEFAULT_SWEEP_CANDIDATES,
     MIN_SWEEP_TRADES,
     CandidateScore,
     SweepCandidate,
     SweepConfig,
     SweepManager,
     SweepRunner,
-    build_trend_strategy,
+    build_candidate_strategy,
     select_winner,
     validation_verdict,
 )
@@ -78,40 +78,84 @@ class TestSelectWinner:
 
 
 class TestValidationVerdict:
-    def test_winner_that_holds_up_is_validated(self) -> None:
-        verdict, explanation = validation_verdict(
+    def test_winner_that_holds_up_significantly_is_validated(self) -> None:
+        verdict, explanation, significance = validation_verdict(
             baseline=score("baseline", enough("0.1")),
             winner=score("challenger", enough("0.4")),
+            comparisons=4,
+            seed=7,
         )
         assert verdict == "validated"
         assert "survived walk-forward" in explanation
+        assert significance["comparisons"] == 4
+        assert Decimal(significance["p_value"]) <= Decimal(significance["corrected_threshold"])
 
     def test_winner_that_collapses_is_called_overfit_in_plain_words(self) -> None:
-        verdict, explanation = validation_verdict(
+        verdict, explanation, _ = validation_verdict(
             baseline=score("baseline", enough("0.2")),
             winner=score("challenger", enough("-0.3")),
+            comparisons=4,
+            seed=7,
         )
         assert verdict == "overfit"
         assert "wins only on the data it was tuned on" in explanation
         assert "keep baseline" in explanation
 
     def test_too_few_validation_trades_is_insufficient_evidence(self) -> None:
-        verdict, explanation = validation_verdict(
+        verdict, explanation, significance = validation_verdict(
             baseline=score("baseline", enough("0.1")),
             winner=score("challenger", ["2.0"]),
+            comparisons=4,
+            seed=7,
         )
         assert verdict == "insufficient_evidence"
         assert "not enough evidence" in explanation
+        assert significance["p_value"] is None
+
+    def test_a_noisy_edge_fails_the_corrected_significance_test(self) -> None:
+        # Mean +0.1R vs 0.0R, but the spread dwarfs the edge — the point
+        # estimate "wins" while the bootstrap cannot tell it from luck.
+        noisy_winner = score("challenger", ["1.1", "-0.9"] * (MIN_SWEEP_TRADES // 2))
+        flat_baseline = score("baseline", ["1.0", "-1.0"] * (MIN_SWEEP_TRADES // 2))
+
+        verdict, explanation, significance = validation_verdict(
+            baseline=flat_baseline, winner=noisy_winner, comparisons=5, seed=7
+        )
+
+        assert verdict == "insufficient_evidence"
+        assert "not distinguishable from luck" in explanation
+        assert Decimal(significance["p_value"]) > Decimal(significance["corrected_threshold"])
+
+    def test_a_baseline_too_thin_to_test_against_is_never_called_proven(self) -> None:
+        verdict, explanation, significance = validation_verdict(
+            baseline=score("baseline", ["0.1"]),
+            winner=score("challenger", enough("0.4")),
+            comparisons=4,
+            seed=7,
+        )
+        assert verdict == "insufficient_evidence"
+        assert "too few to test" in explanation
+        assert significance["p_value"] is None
 
 
-class TestBuildTrendStrategy:
+class TestBuildCandidateStrategy:
     def test_unknown_parameter_raises_instead_of_being_ignored(self) -> None:
-        with pytest.raises(ValueError, match="unknown trend-following parameters"):
-            build_trend_strategy({"fast_ema_perod": 10})  # typo on purpose
+        with pytest.raises(ValueError, match="unknown trend_following parameters"):
+            SweepCandidate(name="typo", params={"fast_ema_perod": 10})  # typo on purpose
 
-    def test_known_parameters_build_a_variant(self) -> None:
-        strategy = build_trend_strategy({"fast_ema_period": 10, "slow_ema_period": 30})
-        assert strategy.name == "trend_following"
+    def test_unknown_family_raises_with_the_known_ones(self) -> None:
+        with pytest.raises(ValueError, match="unknown strategy family"):
+            SweepCandidate(name="bad", family="momentum", params={})
+
+    def test_each_family_builds_its_own_strategy(self) -> None:
+        trend = build_candidate_strategy(
+            SweepCandidate(name="t", params={"fast_ema_period": 10, "slow_ema_period": 30})
+        )
+        reversion = build_candidate_strategy(
+            SweepCandidate(name="r", family="mean_reversion", params={"rsi_period": 7})
+        )
+        assert trend.name == "trend_following"
+        assert reversion.name == "mean_reversion"
 
 
 class TestSweepConfig:
@@ -157,9 +201,15 @@ CONFIG = SweepConfig(
     horizon_candles=30,
     seed=7,
     training_fraction=0.6,
+    validation_windows=2,
     candidates=(
         SweepCandidate(name="baseline", params={"fast_ema_period": 5, "slow_ema_period": 12}),
         SweepCandidate(name="slower", params={"fast_ema_period": 8, "slow_ema_period": 21}),
+        SweepCandidate(
+            name="reverter",
+            family="mean_reversion",
+            params={"rsi_period": 5, "atr_period": 5},
+        ),
     ),
     motivating_finding_ids=(42,),
 )
@@ -169,7 +219,7 @@ def make_manager(
     database: Database,
 ) -> tuple[SweepManager, EvaluationStore, list[asyncio.Task[None]]]:
     store = EvaluationStore(database)
-    runner = SweepRunner(CandleStore(database), store, build_trend_strategy)
+    runner = SweepRunner(CandleStore(database), store, build_candidate_strategy)
     tasks: list[asyncio.Task[None]] = []
 
     def spawn(coroutine: Coroutine[Any, Any, None]) -> asyncio.Task[None]:
@@ -193,7 +243,7 @@ class TestSweepEndToEnd:
         assert sweep["motivating_finding_ids"] == [42]
         report = sweep["report"]
         assert report["baseline"] == "baseline"
-        assert set(report["training"]) == {"baseline", "slower"}
+        assert set(report["training"]) == {"baseline", "slower", "reverter"}
         assert report["verdict"] in {
             "validated",
             "overfit",
@@ -202,8 +252,21 @@ class TestSweepEndToEnd:
         }
         assert report["explanation"]
         assert report["split"]["training_candles"] > report["split"]["validation_candles"]
+        assert len(report["split"]["validation_windows"]) == 2
+        # Every candidate block names its family and carries the bootstrap
+        # interval slot (None when too few trades).
+        for block in report["training"].values():
+            assert block["family"] in {"trend_following", "mean_reversion"}
+            assert "expectancy_ci_r" in block
         # Validation never scores the full grid: at most challenger + baseline.
-        assert set(report["validation"]) <= {"baseline", "slower"}
+        assert set(report["validation"]) <= {"baseline", "slower", "reverter"}
+        if report["validation"]:
+            assert len(report["validation_by_window"]) == 2
+            assert set(report["significance"]) == {
+                "comparisons",
+                "corrected_threshold",
+                "p_value",
+            }
 
     async def test_one_sweep_at_a_time(self, database: Database) -> None:
         await seed_candles(database)
@@ -243,6 +306,12 @@ class TestSweepEndToEnd:
         assert sweep["report"] is None
 
     async def test_default_grid_names_are_unique_and_baseline_first(self) -> None:
-        names = [candidate.name for candidate in DEFAULT_TREND_CANDIDATES]
+        names = [candidate.name for candidate in DEFAULT_SWEEP_CANDIDATES]
         assert len(set(names)) == len(names)
         assert names[0].startswith("baseline")
+
+    async def test_default_grid_pits_both_families_against_the_incumbent(self) -> None:
+        families = {candidate.family for candidate in DEFAULT_SWEEP_CANDIDATES}
+        assert families == {"trend_following", "mean_reversion"}
+        # The baseline stays the configuration the bot trades today.
+        assert DEFAULT_SWEEP_CANDIDATES[0].family == "trend_following"
