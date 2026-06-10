@@ -65,18 +65,48 @@ decisions_table = Table(
 decision-pipeline UI reads. Append-only, like fills."""
 
 
+_SYNC_SCHEME_PREFIXES = (
+    "postgres://",
+    "postgresql://",
+    "postgresql+psycopg2://",
+    "postgresql+psycopg://",
+)
+
+
+def coerce_async_dsn(url: str) -> str:
+    """Rewrite common Postgres URL schemes to the asyncpg driver.
+
+    Platforms hand out plain ``postgresql://`` (Railway) or legacy
+    ``postgres://`` (Heroku-style) DSNs; SQLAlchemy would resolve those to
+    the synchronous psycopg2 driver, which is not installed — by design,
+    this codebase is asyncpg-only. Coercing the scheme here means any
+    standard Postgres URL can be pasted into ``TRADEBOT_DATABASE_URL``
+    without the deploy crash-looping on a driver import.
+    """
+    # Schemes are case-insensitive (RFC 3986 §3.1), and copy-pasted env
+    # vars routinely carry stray whitespace.
+    cleaned = url.strip()
+    lowered = cleaned.lower()
+    if lowered.startswith("postgresql+asyncpg://"):
+        return cleaned
+    for prefix in _SYNC_SCHEME_PREFIXES:
+        if lowered.startswith(prefix):
+            return "postgresql+asyncpg://" + cleaned[len(prefix) :]
+    return cleaned
+
+
 class Database:
     """Owns the async engine; use as an async context manager."""
 
     def __init__(self, url: str) -> None:
-        """Create an engine for ``url`` (``postgresql+asyncpg://...``).
+        """Create an engine for ``url`` (any standard Postgres DSN form).
 
         ``pool_pre_ping`` because the bot runs for weeks against a managed
         Postgres: pooled connections silently die across DB restarts and
         idle timeouts, and the first query after that must not be the one
         that fails.
         """
-        self._engine: AsyncEngine = create_async_engine(url, pool_pre_ping=True)
+        self._engine: AsyncEngine = create_async_engine(coerce_async_dsn(url), pool_pre_ping=True)
 
     @property
     def engine(self) -> AsyncEngine:
