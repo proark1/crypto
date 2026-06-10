@@ -204,15 +204,30 @@ export function OverviewScreen() {
             ))}
           </nav>
         </div>
-        {screen === "trade" && status && (
-          <Controls
-            paused={status.paused}
-            disabled={commandPending}
-            onPause={() => void runCommand(postPause)}
-            onResume={() => void runCommand(postResume)}
-            onKill={() => void runCommand(postKill)}
-          />
-        )}
+        <div className="flex items-center gap-3">
+          {screen === "trade" && status && (
+            <Controls
+              paused={status.paused}
+              disabled={commandPending}
+              onPause={() => void runCommand(postPause)}
+              onResume={() => void runCommand(postResume)}
+              onKill={() => void runCommand(postKill)}
+            />
+          )}
+          <button
+            type="button"
+            onClick={() => {
+              // Clear the stored token (LIVE_TRADING_CHECKLIST §8): a
+              // shared or public browser must not keep control of the bot.
+              storeToken("");
+              setTokenDraft("");
+              setNeedsToken(true);
+            }}
+            className="rounded-lg border border-zinc-700 px-3 py-1.5 text-sm text-zinc-400 hover:bg-zinc-800"
+          >
+            log out
+          </button>
+        </div>
       </header>
       {notice && (
         <div className="rounded-lg border border-zinc-700 bg-zinc-900 px-4 py-2 text-sm text-zinc-300">

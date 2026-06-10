@@ -9,25 +9,33 @@ composition root.
 
 from __future__ import annotations
 
+import logging
 import secrets
+from collections import deque
 from collections.abc import Mapping
+from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any, Protocol
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import PlainTextResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 
 from tradebot.core.config import AppConfig
-from tradebot.core.models import Candle, CandleInterval
+from tradebot.core.metrics import MetricsCollector, format_metric
+from tradebot.core.models import Candle, CandleInterval, utc_now
 from tradebot.engine import TradingEngine
 from tradebot.evaluation.models import LearningFinding
 from tradebot.evaluation.replay import load_replay
 from tradebot.evaluation.runner import EvaluationRunConfig
 from tradebot.evaluation.sweep import DEFAULT_TREND_CANDIDATES, SweepCandidate, SweepConfig
+from tradebot.news import NewsFlags
 from tradebot.persistence import CandleStore, DecisionStore, EvaluationStore, FillStore
 from tradebot.portfolio import Portfolio
+
+logger = logging.getLogger(__name__)
 
 
 class BotState(Protocol):
@@ -90,6 +98,16 @@ class BotState(Protocol):
 
     def cancel_sweep(self, sweep_id: int) -> bool:
         """Cancel the in-flight sweep; False when it is not running."""
+        ...
+
+    @property
+    def metrics(self) -> MetricsCollector:
+        """Bus-fed counters for the /metrics endpoint."""
+        ...
+
+    @property
+    def news_flags(self) -> NewsFlags:
+        """Active negative-news flags (gauge + status surfaces)."""
         ...
 
 
@@ -410,6 +428,49 @@ class FillResponse(BaseModel):
     filled_at: str
 
 
+class AuthLockout:
+    """Sliding-window brute-force brake for the bearer-token check.
+
+    More than ``max_failures`` bad tokens inside ``window`` lock
+    authentication for ``cooldown``. State is in-memory by design: a
+    restart clears it, which costs an attacker nothing meaningful (the
+    window is a minute) and keeps the hot path free of database writes.
+    """
+
+    def __init__(
+        self,
+        max_failures: int = 10,
+        window: timedelta = timedelta(minutes=1),
+        cooldown: timedelta = timedelta(minutes=1),
+    ) -> None:
+        """Defaults allow honest typos but make brute force impractical."""
+        self._max_failures = max_failures
+        self._window = window
+        self._cooldown = cooldown
+        self._failures: deque[datetime] = deque()
+        self._locked_until: datetime | None = None
+
+    def record_failure(self, now: datetime) -> None:
+        """Count one bad token; trips the lock when the window overflows."""
+        self._failures.append(now)
+        while self._failures and now - self._failures[0] > self._window:
+            self._failures.popleft()
+        if len(self._failures) > self._max_failures:
+            self._locked_until = now + self._cooldown
+            logger.warning(
+                "control-plane auth locked until %s: %d failed tokens within %s",
+                self._locked_until.isoformat(),
+                len(self._failures),
+                self._window,
+            )
+
+    def locked_until(self, now: datetime) -> datetime | None:
+        """Return the lock expiry if authentication is paused at ``now``."""
+        if self._locked_until is not None and now < self._locked_until:
+            return self._locked_until
+        return None
+
+
 def _parse_cors_origins(raw: str) -> list[str]:
     """Split the comma-separated origins setting, ignoring blanks.
 
@@ -442,12 +503,25 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
         raise ValueError("control API requires a non-empty token; refusing to build")
 
     bearer = HTTPBearer(auto_error=False)
+    lockout = AuthLockout()
 
     def require_token(
         credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
     ) -> None:
+        if lockout.locked_until(utc_now()) is not None:
+            # Brute-force brake (LIVE_TRADING_CHECKLIST §8): after a burst
+            # of bad tokens, authentication pauses entirely for a cooldown.
+            # Locking globally is deliberate: there is one operator and one
+            # token, the bot itself keeps trading (and Telegram keeps
+            # alerting) while the control plane cools down, and per-IP
+            # tracking behind a PaaS proxy would punish the wrong address.
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="too many failed authentication attempts; try again shortly",
+            )
         # compare_digest keeps token comparison constant-time.
         if credentials is None or not secrets.compare_digest(credentials.credentials, api_token):
+            lockout.record_failure(utc_now())
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="missing or invalid bearer token",
@@ -941,6 +1015,56 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
             )
         first_engine = next(iter(state.engines.values()))
         return CommandResponse(paused=first_engine.paused, detail=f"sweep {sweep_id} cancelled")
+
+    @protected.get("/metrics")
+    async def get_metrics() -> PlainTextResponse:
+        """Prometheus text exposition (ARCHITECTURE.md 4.9).
+
+        Behind the bearer token on purpose: balances and positions are in
+        here, and Prometheus scrapes support bearer auth natively. Floats
+        are fine in this one place — metrics are display, not accounting.
+        """
+        now = utc_now()
+        portfolio = state.portfolio
+        lines: list[str] = [
+            "# TYPE tradebot_up gauge",
+            format_metric("tradebot_up", 1),
+            "# TYPE tradebot_quote_balance gauge",
+            format_metric("tradebot_quote_balance", float(portfolio.quote_balance)),
+            "# TYPE tradebot_realized_pnl_quote gauge",
+            format_metric("tradebot_realized_pnl_quote", float(portfolio.realized_pnl_quote())),
+            "# TYPE tradebot_open_positions gauge",
+            format_metric("tradebot_open_positions", len(portfolio.positions)),
+        ]
+        lines.append("# TYPE tradebot_engine_paused gauge")
+        for symbol, engine in state.engines.items():
+            lines.append(
+                format_metric("tradebot_engine_paused", int(engine.paused), {"symbol": symbol})
+            )
+        first_engine = next(iter(state.engines.values()), None)
+        if first_engine is not None:
+            lines.append("# TYPE tradebot_breaker_tripped gauge")
+            lines.append(
+                format_metric(
+                    "tradebot_breaker_tripped",
+                    int(first_engine.breakers.tripped_reason is not None),
+                )
+            )
+        # Data-feed lag per symbol: the staleness alarm §4.9 asks for.
+        lines.append("# TYPE tradebot_last_candle_age_seconds gauge")
+        for symbol in state.engines:
+            latest = await state.candle_store.latest_candle(symbol, CandleInterval.M1)
+            if latest is not None:
+                age = (now - latest.close_time).total_seconds()
+                lines.append(
+                    format_metric("tradebot_last_candle_age_seconds", age, {"symbol": symbol})
+                )
+        lines.append("# TYPE tradebot_news_flags_active gauge")
+        lines.append(
+            format_metric("tradebot_news_flags_active", len(state.news_flags.active_flags(now)))
+        )
+        lines.extend(state.metrics.render_counters())
+        return PlainTextResponse("\n".join(lines) + "\n")
 
     @protected.get("/fills")
     async def get_fills(symbol: str | None = Query(None)) -> list[FillResponse]:

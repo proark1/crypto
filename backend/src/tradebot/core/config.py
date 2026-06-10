@@ -110,6 +110,13 @@ class AppConfig(BaseSettings):
     regime_reference_symbol: str = "BTC/USDT"
     """The market-wide reference whose regime gates all entries."""
 
+    sentiment_enabled: bool = True
+    """Poll Fear & Greed and BTC dominance (free, keyless APIs) as advisory
+    tighteners for the regime gate. They can only block entries, never
+    allow them, so the fail-safe direction is on."""
+
+    sentiment_poll_minutes: int = Field(default=15, ge=1)
+
     cryptopanic_token: str | None = None
     """CryptoPanic API token. Unset disables news polling; the news gate
     still runs (scheduled-event windows work without any news source)."""
@@ -132,6 +139,40 @@ class AppConfig(BaseSettings):
         from tradebot.news.calendar import EventCalendar
 
         EventCalendar.from_json(self.event_calendar_json)
+        return self
+
+    backup_s3_endpoint: str | None = None
+    """S3-compatible endpoint for scheduled DB backups (e.g. an R2 URL).
+    Backups run only when endpoint, bucket, and both keys are all set."""
+
+    backup_s3_bucket: str | None = None
+    backup_s3_access_key: str | None = None
+    backup_s3_secret_key: str | None = None
+    backup_s3_region: str = "auto"
+    """R2 uses the literal region ``auto``; AWS wants a real one."""
+
+    backup_interval_hours: int = Field(default=24, ge=1)
+    backup_prefix: str = "tradebot"
+
+    @model_validator(mode="after")
+    def _backup_config_is_all_or_nothing(self) -> AppConfig:
+        """Reject half-configured backups at deploy: a typo is not a choice.
+
+        Backups that silently never run are exactly the failure §7 backups
+        exist to prevent.
+        """
+        values = (
+            self.backup_s3_endpoint,
+            self.backup_s3_bucket,
+            self.backup_s3_access_key,
+            self.backup_s3_secret_key,
+        )
+        configured = [value for value in values if value]
+        if configured and len(configured) != len(values):
+            raise ValueError(
+                "backup misconfigured: endpoint, bucket, access key, and secret key "
+                "must all be set together (or none of them)"
+            )
         return self
 
     history_backfill_days: int = Field(default=0, ge=0)

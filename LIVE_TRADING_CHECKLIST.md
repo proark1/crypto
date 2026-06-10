@@ -62,18 +62,29 @@ to a way real money is lost that paper trading never exercises.
       when the worker stops pinging — a dead bot with open positions is an
       emergency, not a log line. (`TRADEBOT_HEARTBEAT_URL`; the ping is
       gated on candle freshness, so a stalled feed also goes silent.)
-- [ ] Nightly Postgres backups, restore tested once.
+- [ ] Nightly Postgres backups, restore tested once. *(Mechanism shipped:
+      scheduled gzipped-JSONL dumps to any S3-compatible store via
+      `TRADEBOT_BACKUP_S3_*`, exact-Decimal restore covered by an automated
+      round-trip test. Remaining: configure the bucket in the deploy and run
+      one restore drill against a real archive.)*
 - [ ] Exchange API key is **spot-trade-only**: withdrawals disabled, IP
       allowlist if the platform offers stable egress IPs.
 - [ ] Kill switch drill performed against live (tiny position): halt, flatten,
       verify flat on the exchange UI.
 
 ### 8. Control-plane hardening
-- [ ] Dashboard logout (clear stored token) and a documented token-rotation
-      procedure.
+- [x] Dashboard logout (clear stored token) and a documented token-rotation
+      procedure. *(Rotation: set a new `TRADEBOT_API_TOKEN` in the deploy
+      environment, redeploy the worker, then log out of the dashboard and
+      reconnect with the new token. The old token dies with the redeploy —
+      tokens are compared against the live env var only, never stored.)*
 - [ ] CORS restricted from `*` to the dashboard's exact origin
-      (`TRADEBOT_API_CORS_ORIGINS`).
-- [ ] Rate limiting / lockout on repeated bad tokens.
+      (`TRADEBOT_API_CORS_ORIGINS`). *(Setting exists; flip it in the deploy
+      environment once the dashboard's production origin is fixed.)*
+- [x] Rate limiting / lockout on repeated bad tokens. *(Sliding-window
+      brake: >10 bad tokens in a minute pauses all authentication for a
+      minute with 429s; deliberately global — one operator, one token, and
+      the bot itself keeps trading while the control plane cools down.)*
 
 ## The paper soak (Phase 2 exit criterion)
 

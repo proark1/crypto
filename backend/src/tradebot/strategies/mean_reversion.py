@@ -1,0 +1,129 @@
+"""Mean reversion: oversold-recovery entries with ATR-derived stops.
+
+The second strategy family (ARCHITECTURE.md 5.2): active when the regime
+gate says the market is ranging, where the trend follower has no edge.
+Long-only (spot): an RSI dip below the oversold line followed by a close
+back above it proposes an entry — buying the *recovery*, never the falling
+knife — and the position exits when RSI mean-reverts to its midline. The
+stop sits ``atr_stop_multiple`` ATRs below the close, same convention as
+the trend family, so risk sizing treats both families identically.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime
+from decimal import ROUND_HALF_EVEN, Decimal
+
+from pydantic import BaseModel, ConfigDict
+
+from tradebot.core.models import ACCOUNTING_RESOLUTION, Candle, Side, Signal
+from tradebot.indicators import Atr, Rsi
+from tradebot.portfolio import Position
+
+
+class MeanReversionConfig(BaseModel):
+    """Thresholds and periods; defaults are the conventional RSI(14) levels."""
+
+    model_config = ConfigDict(frozen=True)
+
+    rsi_period: int = 14
+    oversold_threshold: float = 30.0
+    exit_rsi: float = 55.0
+    """Exit when RSI recovers past its midline: the reversion happened."""
+
+    atr_period: int = 14
+    atr_stop_multiple: float = 2.0
+
+
+class MeanReversionStrategy:
+    """RSI oversold-recovery reverter for one symbol.
+
+    Indicator math runs in floats (permitted: it never feeds an order size);
+    the stop price is converted to ``Decimal`` at the signal boundary because
+    the risk manager derives the position size from it.
+    """
+
+    def __init__(self, config: MeanReversionConfig) -> None:
+        """Validate the config and reset all indicator state."""
+        if config.oversold_threshold >= config.exit_rsi:
+            raise ValueError(
+                f"oversold threshold {config.oversold_threshold} must sit below "
+                f"the exit RSI {config.exit_rsi}"
+            )
+        self._config = config
+        self._rsi = Rsi(config.rsi_period)
+        self._atr = Atr(config.atr_period)
+        self._previous_rsi: float | None = None
+        self._last_open_time: datetime | None = None
+
+    @property
+    def name(self) -> str:
+        """Stable identifier for signal lineage."""
+        return "mean_reversion"
+
+    def on_candle(self, candle: Candle, position: Position | None) -> Signal | None:
+        """Update indicators and propose entries on oversold recoveries.
+
+        Candles must arrive in strictly increasing time order, same contract
+        as every stateful strategy: disorder raises rather than silently
+        poisoning the indicators.
+        """
+        if self._last_open_time is not None and candle.open_time <= self._last_open_time:
+            raise ValueError(
+                f"out-of-order or duplicate candle: {candle.open_time.isoformat()} after "
+                f"{self._last_open_time.isoformat()}"
+            )
+        self._last_open_time = candle.open_time
+
+        close = float(candle.close_quote)
+        rsi = self._rsi.update(close)
+        atr = self._atr.update(float(candle.high_quote), float(candle.low_quote), close)
+        if rsi is None or atr is None:
+            return None
+        previous_rsi = self._previous_rsi
+        self._previous_rsi = rsi
+        if previous_rsi is None:
+            return None
+
+        signal_id = f"{self.name}:{candle.symbol}:{candle.close_time.isoformat()}"
+        recovered = (
+            previous_rsi < self._config.oversold_threshold
+            and rsi >= self._config.oversold_threshold
+        )
+        if recovered and position is None:
+            stop = Decimal(str(close - self._config.atr_stop_multiple * atr)).quantize(
+                ACCOUNTING_RESOLUTION, rounding=ROUND_HALF_EVEN
+            )
+            if stop <= 0:
+                return None  # degenerate volatility; no defined invalidation point
+            return Signal(
+                signal_id=signal_id,
+                strategy_name=self.name,
+                symbol=candle.symbol,
+                side=Side.BUY,
+                confidence=1.0,
+                stop_price_quote=stop,
+                reasons=(
+                    f"RSI({self._config.rsi_period}) recovered above "
+                    f"{self._config.oversold_threshold:g} from oversold "
+                    f"({previous_rsi:.1f} -> {rsi:.1f})",
+                    f"stop at {self._config.atr_stop_multiple} x ATR below close",
+                ),
+                created_at=candle.close_time,
+            )
+        if rsi >= self._config.exit_rsi and position is not None:
+            return Signal(
+                signal_id=signal_id,
+                strategy_name=self.name,
+                symbol=candle.symbol,
+                side=Side.SELL,
+                confidence=1.0,
+                # Informational for exits: the position is being closed, not stopped.
+                stop_price_quote=candle.close_quote,
+                reasons=(
+                    f"RSI({self._config.rsi_period}) reached {rsi:.1f} >= "
+                    f"{self._config.exit_rsi:g}: the reversion played out",
+                ),
+                created_at=candle.close_time,
+            )
+        return None

@@ -7,6 +7,15 @@ all of that belongs to the risk manager.
 """
 
 from tradebot.strategies.base import Strategy
+from tradebot.strategies.mean_reversion import MeanReversionConfig, MeanReversionStrategy
+from tradebot.strategies.router import RegimeStrategyRouter
 from tradebot.strategies.trend_following import TrendFollowingConfig, TrendFollowingStrategy
 
-__all__ = ["Strategy", "TrendFollowingConfig", "TrendFollowingStrategy"]
+__all__ = [
+    "MeanReversionConfig",
+    "MeanReversionStrategy",
+    "RegimeStrategyRouter",
+    "Strategy",
+    "TrendFollowingConfig",
+    "TrendFollowingStrategy",
+]

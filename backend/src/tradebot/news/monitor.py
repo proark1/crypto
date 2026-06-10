@@ -21,6 +21,7 @@ from tradebot.core.models import utc_now
 from tradebot.news.classifier import classify
 from tradebot.news.flags import NewsFlag, NewsFlags
 from tradebot.news.models import NewsItem
+from tradebot.signals.sentiment import MarketSentiment
 
 logger = logging.getLogger(__name__)
 
@@ -104,13 +105,21 @@ class NewsMonitor:
         tracked_coins: Callable[[], Iterable[str]],
         bus: EventBus | None = None,
         poll_interval: timedelta = timedelta(seconds=90),
+        sentiment: MarketSentiment | None = None,
     ) -> None:
-        """``tracked_coins`` is read fresh each poll: coins change at runtime."""
+        """``tracked_coins`` is read fresh each poll: coins change at runtime.
+
+        ``sentiment`` (when wired) is told about every negative headline so
+        broad negative flow can raise the regime gate to risk-off
+        (ARCHITECTURE.md 5.3 actions) — a flood of bad news is a market
+        condition, not just a per-coin problem.
+        """
         self._source = source
         self._flags = flags
         self._tracked_coins = tracked_coins
         self._bus = bus
         self._poll_interval = poll_interval
+        self._sentiment = sentiment
         self._seen_ids: set[str] = set()
         self._seen_order: deque[str] = deque()
 
@@ -144,6 +153,10 @@ class NewsMonitor:
                 logger.info("news (%s): %s", classified.event_type.value, item.title)
                 continue
             now = utc_now()
+            if self._sentiment is not None:
+                # Counted once per headline, whatever it tags: broad flow
+                # is about the market's day, not any single coin's.
+                self._sentiment.record_negative_news(now)
             for coin in item.currencies:
                 if coin not in coins:
                     continue

@@ -30,6 +30,7 @@ from tradebot.core.models import Candle, CandleInterval, Signal
 from tradebot.indicators import Adx
 from tradebot.marketdata import TimeframeAggregator
 from tradebot.signals.base import GateDecision
+from tradebot.signals.sentiment import MarketSentiment
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +79,10 @@ WARMING_UP = "warming_up"
 TRENDING = "trending"
 RANGING = "ranging"
 RISK_OFF = "risk_off"
+
+REVERSION_STRATEGY_NAMES = frozenset({"mean_reversion"})
+"""Strategy names belonging to the mean-reversion family; everything else
+is treated as trend family for routing purposes."""
 
 
 class MarketRegimeDetector:
@@ -193,16 +198,24 @@ class MarketRegimeDetector:
 class RegimeGate:
     """Entry gate over the reference market's regime (pipeline step 1, §5.2).
 
-    Trend-following entries pass only while the reference market trends;
-    ranging and risk-off block them, as do warm-up and stale data — when
-    the gate cannot see the market, it fails toward not trading. With a
-    second strategy family (mean reversion), RANGING will route to it
-    instead of blocking; today there is only the trend family.
+    The regime routes strategy families: trend entries pass only while the
+    reference market trends, mean-reversion entries only while it ranges.
+    Risk-off, warm-up, and stale data block every family — when the gate
+    cannot see the market, it fails toward not trading.
     """
 
-    def __init__(self, detector: MarketRegimeDetector) -> None:
-        """Gate entries on ``detector``'s current assessment."""
+    def __init__(
+        self, detector: MarketRegimeDetector, sentiment: MarketSentiment | None = None
+    ) -> None:
+        """Gate entries on ``detector``; ``sentiment`` can only tighten.
+
+        Sentiment (Fear & Greed extremes, BTC dominance surges, broad
+        negative news flow — §5.2 step 1's remaining inputs) is consulted
+        only when the price regime would allow the entry: advisory data
+        can veto, never approve, so a dead sentiment feed costs nothing.
+        """
         self._detector = detector
+        self._sentiment = sentiment
 
     def evaluate(self, signal: Signal) -> GateDecision:
         """Allow or block one entry signal; reasons are journaled verbatim.
@@ -223,8 +236,6 @@ class RegimeGate:
                     f"{regime.as_of.isoformat()}; entries wait until the feed resumes",
                 ),
             )
-        if regime.label == TRENDING:
-            return GateDecision(allowed=True, reasons=regime.reasons)
         if regime.label == WARMING_UP:
             return GateDecision(
                 allowed=False,
@@ -235,7 +246,25 @@ class RegimeGate:
                 allowed=False,
                 reasons=("regime gate: entries disabled — " + regime.reasons[0],),
             )
-        return GateDecision(
-            allowed=False,
-            reasons=("regime gate: trend entries disabled — " + regime.reasons[0],),
-        )
+        # Family routing (§5.2): the regime decides which strategy family
+        # may enter. Unknown strategy names are treated as trend family —
+        # the conservative default for the family that exists today.
+        is_reversion = signal.strategy_name in REVERSION_STRATEGY_NAMES
+        if regime.label == TRENDING and is_reversion:
+            return GateDecision(
+                allowed=False,
+                reasons=("regime gate: mean-reversion entries disabled — " + regime.reasons[0],),
+            )
+        if regime.label == RANGING and not is_reversion:
+            return GateDecision(
+                allowed=False,
+                reasons=("regime gate: trend entries disabled — " + regime.reasons[0],),
+            )
+        if self._sentiment is not None:
+            sentiment_reason = self._sentiment.risk_off_reason(signal.created_at)
+            if sentiment_reason is not None:
+                return GateDecision(
+                    allowed=False,
+                    reasons=(f"regime gate: entries disabled — {sentiment_reason}",),
+                )
+        return GateDecision(allowed=True, reasons=regime.reasons)
