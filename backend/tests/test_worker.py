@@ -518,9 +518,7 @@ class TestStrategyPromotion:
 
         assert second_boot.strategy_params["trend_following"]["fast_ema_period"] == 12
 
-    async def test_revert_reapplies_the_old_version_as_a_new_one(
-        self, database: Database
-    ) -> None:
+    async def test_revert_reapplies_the_old_version_as_a_new_one(self, database: Database) -> None:
         worker = Worker(make_config(), database, ScriptedExchange([]))
         await worker.initialize()
         original = await worker.apply_strategy_params("trend_following", {"fast_ema_period": 10})

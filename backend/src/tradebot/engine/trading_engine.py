@@ -110,9 +110,7 @@ class TradingEngine:
         """
         previous = self._strategy.name
         self._strategy = strategy
-        logger.info(
-            "strategy replaced for %s: %s -> %s", self._symbol, previous, strategy.name
-        )
+        logger.info("strategy replaced for %s: %s -> %s", self._symbol, previous, strategy.name)
 
     @property
     def paused(self) -> bool:

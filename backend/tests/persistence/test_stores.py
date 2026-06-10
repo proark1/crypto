@@ -347,9 +347,7 @@ class TestChartBuckets:
 
 
 class TestStrategySettingsStore:
-    async def test_active_returns_the_newest_version_per_family(
-        self, database: Database
-    ) -> None:
+    async def test_active_returns_the_newest_version_per_family(self, database: Database) -> None:
         from tradebot.persistence import StrategySettingsStore
 
         store = StrategySettingsStore(database)

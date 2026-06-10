@@ -333,9 +333,9 @@ class StrategySettingsStore:
             .group_by(strategy_settings_table.c.family)
             .subquery()
         )
-        statement = select(
-            strategy_settings_table.c.family, strategy_settings_table.c.params
-        ).join(newest, strategy_settings_table.c.id == newest.c.id)
+        statement = select(strategy_settings_table.c.family, strategy_settings_table.c.params).join(
+            newest, strategy_settings_table.c.id == newest.c.id
+        )
         async with self._database.engine.connect() as connection:
             rows = (await connection.execute(statement)).all()
         return {family: dict(params) for family, params in rows}
