@@ -134,9 +134,11 @@ operational pain with zero benefit.
 ### 4.7 Control API & UI
 - **FastAPI** service: add/remove coin, choose strategy and risk profile per coin,
   pause/resume, kill switch, and read endpoints for positions, PnL, trade history.
-- "Add a coin" flow: validate the pair exists on the exchange → backfill history →
-  warm up indicators → start in **paper mode by default** → user explicitly promotes
-  to live after reviewing paper results.
+- "Add a coin" flow: validate the pair exists on the exchange → **screen it**
+  (minimum 24h volume, minimum listing age, spread below threshold, not on any
+  delisting/monitoring list — reject coins the bot cannot exit safely) → backfill
+  history → warm up indicators → start in **paper mode by default** → user explicitly
+  promotes to live after reviewing paper results.
 - Notifications via Telegram (trade executed, stop hit, circuit breaker tripped,
   WS disconnected). A simple web dashboard comes later; Telegram + API first.
 
@@ -146,27 +148,75 @@ operational pain with zero benefit.
   live-vs-backtest signal divergence (a key health metric).
 - Heartbeat alert if the data feed or trading loop stalls.
 
-## 5. Data sources
+## 5. Data sources & signals
 
-| Priority | Source | Used for |
-|---|---|---|
-| P0 | Exchange WebSocket (trades, klines, book ticker) | Live signals & execution |
-| P0 | Exchange REST | Backfill, order management, balances |
-| P0 | Binance public data dumps (historical klines) | Backtesting dataset |
-| P1 | CCXT | Multi-exchange abstraction |
-| P2 | Funding rates & open interest (futures, as a spot sentiment signal) | Regime/sentiment filter |
-| P2 | Fear & Greed index, stablecoin flows | Regime filter |
-| P3 | On-chain data (exchange inflows/outflows), news/social sentiment | Research; only added if backtests prove value |
+### 5.1 Source catalog
+
+| Priority | Source | Provider | Cost | Used for |
+|---|---|---|---|---|
+| P0 | Exchange WebSocket (trades, klines, book ticker, depth) | Primary exchange | Free | Live TA signals, order-flow (CVD, book imbalance), execution |
+| P0 | Exchange REST | Primary exchange | Free | Backfill, order management, balances |
+| P0 | Historical klines | data.binance.vision dumps | Free | Backtesting dataset |
+| P1 | CCXT | OSS | Free | Multi-exchange abstraction |
+| P1 | Funding rates, open interest, long/short ratio | Exchange futures API; Coinglass (aggregated) | Free tier | Leverage/positioning regime filter for spot decisions |
+| P1 | Fear & Greed index | alternative.me | Free | Market-wide sentiment regime |
+| P1 | BTC dominance, total market cap, stablecoin supply | CoinGecko API | Free | BTC regime gate for altcoin entries |
+| P2 | News flow with bullish/bearish votes | CryptoPanic API; exchange announcement feeds | Free tier | News veto & event awareness (see 5.3) |
+| P2 | Economic calendar (FOMC, CPI), token unlock schedule | Public calendars; TokenUnlocks | Free | Scheduled-event risk-off windows |
+| P2 | Liquidation data | Coinglass | Free tier | Cascade detection, capitulation entries |
+| P3 | On-chain (exchange inflows/outflows, whale moves) | CryptoQuant / Glassnode / Whale Alert | Paid | Research; adopt only if it wins in walk-forward |
+| P3 | Social sentiment | Santiment / LunarCrush | Paid | Research; same rule |
 
 Rule: a new data source is only wired into live trading after it demonstrably improves
-walk-forward results. Everything beyond P0/P1 is research material first.
+walk-forward results. Paid sources are not purchased until the backtester exists to
+evaluate them. Everything beyond P0/P1 is research material first.
+
+### 5.2 Signal fusion — how TA, market data, and news combine
+
+A trade decision is a pipeline of gates, not a vote among equals:
+
+1. **Regime gate (market-wide):** BTC regime (trend/range/risk-off via ADX + Fear &
+   Greed extremes + BTC dominance shifts) decides *whether* altcoin entries are
+   allowed at all and which strategy family (trend vs. mean-reversion) is active.
+2. **Entry signal (TA, per coin):** the active strategy produces the candidate
+   buy/sell signal with stop and target. TA is the trigger; everything else filters.
+3. **Confirmation filters (market microstructure & positioning):** order-flow (CVD
+   direction, book imbalance) and derivatives positioning (funding not at a
+   crowded extreme against the trade) must not contradict the signal. Each filter
+   can only *block or shrink* a trade, never create one — this keeps the system
+   testable and prevents filter soup.
+4. **News/event veto (see 5.3):** active negative-news flag or scheduled high-impact
+   event window blocks new entries and may tighten stops on open positions.
+5. **Risk manager:** final sizing and portfolio-level checks as defined in 4.3.
+
+Every gate decision is logged with the signal, so backtests can attribute PnL impact
+to each filter individually and dead filters get removed.
+
+### 5.3 News & event pipeline
+
+Honest framing first: a retail bot cannot trade *on* news faster than HFT firms —
+by the time a headline is parsed, the price has moved. News is therefore used
+**defensively and for event awareness**, not as an alpha source:
+
+- **Ingestion:** poll CryptoPanic (filtered to held/watched coins) and the primary
+  exchange's announcement feed (listings/delistings) every 1–2 minutes.
+- **Classification:** map items to event types — delisting, hack/exploit, regulatory
+  action, listing, partnership/noise — via keyword rules first; an LLM classifier is
+  a later upgrade only if the simple version proves too noisy.
+- **Actions:** delisting/hack/regulatory on a held coin → flag for exit and block new
+  entries; broad negative flow → raise the regime gate to risk-off; everything
+  else → logged for research, no live action.
+- **Scheduled events:** FOMC/CPI timestamps and token-unlock dates for held coins
+  define "no new entries" windows (configurable, e.g. ±2h) because volatility around
+  them breaks normal TA assumptions.
 
 ## 6. Technology choices
 
 | Concern | Choice | Why |
 |---|---|---|
 | Language | Python 3.12+, fully async (asyncio) | Best ecosystem for TA/backtesting; spot TA trading at 1m+ timescale doesn't need lower latency |
-| Exchange connectivity | CCXT + native WS client for primary exchange | Breadth + low-latency streams |
+| Primary exchange | **Binance** if available in user's region; **Kraken** as regulated alternative; **Coinbase Advanced Trade** if US-only (accepting higher fees) | Liquidity, 0.1% fees, best API & free historical data; fee level directly determines how much edge a strategy needs |
+| Exchange connectivity | CCXT + native WS client for primary exchange | Breadth + low-latency streams; switching exchanges later is cheap behind the adapter |
 | Indicators | pandas-ta / TA-Lib + incremental implementations | Standard, well-tested |
 | Storage | SQLite + Parquet files first; TimescaleDB when needed | Zero ops to start; clean upgrade path |
 | API | FastAPI + Pydantic | Async, typed, quick |
@@ -210,3 +260,25 @@ re-optimization pipeline (scheduled walk-forward), P2 data sources, optional ML
   circuit breaker, max exposure caps, kill switch, only trade liquid pairs.
 - **Key compromise.** Mitigation: trade-only API keys, IP allowlists, no withdrawal
   permission, secrets never in the repo.
+
+## 9. Profitability validation gates
+
+Planning cannot prove profitability — only data can. A strategy/coin combination is
+"validated" only when it has passed every gate below, in order, and it remains live
+only while it keeps passing the last one:
+
+1. **Backtest gate:** beats buy-and-hold of the same coin net of pessimistic fees and
+   slippage across all walk-forward validation windows; max drawdown within the
+   configured tolerance; results stable under small parameter perturbations.
+2. **Paper gate:** 2+ weeks of paper trading where live signals match backtest signals
+   (divergence metric below threshold) and simulated PnL is consistent with backtest
+   expectations.
+3. **Small-live gate:** 4+ weeks with minimal capital where realized slippage and fill
+   rates match the backtest model's assumptions.
+4. **Ongoing gate:** live performance is compared monthly against the rolling
+   walk-forward expectation; a strategy whose live results fall outside its backtest
+   confidence range is automatically demoted back to paper.
+
+Operational record-keeping supports this: every trade is journaled (signal context,
+gate decisions, fees, PnL) and exportable as CSV — needed for both strategy review
+and tax reporting.
