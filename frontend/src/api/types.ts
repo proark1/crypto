@@ -80,3 +80,15 @@ export interface DecisionResponse {
   outcome: string;
   created_at: string;
 }
+
+export interface EvaluationRunResponse {
+  id: number;
+  created_at: string;
+  status: string;
+  symbols: string[];
+  timeframes: string[];
+  progress_done: number;
+  progress_total: number;
+  config: Record<string, unknown>;
+  summary: Record<string, unknown> | null;
+}
