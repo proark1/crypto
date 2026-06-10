@@ -105,8 +105,18 @@ class TestAuth:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://control"
         ) as client:
-            response = await client.get("/health")
+            response = await client.get("/status")
         assert response.status_code == 401
+
+    async def test_health_is_public_for_platform_healthchecks(self, database: Database) -> None:
+        app = create_app(StubBot(database), TOKEN)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://control"
+        ) as client:
+            response = await client.get("/health")  # no Authorization header
+        assert response.status_code == 200
+        assert response.json()["status"] == "ok"
+        assert "balance" not in response.text  # nothing sensitive leaks here
 
     async def test_wrong_token_is_rejected(self, database: Database) -> None:
         app = create_app(StubBot(database), TOKEN)

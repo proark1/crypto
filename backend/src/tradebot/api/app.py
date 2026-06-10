@@ -12,7 +12,7 @@ from __future__ import annotations
 import secrets
 from typing import Protocol
 
-from fastapi import Depends, FastAPI, HTTPException, Query, status
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 
@@ -166,13 +166,19 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
                 detail="missing or invalid bearer token",
             )
 
-    app = FastAPI(title="tradebot control plane", dependencies=[Depends(require_token)])
+    app = FastAPI(title="tradebot control plane")
+    protected = APIRouter(dependencies=[Depends(require_token)])
 
     @app.get("/health")
     async def health() -> dict[str, str]:
+        """Public liveness probe: platform healthchecks cannot send tokens.
+
+        Deliberately exposes nothing an attacker can use — no balances, no
+        positions, no controls. Everything else stays behind the bearer token.
+        """
         return {"status": "ok", "mode": state.config.mode.value, "symbol": state.config.symbol}
 
-    @app.get("/status")
+    @protected.get("/status")
     async def get_status() -> StatusResponse:
         portfolio = state.portfolio
         symbol = state.config.symbol
@@ -212,17 +218,17 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
             equity_quote=str(equity) if equity is not None else None,
         )
 
-    @app.post("/pause")
+    @protected.post("/pause")
     async def pause() -> CommandResponse:
         state.engine.pause()
         return CommandResponse(paused=True, detail="strategy muted; resting orders stay live")
 
-    @app.post("/resume")
+    @protected.post("/resume")
     async def resume() -> CommandResponse:
         state.engine.resume()
         return CommandResponse(paused=False, detail="strategy resumed")
 
-    @app.post("/kill")
+    @protected.post("/kill")
     async def kill() -> CommandResponse:
         try:
             exit_submitted = await state.engine.kill()
@@ -237,7 +243,7 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
         )
         return CommandResponse(paused=True, detail=detail)
 
-    @app.get("/proposals")
+    @protected.get("/proposals")
     async def get_proposals() -> list[ProposalResponse]:
         return [
             ProposalResponse(
@@ -254,7 +260,7 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
             for proposal in state.engine.pending_proposals()
         ]
 
-    @app.post("/proposals/approve")
+    @protected.post("/proposals/approve")
     async def approve_proposal(request: ProposalActionRequest) -> CommandResponse:
         try:
             detail = await state.engine.approve_proposal(request.signal_id)
@@ -266,7 +272,7 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
         return CommandResponse(paused=state.engine.paused, detail=detail)
 
-    @app.post("/proposals/reject")
+    @protected.post("/proposals/reject")
     async def reject_proposal(request: ProposalActionRequest) -> CommandResponse:
         try:
             await state.engine.reject_proposal(request.signal_id)
@@ -278,7 +284,7 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
         return CommandResponse(paused=state.engine.paused, detail="proposal rejected")
 
-    @app.get("/candles")
+    @protected.get("/candles")
     async def get_candles(
         limit: int = Query(300, ge=1, le=1000),
     ) -> list[CandleResponse]:
@@ -297,7 +303,7 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
             for candle in candles
         ]
 
-    @app.get("/decisions")
+    @protected.get("/decisions")
     async def get_decisions(
         limit: int = Query(50, ge=1, le=200),
     ) -> list[DecisionResponse]:
@@ -316,7 +322,7 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
             for decision in decisions
         ]
 
-    @app.get("/fills")
+    @protected.get("/fills")
     async def get_fills() -> list[FillResponse]:
         fills = await state.fill_store.fetch_all(state.config.symbol)
         return [
@@ -332,4 +338,5 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
             for fill in fills
         ]
 
+    app.include_router(protected)
     return app
