@@ -45,15 +45,21 @@ async def database() -> AsyncIterator[Database]:
         yield db
 
 
-def make_config(symbols: str = "BTC/USDT", api_port: int = 8901) -> AppConfig:
+def make_config(
+    symbols: str = "BTC/USDT", api_port: int = 8901, regime_gate_enabled: bool = False
+) -> AppConfig:
     # Distinct ports per test: each worker.run() binds an HTTP server, and
     # a just-closed listener can linger long enough to collide.
+    # The regime gate defaults off here (production default is on): the flow
+    # tests exercise trading mechanics with minutes of scripted data, which
+    # the warming-up gate would rightly block. Gate wiring has its own tests.
     return AppConfig(
         mode=TradingMode.PAPER,
         symbols=symbols,
         exchange_id="binance",
         paper_initial_balance_quote=Decimal("10000"),
         api_port=api_port,
+        regime_gate_enabled=regime_gate_enabled,
     )
 
 
@@ -270,6 +276,45 @@ class TestWorker:
         # The detached engine saw nothing: a kill on it still reports no
         # market data rather than pricing an exit off the published candle.
         assert removed_engine.fills == ()
+
+    async def test_regime_gate_blocks_entries_while_warming_up(self, database: Database) -> None:
+        """Default-on gate, minutes of data: the rally's BUY is journaled as gated."""
+        exchange = ScriptedExchange(CLOSES)
+        worker = Worker(make_config(api_port=8903, regime_gate_enabled=True), database, exchange)
+        exchange.worker = worker
+
+        await worker.run()
+
+        assert worker.regime_detector is not None
+        assert worker.regime_detector.regime.label == "warming_up"  # 2 hourly buckets max
+        journal = await worker.fill_store.fetch_all("BTC/USDT")
+        assert journal == []  # the entry never reached the adapter
+        decisions = await worker.decision_store.fetch_recent("BTC/USDT", 50)
+        assert any(decision.outcome.value == "gated" for decision in decisions)
+
+    async def test_regime_gate_disables_itself_without_its_reference_feed(
+        self, database: Database
+    ) -> None:
+        """No reference data means no gate — loudly, instead of blocking forever."""
+        worker = Worker(
+            make_config("ETH/USDT", regime_gate_enabled=True),
+            database,
+            ScriptedExchange([]),
+        )
+        await worker.initialize()
+        assert worker.regime_detector is None  # BTC/USDT is not among the coins
+
+    async def test_reference_symbol_cannot_be_removed_while_gated(self, database: Database) -> None:
+        worker = Worker(
+            make_config("BTC/USDT,ETH/USDT", regime_gate_enabled=True),
+            database,
+            ScriptedExchange([]),
+        )
+        await worker.initialize()
+
+        with pytest.raises(RuntimeError, match="reference market"):
+            await worker.remove_coin("BTC/USDT")
+        await worker.remove_coin("ETH/USDT")  # only the reference is protected
 
     async def test_non_paper_modes_are_refused(self, database: Database) -> None:
         live_config = AppConfig(mode=TradingMode.LIVE)

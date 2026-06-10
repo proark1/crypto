@@ -199,6 +199,7 @@ class DecisionOutcome(enum.StrEnum):
 
     SUBMITTED = "submitted"
     VETOED = "vetoed"
+    GATED = "gated"
     PAUSED = "paused"
     PROPOSED = "proposed"
     APPROVED = "approved"

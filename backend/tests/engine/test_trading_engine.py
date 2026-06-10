@@ -16,6 +16,7 @@ from tradebot.core.models import (
     DecisionOutcome,
     Fill,
     Side,
+    Signal,
 )
 from tradebot.engine import TradingEngine
 from tradebot.execution import FillSimulatorConfig, SimulatedExecutionAdapter
@@ -23,6 +24,7 @@ from tradebot.persistence import Database, DecisionStore, FillStore
 from tradebot.persistence.database import metadata
 from tradebot.portfolio import Portfolio
 from tradebot.risk import BreakerConfig, RiskConfig, RiskManager
+from tradebot.signals import EntryGate, GateDecision
 from tradebot.strategies import TrendFollowingConfig, TrendFollowingStrategy
 
 BASE_TIME = datetime(2026, 1, 2, 0, 0, tzinfo=UTC)
@@ -77,6 +79,7 @@ def make_engine(
     autonomy_mode: AutonomyMode = AutonomyMode.AUTONOMOUS,
     proposal_queue: ProposalQueue | None = None,
     risk_config: RiskConfig | None = None,
+    entry_gates: tuple[EntryGate, ...] = (),
 ) -> TradingEngine:
     strategy = TrendFollowingStrategy(
         TrendFollowingConfig(fast_ema_period=3, slow_ema_period=6, atr_period=3)
@@ -91,6 +94,7 @@ def make_engine(
         decision_store=decision_store,
         autonomy_mode=autonomy_mode,
         proposal_queue=proposal_queue,
+        entry_gates=entry_gates,
     )
 
 
@@ -425,3 +429,69 @@ class TestParityWithBacktest:
 
         assert engine.fills == result.fills
         assert bus_portfolio.realized_pnl_quote() == result.realized_pnl_quote
+
+
+class StaticGate:
+    """Test gate with a fixed verdict; records every signal it sees."""
+
+    def __init__(self, allowed: bool) -> None:
+        self.allowed = allowed
+        self.seen: list[Signal] = []
+
+    def evaluate(self, signal: Signal) -> GateDecision:
+        self.seen.append(signal)
+        return GateDecision(allowed=self.allowed, reasons=("regime gate: test verdict",))
+
+
+class TestEntryGates:
+    async def test_blocking_gate_stops_the_entry_and_journals_it(self, database: Database) -> None:
+        portfolio = Portfolio(INITIAL_BALANCE)
+        decision_store = DecisionStore(database)
+        gate = StaticGate(allowed=False)
+        engine = make_engine(portfolio, decision_store=decision_store, entry_gates=(gate,))
+
+        for index, close in enumerate(CLOSES):
+            await engine.process_candle(make_candle(index, close))
+
+        assert engine.fills == ()  # the rally's BUY never reached the adapter
+        assert gate.seen and all(signal.side == Side.BUY for signal in gate.seen)
+        decisions = await decision_store.fetch_recent("BTC/USDT", 50)
+        gated = [d for d in decisions if d.outcome == DecisionOutcome.GATED]
+        assert gated
+        # The gate's reason is journaled with the signal's own reasons, so
+        # the decisions view explains the veto verbatim.
+        assert any("regime gate: test verdict" in d.reasons for d in gated)
+
+    async def test_allowing_gate_changes_nothing(self) -> None:
+        gated_portfolio = Portfolio(INITIAL_BALANCE)
+        engine = make_engine(gated_portfolio, entry_gates=(StaticGate(allowed=True),))
+        ungated_portfolio = Portfolio(INITIAL_BALANCE)
+        ungated = make_engine(ungated_portfolio)
+
+        for index, close in enumerate(CLOSES):
+            await engine.process_candle(make_candle(index, close))
+            await ungated.process_candle(make_candle(index, close))
+
+        assert engine.fills == ungated.fills  # gate that allows is invisible
+
+    async def test_exits_are_never_gated(self) -> None:
+        """A blocking gate must not stand between a position and its exit."""
+        portfolio = Portfolio(INITIAL_BALANCE)
+        portfolio.apply_fill(
+            Fill(
+                client_order_id="seed-1",
+                symbol="BTC/USDT",
+                side=Side.BUY,
+                price_quote=Decimal("100"),
+                quantity_base=Decimal("2"),
+                fee_quote=Decimal("0"),
+                filled_at=BASE_TIME,
+            )
+        )
+        engine = make_engine(portfolio, entry_gates=(StaticGate(allowed=False),))
+
+        for index, close in enumerate(CLOSES):
+            await engine.process_candle(make_candle(index, close))
+
+        assert portfolio.position("BTC/USDT") is None  # the collapse exit filled
+        assert engine.fills and all(fill.side == Side.SELL for fill in engine.fills)

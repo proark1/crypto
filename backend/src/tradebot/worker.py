@@ -27,6 +27,7 @@ import httpx
 from tradebot.authorization import ProposalQueue
 from tradebot.core.config import AppConfig, TradingMode, validate_symbol_quote
 from tradebot.core.events import EventBus
+from tradebot.core.models import CandleInterval
 from tradebot.engine import TradingEngine
 from tradebot.evaluation import ScenarioEvaluator
 from tradebot.evaluation.runner import EvaluationManager, EvaluationRunConfig, EvaluationRunner
@@ -43,6 +44,7 @@ from tradebot.persistence import (
 )
 from tradebot.portfolio import Portfolio
 from tradebot.risk import RiskConfig, RiskManager
+from tradebot.signals import MarketRegimeDetector, RegimeGate
 from tradebot.strategies import TrendFollowingConfig, TrendFollowingStrategy
 
 logger = logging.getLogger(__name__)
@@ -110,6 +112,14 @@ class Worker:
             self.evaluation_store,
             spawn=self._spawn_background,
         )
+        # Built here, validated against the coin set in initialize(): a gate
+        # whose reference market the bot does not stream would block every
+        # entry forever on stale data.
+        self.regime_detector: MarketRegimeDetector | None = (
+            MarketRegimeDetector(config.regime_reference_symbol)
+            if config.regime_gate_enabled
+            else None
+        )
 
     def _spawn_background(self, coroutine: Coroutine[Any, Any, None]) -> asyncio.Task[None]:
         """Run a coroutine under the worker's TaskGroup (shutdown cancels it)."""
@@ -153,6 +163,9 @@ class Worker:
                 ttl=timedelta(seconds=self.config.proposal_ttl_seconds),
                 max_drift_fraction=self.config.proposal_max_drift_fraction,
             ),
+            entry_gates=(
+                (RegimeGate(self.regime_detector),) if self.regime_detector is not None else ()
+            ),
         )
         engine.attach_to(self.bus)
         feed = LiveMarketDataFeed(
@@ -176,7 +189,34 @@ class Worker:
         await self._database.create_schema()
         if await self.coin_store.seed_if_empty(self.config.symbol_list(), datetime.now(UTC)):
             logger.info("first boot: coins seeded from TRADEBOT_SYMBOLS")
-        for symbol in await self.coin_store.list_symbols():
+        symbols = await self.coin_store.list_symbols()
+        # Resolved before any engine is built: engines capture the gate at
+        # activation, and a gate without a data feed would block every entry
+        # forever on stale data.
+        if self.regime_detector is not None and self.regime_detector.symbol not in symbols:
+            logger.warning(
+                "regime gate disabled: reference symbol %s is not among the traded "
+                "coins (%s); entries run ungated",
+                self.regime_detector.symbol,
+                ", ".join(symbols),
+            )
+            self.regime_detector = None
+        if self.regime_detector is not None:
+            # Prime from stored history so the gate does not spend its first
+            # day warming up after every deploy.
+            stored = await self.candle_store.fetch_recent(
+                self.regime_detector.symbol,
+                CandleInterval.M1,
+                self.regime_detector.config.required_m1_candles(),
+            )
+            self.regime_detector.prime(stored)
+            self.regime_detector.attach_to(self.bus)
+            logger.info(
+                "regime gate enabled: %s is %s",
+                self.regime_detector.symbol,
+                self.regime_detector.regime.label,
+            )
+        for symbol in symbols:
             self._activate(symbol)
         return await self.replay_journal()
 
@@ -210,6 +250,14 @@ class Worker:
             raise KeyError(f"{symbol} is not being traded")
         if len(self.engines) == 1:
             raise RuntimeError("cannot remove the last coin; pause the bot instead")
+        if self.regime_detector is not None and symbol == self.regime_detector.symbol:
+            # Without its data feed the gate would go stale and block every
+            # entry on every coin — refuse, instead of silently strangling
+            # the bot.
+            raise RuntimeError(
+                f"{symbol} is the regime gate's reference market; "
+                "disable the gate (TRADEBOT_REGIME_GATE_ENABLED=false) before removing it"
+            )
         if self.portfolio.position(symbol) is not None:
             raise RuntimeError(f"{symbol} has an open position; flatten it first (kill or exit)")
         if engine.pending_proposals():

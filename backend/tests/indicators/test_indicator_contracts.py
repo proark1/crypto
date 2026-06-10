@@ -2,13 +2,33 @@
 
 import pytest
 
-from tradebot.indicators import Atr, Ema, Rsi
+from tradebot.indicators import Adx, Atr, Ema, Rsi
 
 
 @pytest.mark.parametrize("indicator_class", [Ema, Rsi, Atr])
 def test_period_below_one_is_rejected(indicator_class: type[Ema] | type[Rsi] | type[Atr]) -> None:
     with pytest.raises(ValueError, match="period must be >= 1"):
         indicator_class(0)
+
+
+def test_adx_period_below_two_is_rejected() -> None:
+    # ADX over one candle has no smoothing window; TA-Lib's own lookback
+    # math degenerates there, so it is rejected rather than mis-seeded.
+    with pytest.raises(ValueError, match="period must be >= 2"):
+        Adx(1)
+
+
+def test_adx_warms_up_for_two_periods_and_exposes_di_lines() -> None:
+    adx = Adx(2)
+    candles = [(11.0, 9.0, 10.0), (12.0, 10.0, 11.0), (13.0, 11.0, 12.0), (14.0, 12.0, 13.0)]
+    results = [adx.update(high, low, close) for high, low, close in candles]
+    assert results[:3] == [None, None, None]  # lookback is 2 * period - 1
+    assert results[3] is not None
+    assert adx.value == results[3]
+    # A straight climb is pure +DM: the DI lines must say so.
+    assert adx.plus_di is not None and adx.minus_di is not None
+    assert adx.plus_di > adx.minus_di
+    assert adx.minus_di == pytest.approx(0.0)
 
 
 def test_ema_returns_none_for_exactly_period_minus_one_updates() -> None:
