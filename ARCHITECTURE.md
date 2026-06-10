@@ -278,15 +278,44 @@ a settings page; radical explainability is the UX differentiator here.
 | Primary exchange | **Binance** if available in user's region; **Kraken** as regulated alternative; **Coinbase Advanced Trade** if US-only (accepting higher fees) | Liquidity, 0.1% fees, best API & free historical data; fee level directly determines how much edge a strategy needs |
 | Exchange connectivity | CCXT + native WS client for primary exchange | Breadth + low-latency streams; switching exchanges later is cheap behind the adapter |
 | Indicators | pandas-ta / TA-Lib + incremental implementations | Standard, well-tested |
-| Storage | SQLite + Parquet files first; TimescaleDB when needed | Zero ops to start; clean upgrade path |
+| Storage | **Railway Postgres** from day one (candles, trades, state); Parquet export for research datasets | Railway's filesystem is ephemeral, so SQLite is out; managed Postgres is zero-ops here and simplifies "one code path" |
 | API | FastAPI + Pydantic | Async, typed, quick |
 | Frontend | React + Tailwind + TradingView Lightweight Charts, WebSocket live updates, PWA | Familiar trader UI, first-class on mobile |
-| Control-plane auth | Reverse proxy with TLS (Caddy/Traefik) + session/token auth | The UI can move money |
-| Backups | Nightly SQLite/Parquet snapshot to object storage | Trade history and state survive VPS loss |
+| Control-plane auth | Railway-provided HTTPS domains + session/token auth in the app | The UI can move money; Railway terminates TLS, the app still authenticates every request |
+| Backups | Railway Postgres backups + scheduled `pg_dump` to external object storage (e.g. Cloudflare R2) | Trade history and state survive losing the Railway project |
 | Backtest screening | vectorbt | Fast parameter sweeps |
 | Config | YAML per coin/strategy, Pydantic-validated | Reproducible runs |
-| Deployment | Docker Compose on a small VPS near the exchange region | 24/7 uptime, simple |
-| Secrets | Env vars; exchange API keys with **trade-only** permissions (withdrawals disabled), IP-allowlisted | Limits blast radius |
+| Deployment | **Railway** — one project hosting backend, frontend, and Postgres | 24/7 always-on services, deploy-on-push from GitHub, managed DB, zero server admin |
+| Secrets | Railway environment variables; exchange API keys with **trade-only** permissions (withdrawals disabled) | Limits blast radius |
+
+### 7.1 Railway deployment topology
+
+One Railway project, three services plus the database:
+
+- **`bot`** (always-on worker): the modular monolith — market data service, strategy
+  engine, risk manager, execution engine, and the FastAPI control API in one process.
+  **Exactly 1 replica, never horizontally scaled** — two replicas would mean duplicate
+  orders. Idempotent client order IDs are the safety net; single-replica is the rule.
+- **`frontend`**: the React dashboard served as a static build, talking to `bot` over
+  its Railway-provided API URL.
+- **`Postgres`**: Railway's managed database; candles, trades, state, journal.
+- **Cron service** (Phase 4): scheduled walk-forward re-optimization and nightly
+  `pg_dump` to object storage.
+
+Railway-specific notes:
+
+- **Deploys restart the bot.** Fine by design — startup reconciliation (section 4.4)
+  rebuilds state from the exchange and Postgres, and spot positions are unaffected by
+  the bot being down for seconds. Still, live deploys should be deliberate:
+  auto-deploy `main` to a **paper environment**, promote manually to the **live
+  environment** — Railway environments map cleanly onto the paper/live split.
+- **Region:** pick the Railway region with the lowest latency to the chosen exchange
+  (EU/Asia for Binance, US for Coinbase). At 1m+ candle timescales this is a
+  nice-to-have, not critical.
+- **Static outbound IPs are not guaranteed on all Railway plans.** Exchange API key
+  IP-allowlisting needs a stable egress IP — if the plan in use doesn't provide one,
+  run trade-only/no-withdrawal keys without the IP restriction rather than building a
+  proxy workaround on day one.
 
 ## 8. Roadmap
 
@@ -304,7 +333,8 @@ data gaps, and live signals matching backtest signals.
 
 **Phase 3 — Live trading, small:**
 live execution adapter with reconciliation, circuit breakers and kill switch proven by
-fault-injection tests, deploy to VPS. Start with small capital on one coin.
+fault-injection tests, promote to the Railway live environment. Start with small
+capital on one coin.
 Exit criteria: 4+ weeks live with execution quality (slippage, fill rate) matching the
 backtest model's assumptions.
 
