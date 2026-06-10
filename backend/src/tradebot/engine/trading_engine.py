@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import logging
 
-from tradebot.core.events import CandleClosed, EventBus
+from tradebot.core.events import CandleClosed, EventBus, FillRecorded
 from tradebot.core.models import Candle, CandleInterval, Fill, Side, Signal
 from tradebot.execution.simulator import SimulatedExecutionAdapter
 from tradebot.persistence import FillStore
@@ -56,6 +56,7 @@ class TradingEngine:
         self._fills: list[Fill] = []
         self._paused = False
         self._last_candle: Candle | None = None
+        self._bus: EventBus | None = None
         adapter.set_fill_handler(self._on_fill)
 
     @property
@@ -135,7 +136,13 @@ class TradingEngine:
         return True
 
     def attach_to(self, bus: EventBus) -> None:
-        """Subscribe to ``CandleClosed`` events (paper/live wiring)."""
+        """Subscribe to ``CandleClosed`` events (paper/live wiring).
+
+        Once attached, the engine also publishes ``FillRecorded`` for
+        observers (notifications, UI pushes). The backtest runner never
+        attaches a bus, so backtests stay observer-free and byte-identical.
+        """
+        self._bus = bus
         bus.subscribe(CandleClosed, self._on_candle_event)
 
     async def _on_candle_event(self, event: CandleClosed) -> None:
@@ -195,6 +202,8 @@ class TradingEngine:
             await self._fill_store.append(fill)
         self._portfolio.apply_fill(fill)
         self._fills.append(fill)
+        if self._bus is not None:
+            await self._bus.publish(FillRecorded(fill=fill))
         logger.info(
             "fill %s: %s %s %s @ %s (fee %s)",
             fill.client_order_id,

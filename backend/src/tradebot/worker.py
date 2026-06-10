@@ -18,6 +18,8 @@ import contextlib
 import logging
 import signal
 
+import httpx
+
 from tradebot.core.config import AppConfig, TradingMode
 from tradebot.core.events import EventBus
 from tradebot.engine import TradingEngine
@@ -83,6 +85,7 @@ class Worker:
         )
         self.engine.attach_to(self.bus)
         api_task = self._start_api_if_configured()
+        notifier_client = await self._start_notifier_if_configured()
         try:
             await self.feed.run()
         finally:
@@ -90,7 +93,26 @@ class Worker:
                 api_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await api_task
+            if notifier_client is not None:
+                await notifier_client.aclose()
         logger.info("worker stopped cleanly")
+
+    async def _start_notifier_if_configured(self) -> httpx.AsyncClient | None:
+        """Attach Telegram alerts when both token and chat id are set."""
+        token = self.config.telegram_bot_token
+        chat_id = self.config.telegram_chat_id
+        if token is None or chat_id is None:
+            logger.info("telegram alerts disabled: token or chat id not set")
+            return None
+        from tradebot.notify import TelegramNotifier
+
+        client = httpx.AsyncClient(timeout=10)
+        notifier = TelegramNotifier(token, chat_id, client)
+        notifier.attach_to(self.bus)
+        await notifier.send(
+            f"tradebot started: {self.config.symbol} on {self.config.exchange_id} (paper)"
+        )
+        return client
 
     def _start_api_if_configured(self) -> asyncio.Task[None] | None:
         """Serve the control API as a background task when a token is set."""

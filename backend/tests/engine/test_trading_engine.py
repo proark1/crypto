@@ -7,7 +7,7 @@ from decimal import Decimal
 
 import pytest
 
-from tradebot.core.events import CandleClosed, EventBus
+from tradebot.core.events import CandleClosed, EventBus, FillRecorded
 from tradebot.core.models import Candle, CandleInterval, Fill, Side
 from tradebot.engine import TradingEngine
 from tradebot.execution import FillSimulatorConfig, SimulatedExecutionAdapter
@@ -94,6 +94,24 @@ class TestPaperFlowOverBus:
         assert [f.client_order_id for f in journal] == [f.client_order_id for f in engine.fills]
         # The books reconcile: equity identity holds after the round trip.
         assert portfolio.equity_quote({}) == INITIAL_BALANCE + portfolio.realized_pnl_quote()
+
+    async def test_fill_recorded_events_are_published_when_attached(self) -> None:
+        portfolio = Portfolio(INITIAL_BALANCE)
+        engine = make_engine(portfolio)
+        bus = EventBus()
+        engine.attach_to(bus)
+        observed: list[FillRecorded] = []
+
+        async def on_fill(event: FillRecorded) -> None:
+            # The books must already reflect the fill when observers run.
+            assert portfolio.realized_pnl_quote() is not None
+            observed.append(event)
+
+        bus.subscribe(FillRecorded, on_fill)
+        for index, close in enumerate(CLOSES):
+            await bus.publish(CandleClosed(candle=make_candle(index, close)))
+
+        assert [e.fill.side for e in observed] == [Side.BUY, Side.SELL]
 
     async def test_other_symbols_and_intervals_are_ignored(self) -> None:
         portfolio = Portfolio(INITIAL_BALANCE)

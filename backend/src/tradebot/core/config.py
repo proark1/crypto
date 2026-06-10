@@ -59,3 +59,9 @@ class AppConfig(BaseSettings):
 
     api_port: int = 8000
     """Port for the control API (Railway injects PORT; map it to this)."""
+
+    telegram_bot_token: str | None = None
+    """Telegram bot token; alerts are disabled unless token and chat id are set."""
+
+    telegram_chat_id: str | None = None
+    """The only chat the bot talks to (allowlist of exactly one)."""
