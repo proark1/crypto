@@ -19,7 +19,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Protocol
 
@@ -126,13 +126,20 @@ class LiveMarketDataFeed:
         store: CandleStore,
         bus: EventBus,
         reconnect_delays_seconds: Sequence[float] = (1, 2, 5, 10, 30),
+        history_days: int = 0,
     ) -> None:
-        """Wire the feed; ``reconnect_delays_seconds`` caps at its last value."""
+        """Wire the feed; ``reconnect_delays_seconds`` caps at its last value.
+
+        ``history_days`` is how far the very first backfill reaches when the
+        store has no candles for this symbol at all; once anything is
+        stored, backfill always resumes from the newest stored candle.
+        """
         self._exchange = exchange
         self._symbol = symbol
         self._store = store
         self._bus = bus
         self._delays = tuple(reconnect_delays_seconds)
+        self._history_days = history_days
         self._interval = CandleInterval.M1
         self._tracker = OhlcvCandleTracker(symbol, self._interval)
         self._stopping = False
@@ -156,6 +163,12 @@ class LiveMarketDataFeed:
             since_ms: int | None = None
             if latest is not None:
                 since_ms = utc_ms(latest + self._interval.duration)
+            elif self._history_days > 0:
+                # Nothing stored yet: reach back the configured horizon so
+                # the database accumulates a real backtest dataset. The
+                # exchange's paginated REST history is free; CCXT's rate
+                # limiter keeps the deep crawl polite.
+                since_ms = utc_ms(datetime.now(UTC) - timedelta(days=self._history_days))
             rows = await self._exchange.fetch_ohlcv(
                 self._symbol, self._interval.value, since=since_ms
             )

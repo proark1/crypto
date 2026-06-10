@@ -234,6 +234,35 @@ class TestFeed:
         )
         assert [c.open_time for c in stored] == [BASE_TIME, BASE_TIME + timedelta(minutes=1)]
 
+    async def test_first_backfill_reaches_back_history_days(self, database: Database) -> None:
+        """An empty store with a history horizon starts the crawl in the past."""
+        store = CandleStore(database)
+        exchange = FakeExchange([], rest_rows=[row(i) for i in range(4)])
+        feed = LiveMarketDataFeed(exchange, "BTC/USDT", store, EventBus(), history_days=365)
+
+        inserted = await feed.backfill()
+
+        assert inserted == 3  # the newest row is dropped as possibly in progress
+        first_since = exchange.rest_calls[0]
+        assert first_since is not None
+        expected_floor = (datetime.now(UTC) - timedelta(days=365)).timestamp() * 1000
+        assert abs(first_since - expected_floor) < 60_000  # within a minute
+
+    async def test_history_horizon_is_ignored_once_anything_is_stored(
+        self, database: Database
+    ) -> None:
+        """Resume-from-latest always wins over the first-fill horizon."""
+        store = CandleStore(database)
+        seed = FakeExchange([], rest_rows=[row(0), row(1)])
+        await LiveMarketDataFeed(seed, "BTC/USDT", store, EventBus()).backfill()  # stores row 0
+
+        exchange = FakeExchange([], rest_rows=[row(i) for i in range(4)])
+        feed = LiveMarketDataFeed(exchange, "BTC/USDT", store, EventBus(), history_days=365)
+        await feed.backfill()
+
+        # The crawl resumed at the stored candle's successor, not a year ago.
+        assert exchange.rest_calls[0] == BASE_MS + MINUTE_MS
+
     async def test_backfill_when_caught_up_inserts_nothing(self, database: Database) -> None:
         store = CandleStore(database)
         exchange = FakeExchange([], rest_rows=[row(0)])
