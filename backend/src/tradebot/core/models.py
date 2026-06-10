@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import enum
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Annotated
 
@@ -75,6 +75,21 @@ class CandleInterval(enum.StrEnum):
     H1 = "1h"
     H4 = "4h"
     D1 = "1d"
+
+    @property
+    def duration(self) -> timedelta:
+        """Wall-clock length of one candle at this interval."""
+        return _INTERVAL_DURATIONS[self]
+
+
+_INTERVAL_DURATIONS: dict[CandleInterval, timedelta] = {
+    CandleInterval.M1: timedelta(minutes=1),
+    CandleInterval.M5: timedelta(minutes=5),
+    CandleInterval.M15: timedelta(minutes=15),
+    CandleInterval.H1: timedelta(hours=1),
+    CandleInterval.H4: timedelta(hours=4),
+    CandleInterval.D1: timedelta(days=1),
+}
 
 
 class OrderType(enum.StrEnum):
