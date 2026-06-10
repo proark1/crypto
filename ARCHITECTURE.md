@@ -24,7 +24,7 @@ This document is the target design. Implementation status as of June 2026
 | Dashboard: status, chart, decisions, proposals, controls (§6.1) | **Done** — single symbol; wizard, journal, research screens missing |
 | Multi-coin support, add-a-coin flow (§4.2, §6.1) | **Missing** |
 | News pipeline, regime gates, signal fusion (§4.6, §4.7) | **Missing** |
-| Observability: metrics, dead-man's switch, DB backups (§7.3) | **Missing** — Railway healthcheck + Telegram only |
+| Observability: dead-man's switch, metrics, DB backups (§7.3) | **Partial** — heartbeat ping gated on feed freshness done; metrics and backups missing |
 | Live trading (§8 Phase 3) | **Missing** — blockers enumerated in LIVE_TRADING_CHECKLIST.md |
 
 ---

@@ -93,16 +93,33 @@ class Worker:
             self.portfolio.quote_balance,
         )
         self.engine.attach_to(self.bus)
-        api_task = self._start_api()
-        notifier_client = await self._start_notifier_if_configured()
+        # Started inside the try so a failure in any later startup step still
+        # tears down whatever already runs (no leaked tasks or clients).
+        api_task: asyncio.Task[None] | None = None
+        notifier_client: httpx.AsyncClient | None = None
+        heartbeat_task: asyncio.Task[None] | None = None
+        heartbeat_client: httpx.AsyncClient | None = None
         try:
+            api_task = self._start_api()
+            notifier_client = await self._start_notifier_if_configured()
+            heartbeat_task, heartbeat_client = self._start_heartbeat_if_configured()
             await self.feed.run()
         finally:
-            api_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await api_task
-            if notifier_client is not None:
-                await notifier_client.aclose()
+            for task in (api_task, heartbeat_task):
+                if task is None:
+                    continue
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+                except Exception:
+                    # A task that already crashed re-raises here; the rest
+                    # of shutdown (other tasks, client close) must still run.
+                    logger.exception("background task failed during shutdown")
+            for client in (notifier_client, heartbeat_client):
+                if client is not None:
+                    await client.aclose()
         logger.info("worker stopped cleanly")
 
     async def _start_notifier_if_configured(self) -> httpx.AsyncClient | None:
@@ -123,6 +140,45 @@ class Worker:
             f"tradebot started: {self.config.symbol} on {self.config.exchange_id} (paper)"
         )
         return client
+
+    def _start_heartbeat_if_configured(
+        self,
+    ) -> tuple[asyncio.Task[None] | None, httpx.AsyncClient | None]:
+        """Start the dead-man's switch when a monitor URL is configured.
+
+        Its own httpx client on purpose: the heartbeat must keep working
+        when Telegram is unconfigured, and a slow Telegram send must never
+        share a connection pool with the liveness signal.
+        """
+        url = self.config.heartbeat_url
+        if not url:
+            # Truthiness: an empty-string env var disables the heartbeat
+            # gracefully, same convention as the other optional services.
+            logger.info("dead-man's switch disabled: no TRADEBOT_HEARTBEAT_URL")
+            return None, None
+        from tradebot.notify import HeartbeatPinger
+
+        client = httpx.AsyncClient(timeout=10)
+        pinger = HeartbeatPinger(
+            url,
+            client,
+            interval=timedelta(seconds=self.config.heartbeat_interval_seconds),
+        )
+        pinger.attach_to(self.bus)
+        task = asyncio.create_task(pinger.run())
+
+        def log_heartbeat_outcome(finished: asyncio.Task[None]) -> None:
+            # A silently dead heartbeat is the one failure mode this feature
+            # exists to prevent — its own crash must be loud in the logs.
+            try:
+                finished.result()
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logger.exception("dead-man's switch heartbeat task crashed")
+
+        task.add_done_callback(log_heartbeat_outcome)
+        return task, client
 
     def _start_api(self) -> asyncio.Task[None]:
         """Serve HTTP as a background task.
