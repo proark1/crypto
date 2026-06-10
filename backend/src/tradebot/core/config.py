@@ -51,3 +51,11 @@ class AppConfig(BaseSettings):
 
     paper_initial_balance_quote: Decimal = Decimal("10000")
     """Starting paper balance in the quote currency."""
+
+    api_token: str | None = None
+    """Bearer token for the control API. Unset means the API does not start:
+    a control plane that can observe (and later command) the bot is never
+    exposed unauthenticated (ARCHITECTURE.md 6.4)."""
+
+    api_port: int = 8000
+    """Port for the control API (Railway injects PORT; map it to this)."""

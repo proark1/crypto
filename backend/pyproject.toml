@@ -6,10 +6,12 @@ requires-python = ">=3.12"
 dependencies = [
     "asyncpg>=0.29",
     "ccxt>=4.3",
+    "fastapi>=0.111",
     "httpx>=0.27",
     "pydantic>=2.7",
     "pydantic-settings>=2.2",
     "sqlalchemy>=2.0",
+    "uvicorn>=0.30",
 ]
 
 [dependency-groups]
@@ -47,6 +49,10 @@ select = [
 
 [tool.ruff.lint.pydocstyle]
 convention = "pep257"
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI's dependency-injection idiom uses calls in parameter defaults.
+extend-immutable-calls = ["fastapi.Depends"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["D"]  # test names document themselves; prose docstrings add noise
