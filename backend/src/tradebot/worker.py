@@ -106,7 +106,13 @@ class Worker:
             ),
         )
         engine.attach_to(self.bus)
-        feed = LiveMarketDataFeed(self._exchange, symbol, self.candle_store, self.bus)
+        feed = LiveMarketDataFeed(
+            self._exchange,
+            symbol,
+            self.candle_store,
+            self.bus,
+            history_days=self.config.history_backfill_days,
+        )
         self.engines[symbol] = engine
         self._feeds[symbol] = feed
         if self._task_group is not None:

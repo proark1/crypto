@@ -101,6 +101,13 @@ class AppConfig(BaseSettings):
     paper_initial_balance_quote: Decimal = Decimal("10000")
     """Starting paper balance in the quote currency."""
 
+    history_backfill_days: int = Field(default=0, ge=0)
+    """How many days of candle history to fetch for a symbol that has none
+    stored yet (first boot, newly added coin). Binance-class venues serve
+    years of public 1m history for free; the only cost is database storage
+    (roughly 0.5 GB per symbol-year of 1m candles). ``0`` keeps the default
+    behavior: backfill only from the newest stored candle forward."""
+
     api_token: str | None = None
     """Bearer token for the control API. Unset means the API does not start:
     a control plane that can observe (and later command) the bot is never
