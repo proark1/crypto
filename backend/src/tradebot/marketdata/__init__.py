@@ -8,7 +8,21 @@ must quarantine rather than trade on (ARCHITECTURE.md section 11).
 """
 
 from tradebot.marketdata.aggregation import TimeframeAggregator
+from tradebot.marketdata.binance_history import (
+    download_history,
+    download_month,
+    month_range,
+    parse_kline_csv,
+)
 from tradebot.marketdata.gaps import find_gaps
 from tradebot.marketdata.validation import validate_candle
 
-__all__ = ["TimeframeAggregator", "find_gaps", "validate_candle"]
+__all__ = [
+    "TimeframeAggregator",
+    "download_history",
+    "download_month",
+    "find_gaps",
+    "month_range",
+    "parse_kline_csv",
+    "validate_candle",
+]
