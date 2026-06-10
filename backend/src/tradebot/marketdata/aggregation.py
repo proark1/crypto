@@ -10,6 +10,7 @@ emitted.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from decimal import Decimal
 
@@ -109,3 +110,23 @@ class TimeframeAggregator:
             close_quote=self._close,
             volume_base=self._volume,
         )
+
+
+def aggregate_candles(candles: Sequence[Candle], target: CandleInterval) -> list[Candle]:
+    """Batch-roll stored 1m candles up to ``target`` (evaluation, reports).
+
+    A thin wrapper over :class:`TimeframeAggregator` so batch consumers get
+    byte-identical semantics to the live incremental path — including the
+    rule that the trailing partial bucket is never emitted. Input may be
+    unordered and contain duplicate open times (idempotent stores produce
+    both); it is sorted and de-duplicated here because the incremental
+    aggregator rightly rejects disorder at the source.
+    """
+    by_open_time = {candle.open_time: candle for candle in candles}
+    aggregator = TimeframeAggregator(target)
+    aggregated: list[Candle] = []
+    for candle in sorted(by_open_time.values(), key=lambda c: c.open_time):
+        completed = aggregator.add(candle)
+        if completed is not None:
+            aggregated.append(completed)
+    return aggregated
