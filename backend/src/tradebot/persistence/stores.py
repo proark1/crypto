@@ -79,6 +79,23 @@ class CandleStore:
             rows = (await connection.execute(statement)).mappings().all()
         return [Candle.model_validate(dict(row)) for row in rows]
 
+    async def fetch_recent(
+        self, symbol: str, interval: CandleInterval, limit: int = 300
+    ) -> list[Candle]:
+        """Return the newest ``limit`` candles in chronological order."""
+        statement = (
+            select(candles_table)
+            .where(
+                candles_table.c.symbol == symbol,
+                candles_table.c.interval == interval.value,
+            )
+            .order_by(candles_table.c.open_time.desc())
+            .limit(limit)
+        )
+        async with self._database.engine.connect() as connection:
+            rows = (await connection.execute(statement)).mappings().all()
+        return [Candle.model_validate(dict(row)) for row in reversed(rows)]
+
     async def latest_candle(self, symbol: str, interval: CandleInterval) -> Candle | None:
         """Return the newest stored candle — the mark price for valuations."""
         statement = (

@@ -93,6 +93,19 @@ class TestCandleStore:
         )
         assert [c.interval for c in fetched] == [CandleInterval.M5]
 
+    async def test_fetch_recent_returns_newest_in_chronological_order(
+        self, database: Database
+    ) -> None:
+        store = CandleStore(database)
+        await store.insert_batch([make_candle(minute) for minute in range(5)])
+
+        recent = await store.fetch_recent("BTC/USDT", CandleInterval.M1, limit=3)
+        assert [c.open_time for c in recent] == [
+            BASE_TIME + timedelta(minutes=2),
+            BASE_TIME + timedelta(minutes=3),
+            BASE_TIME + timedelta(minutes=4),
+        ]
+
     async def test_latest_open_time_for_backfill_resume(self, database: Database) -> None:
         store = CandleStore(database)
         assert await store.latest_open_time("BTC/USDT", CandleInterval.M1) is None

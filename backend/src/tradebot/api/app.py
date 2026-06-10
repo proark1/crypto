@@ -102,6 +102,17 @@ class DecisionResponse(BaseModel):
     created_at: str
 
 
+class CandleResponse(BaseModel):
+    """One OHLCV candle for charting, amounts as strings."""
+
+    open_time: str
+    open_quote: str
+    high_quote: str
+    low_quote: str
+    close_quote: str
+    volume_base: str
+
+
 class FillResponse(BaseModel):
     """One journaled fill, amounts as strings."""
 
@@ -201,6 +212,25 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
             else "halted; no position to flatten"
         )
         return CommandResponse(paused=True, detail=detail)
+
+    @app.get("/candles")
+    async def get_candles(
+        limit: int = Query(300, ge=1, le=1000),
+    ) -> list[CandleResponse]:
+        candles = await state.candle_store.fetch_recent(
+            state.config.symbol, CandleInterval.M1, limit
+        )
+        return [
+            CandleResponse(
+                open_time=candle.open_time.isoformat(),
+                open_quote=str(candle.open_quote),
+                high_quote=str(candle.high_quote),
+                low_quote=str(candle.low_quote),
+                close_quote=str(candle.close_quote),
+                volume_base=str(candle.volume_base),
+            )
+            for candle in candles
+        ]
 
     @app.get("/decisions")
     async def get_decisions(

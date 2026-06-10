@@ -253,6 +253,25 @@ class TestDecisions:
             assert (await client.get("/decisions?limit=9999")).status_code == 422
 
 
+class TestCandles:
+    async def test_candles_are_chronological_with_string_amounts(self, database: Database) -> None:
+        bot = StubBot(database)
+        await bot.candle_store.insert_batch([make_candle(close="110")])
+
+        async with make_client(bot) as client:
+            body = (await client.get("/candles")).json()
+
+        assert len(body) == 1
+        assert body[0]["close_quote"] == "110"
+        assert body[0]["open_time"] == BASE_TIME.isoformat()
+
+    async def test_candles_limit_is_validated(self, database: Database) -> None:
+        bot = StubBot(database)
+        async with make_client(bot) as client:
+            assert (await client.get("/candles?limit=0")).status_code == 422
+            assert (await client.get("/candles?limit=99999")).status_code == 422
+
+
 class TestFills:
     async def test_journal_is_returned_with_string_amounts(self, database: Database) -> None:
         bot = StubBot(database)
