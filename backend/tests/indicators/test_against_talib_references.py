@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from tradebot.indicators import Atr, Ema, Rsi
+from tradebot.indicators import Adx, Atr, Ema, Rsi
 
 REFERENCES = json.loads(
     (Path(__file__).parent.parent / "golden" / "indicator_references.json").read_text()
@@ -39,6 +39,18 @@ def test_rsi_matches_talib(period: int) -> None:
     rsi = Rsi(period)
     actual = [rsi.update(close) for close in REFERENCES["close"]]
     assert_matches_reference(actual, REFERENCES["rsi"][str(period)])
+
+
+@pytest.mark.parametrize("period", PERIODS)
+def test_adx_matches_talib(period: int) -> None:
+    adx = Adx(period)
+    actual = [
+        adx.update(high, low, close)
+        for high, low, close in zip(
+            REFERENCES["high"], REFERENCES["low"], REFERENCES["close"], strict=True
+        )
+    ]
+    assert_matches_reference(actual, REFERENCES["adx"][str(period)])
 
 
 @pytest.mark.parametrize("period", PERIODS)

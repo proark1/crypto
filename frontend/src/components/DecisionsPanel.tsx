@@ -4,6 +4,7 @@ import { formatTime, trimAmount } from "../lib/format";
 const OUTCOME_STYLES: Record<string, string> = {
   submitted: "bg-emerald-500/20 text-emerald-400",
   vetoed: "bg-amber-500/20 text-amber-400",
+  gated: "bg-sky-500/20 text-sky-400",
   paused: "bg-zinc-500/20 text-zinc-400",
 };
 

@@ -101,6 +101,15 @@ class AppConfig(BaseSettings):
     paper_initial_balance_quote: Decimal = Decimal("10000")
     """Starting paper balance in the quote currency."""
 
+    regime_gate_enabled: bool = True
+    """Gate every coin's entries on the reference market's regime
+    (ARCHITECTURE.md 5.2). On by default — the fail-safe direction for a
+    filter is filtering. The worker disables it loudly when the reference
+    symbol is not among the traded coins (no data, no gate)."""
+
+    regime_reference_symbol: str = "BTC/USDT"
+    """The market-wide reference whose regime gates all entries."""
+
     history_backfill_days: int = Field(default=0, ge=0)
     """How many days of candle history to fetch for a symbol that has none
     stored yet (first boot, newly added coin). Binance-class venues serve

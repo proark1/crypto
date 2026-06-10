@@ -7,8 +7,9 @@ proved out, because it is the same code):
    earlier candles fill no earlier than now;
 2. fills update the portfolio (and the persistent fill journal, if wired);
 3. the strategy sees the candle and the post-fill position;
-4. the risk manager sizes or vetoes the resulting signal;
-5. an approved order is submitted to the adapter.
+4. entry gates (regime, and later confirmation filters) may block a BUY;
+5. the risk manager sizes or vetoes the resulting signal;
+6. an approved order is submitted to the adapter.
 """
 
 from __future__ import annotations
@@ -33,6 +34,7 @@ from tradebot.execution.simulator import SimulatedExecutionAdapter
 from tradebot.persistence import DecisionStore, FillStore
 from tradebot.portfolio import Portfolio
 from tradebot.risk import CircuitBreakers, RiskManager
+from tradebot.signals import EntryGate
 from tradebot.strategies import Strategy
 
 logger = logging.getLogger(__name__)
@@ -59,8 +61,14 @@ class TradingEngine:
         decision_store: DecisionStore | None = None,
         autonomy_mode: AutonomyMode = AutonomyMode.AUTONOMOUS,
         proposal_queue: ProposalQueue | None = None,
+        entry_gates: tuple[EntryGate, ...] = (),
     ) -> None:
-        """Wire the components; ``symbol=None`` binds to the first candle seen."""
+        """Wire the components; ``symbol=None`` binds to the first candle seen.
+
+        ``entry_gates`` run on BUY signals only, in order, before
+        authorization and risk sizing (the §5.2 pipeline). Exits are never
+        gated: protective actions must not sit behind a filter.
+        """
         if autonomy_mode == AutonomyMode.COPILOT and proposal_queue is None:
             raise ValueError("co-pilot mode requires a proposal queue")
         self._strategy = strategy
@@ -73,6 +81,7 @@ class TradingEngine:
         self._decision_store = decision_store
         self._autonomy_mode = autonomy_mode
         self._proposal_queue = proposal_queue
+        self._entry_gates = entry_gates
         self._fills: list[Fill] = []
         self._paused = False
         self._last_candle: Candle | None = None
@@ -219,6 +228,24 @@ class TradingEngine:
             )
             await self._record_decision(signal, DecisionOutcome.PAUSED)
             return
+        if signal.side == Side.BUY:
+            # Entry gates run before authorization: a proposal for a gated
+            # entry must never reach the user (§5.2 pipeline order). Exits
+            # are deliberately not gated — capital protection comes first.
+            for gate in self._entry_gates:
+                verdict = gate.evaluate(signal)
+                if not verdict.allowed:
+                    logger.info(
+                        "entry gated: %s %s — %s",
+                        signal.strategy_name,
+                        signal.symbol,
+                        "; ".join(verdict.reasons),
+                    )
+                    journaled = signal.model_copy(
+                        update={"reasons": signal.reasons + verdict.reasons}
+                    )
+                    await self._record_decision(journaled, DecisionOutcome.GATED)
+                    return
         if (
             self._autonomy_mode == AutonomyMode.COPILOT
             and self._proposal_queue is not None

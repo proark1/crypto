@@ -61,6 +61,10 @@ def main() -> None:
             str(p): nan_to_none(talib.ATR(high_arr, low_arr, close_arr, timeperiod=p))
             for p in PERIODS
         },
+        "adx": {
+            str(p): nan_to_none(talib.ADX(high_arr, low_arr, close_arr, timeperiod=p))
+            for p in PERIODS
+        },
     }
     OUTPUT_PATH.write_text(json.dumps(references) + "\n")
     print(f"wrote {OUTPUT_PATH}")
