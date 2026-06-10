@@ -10,7 +10,7 @@ This document is the target design. Implementation status as of June 2026
 | Component (section) | Status |
 |---|---|
 | Core domain models, event bus, config (§4, §11) | **Done** — Decimal money, UTC timestamps, fail-safe defaults |
-| Market data: live CCXT feed, closed-candle tracking, backfill, validation (§4.1) | **Done** — per-coin 1m feeds; 30-day default first-boot backfill primes the regime gate before trading starts; in-process timeframe aggregation plus SQL calendar buckets (hour/day/week/month) for charting |
+| Market data: live CCXT feed, closed-candle tracking, backfill, validation (§4.1) | **Done** — per-coin 1m feeds; one-year default first-boot backfill (the §12 research window) primes the regime gate before trading starts while /health serves from the first second; in-process timeframe aggregation plus SQL calendar buckets (hour/day/week/month) for charting |
 | Indicators: incremental EMA, RSI, ATR (§4.2) | **Done** — tested against reference values |
 | Strategies: trend-following EMA crossover (§4.2) | **Done** — one strategy; the pluggable registry is the pattern, more strategies pending |
 | Backtester: runner, pessimistic fill simulator, golden test (§5) | **Done** — walk-forward splitting feeds the parameter sweeps (§12.5) |

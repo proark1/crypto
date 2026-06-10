@@ -1,11 +1,13 @@
 """Worker composition tests: end-to-end paper trading with a scripted feed."""
 
 import asyncio
+import contextlib
 import os
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
+import httpx
 import pytest
 
 from tradebot.core.config import AppConfig, TradingMode
@@ -442,3 +444,43 @@ class TestFirstBootRegimePriming:
 
         assert worker.regime_detector is not None
         assert worker.regime_detector.regime.label == "warming_up"
+
+
+class TestHealthDuringFirstBackfill:
+    async def test_health_answers_while_the_deep_backfill_is_still_running(
+        self, database: Database
+    ) -> None:
+        """The platform healthcheck must not time a first deploy out."""
+
+        class NeverFinishingBackfill(ScriptedExchange):
+            async def fetch_ohlcv(
+                self,
+                symbol: str,
+                timeframe: str,
+                since: int | None = None,
+                limit: int | None = None,
+            ) -> list[OhlcvRow]:
+                await asyncio.sleep(3600)
+                return []
+
+        worker = Worker(
+            make_config(api_port=8906, regime_gate_enabled=True),
+            database,
+            NeverFinishingBackfill([]),
+        )
+        run_task = asyncio.create_task(worker.run())
+        try:
+            async with httpx.AsyncClient() as client:
+                response = None
+                for _ in range(200):  # the server needs a moment to bind
+                    try:
+                        response = await client.get("http://127.0.0.1:8906/health")
+                        break
+                    except httpx.TransportError:
+                        await asyncio.sleep(0.05)
+                assert response is not None and response.status_code == 200
+                assert response.json() == {"status": "ok"}
+        finally:
+            run_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await run_task
