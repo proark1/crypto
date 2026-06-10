@@ -11,7 +11,7 @@ from __future__ import annotations
 import enum
 from decimal import Decimal
 
-from pydantic import AliasChoices, Field
+from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from tradebot.core.models import AutonomyMode
@@ -53,6 +53,16 @@ class AppConfig(BaseSettings):
     """Comma-separated pairs the worker trades (e.g. ``BTC/USDT,ETH/USDT``).
     All must be quoted in ``quote_currency``. The singular ``TRADEBOT_SYMBOL``
     is accepted as an alias so existing deployments keep working."""
+
+    @model_validator(mode="after")
+    def _symbols_must_parse(self) -> AppConfig:
+        """Validate the pair list at config load, not first use.
+
+        A bad list must stop the deploy before any component is built
+        around it.
+        """
+        self.symbol_list()
+        return self
 
     def symbol_list(self) -> tuple[str, ...]:
         """Parse ``symbols`` into an ordered, de-duplicated tuple.

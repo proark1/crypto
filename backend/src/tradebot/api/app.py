@@ -219,13 +219,22 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
         return symbol
 
     async def account_equity() -> Decimal | None:
-        """Mark every open position at its latest stored close; ``None`` if any lacks one."""
+        """Mark every open position at its latest stored close; ``None`` if any lacks one.
+
+        Marks are gathered for every *configured* symbol first, and only then
+        is the portfolio read — synchronously, with no awaits in between. An
+        await between reading positions and valuing them would let a fill on
+        the trading loop open a position the marks don't cover, turning a
+        status request into a 500.
+        """
         marks: dict[str, Decimal] = {}
+        for configured in configured_symbols:
+            candle = await state.candle_store.latest_candle(configured, CandleInterval.M1)
+            if candle is not None:
+                marks[configured] = candle.close_quote
         for open_symbol in state.portfolio.positions:
-            candle = await state.candle_store.latest_candle(open_symbol, CandleInterval.M1)
-            if candle is None:
+            if open_symbol not in marks:
                 return None  # refuse to guess, never wrong
-            marks[open_symbol] = candle.close_quote
         return state.portfolio.equity_quote(marks)
 
     app = FastAPI(title="tradebot control plane")
@@ -333,8 +342,16 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
                 failures.append(str(error))
         if failures:
             # Halted but NOT flat — surface it as a clear conflict, never as
-            # a 500 and never as a misleading "nothing to flatten".
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="; ".join(failures))
+            # a 500 and never as a misleading "nothing to flatten". The
+            # successes are reported too: "it failed" must not hide that
+            # some exits *were* submitted.
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"halted with failures ({exits_submitted} exit order(s) submitted): "
+                    + "; ".join(failures)
+                ),
+            )
         plural = "s" if exits_submitted != 1 else ""
         detail = (
             f"halted; {exits_submitted} exit order{plural} submitted, fills on next candle"
@@ -452,11 +469,10 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
 
     @protected.get("/fills")
     async def get_fills(symbol: str | None = Query(None)) -> list[FillResponse]:
-        # The journal view spans the whole account by default; pass
-        # ``symbol`` to narrow it.
-        fills = await state.fill_store.fetch_all(
-            resolve_symbol(symbol) if symbol is not None else None
-        )
+        # The journal view spans the whole account by default. Any symbol
+        # may narrow it — including ones no longer configured: fills are
+        # history, and history must stay queryable after a coin is removed.
+        fills = await state.fill_store.fetch_all(symbol)
         return [
             FillResponse(
                 client_order_id=fill.client_order_id,

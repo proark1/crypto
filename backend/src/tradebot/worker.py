@@ -124,7 +124,12 @@ class Worker:
             api_task = self._start_api()
             notifier_client = await self._start_notifier_if_configured()
             heartbeat_task, heartbeat_client = self._start_heartbeat_if_configured()
-            await asyncio.gather(*(feed.run() for feed in self.feeds))
+            # TaskGroup, not gather: if one feed crashes, the others must be
+            # cancelled with it — a bot trading some symbols while blind on
+            # another would be worse than one that stops and restarts.
+            async with asyncio.TaskGroup() as task_group:
+                for feed in self.feeds:
+                    task_group.create_task(feed.run())
         finally:
             for task in (api_task, heartbeat_task):
                 if task is None:

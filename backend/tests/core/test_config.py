@@ -50,16 +50,17 @@ def test_legacy_singular_symbol_env_still_works(monkeypatch: pytest.MonkeyPatch)
     assert AppConfig().symbol_list() == ("ETH/USDT",)
 
 
-def test_symbol_in_wrong_quote_currency_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_symbol_in_wrong_quote_currency_fails_at_load(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A bad pair list stops the deploy at config load, not at first use."""
     monkeypatch.setenv("TRADEBOT_SYMBOLS", "BTC/USDT,BTC/EUR")
-    with pytest.raises(ValueError, match="not quoted in"):
-        AppConfig().symbol_list()
+    with pytest.raises(ValidationError, match="not quoted in"):
+        AppConfig()
 
 
-def test_empty_symbols_are_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_empty_symbols_fail_at_load(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("TRADEBOT_SYMBOLS", " , ")
-    with pytest.raises(ValueError, match="at least one"):
-        AppConfig().symbol_list()
+    with pytest.raises(ValidationError, match="at least one"):
+        AppConfig()
 
 
 def test_non_positive_heartbeat_interval_fails_at_load(monkeypatch: pytest.MonkeyPatch) -> None:
