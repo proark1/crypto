@@ -16,10 +16,11 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 import signal
-from collections.abc import Mapping
+from collections.abc import Coroutine, Mapping
 from datetime import UTC, datetime, timedelta
-from typing import Protocol
+from typing import Any, Protocol
 
 import httpx
 
@@ -27,9 +28,18 @@ from tradebot.authorization import ProposalQueue
 from tradebot.core.config import AppConfig, TradingMode, validate_symbol_quote
 from tradebot.core.events import EventBus
 from tradebot.engine import TradingEngine
+from tradebot.evaluation import ScenarioEvaluator
+from tradebot.evaluation.runner import EvaluationManager, EvaluationRunConfig, EvaluationRunner
 from tradebot.execution import FillSimulatorConfig, SimulatedExecutionAdapter
 from tradebot.marketdata.live_feed import LiveMarketDataFeed, OhlcvExchange
-from tradebot.persistence import CandleStore, CoinStore, Database, DecisionStore, FillStore
+from tradebot.persistence import (
+    CandleStore,
+    CoinStore,
+    Database,
+    DecisionStore,
+    EvaluationStore,
+    FillStore,
+)
 from tradebot.portfolio import Portfolio
 from tradebot.risk import RiskConfig, RiskManager
 from tradebot.strategies import TrendFollowingConfig, TrendFollowingStrategy
@@ -71,6 +81,7 @@ class Worker:
         self.fill_store = FillStore(database)
         self.decision_store = DecisionStore(database)
         self.coin_store = CoinStore(database)
+        self.evaluation_store = EvaluationStore(database)
         self.portfolio = Portfolio(config.paper_initial_balance_quote)
         # One risk manager for all symbols: the circuit breakers and equity
         # caps are account-level and must see every position through one
@@ -83,6 +94,30 @@ class Worker:
         self._stop_requested = asyncio.Event()
         self._exchange = exchange
         self._database = database
+        self.evaluations = EvaluationManager(
+            EvaluationRunner(
+                self.candle_store,
+                self.evaluation_store,
+                ScenarioEvaluator(lambda: TrendFollowingStrategy(TrendFollowingConfig())),
+            ),
+            self.evaluation_store,
+            code_version=os.environ.get("RAILWAY_GIT_COMMIT_SHA", "unknown"),
+            spawn=self._spawn_background,
+        )
+
+    def _spawn_background(self, coroutine: Coroutine[Any, Any, None]) -> asyncio.Task[None]:
+        """Run a coroutine under the worker's TaskGroup (shutdown cancels it)."""
+        if self._task_group is None:
+            raise RuntimeError("worker is not running; background tasks need its TaskGroup")
+        return self._task_group.create_task(coroutine)
+
+    async def start_evaluation(self, config: EvaluationRunConfig) -> int:
+        """Start a blind walk-forward evaluation run (one at a time)."""
+        return await self.evaluations.start(config)
+
+    def cancel_evaluation(self, run_id: int) -> bool:
+        """Cancel the in-flight evaluation run, if it is this one."""
+        return self.evaluations.cancel(run_id)
 
     @property
     def symbols(self) -> tuple[str, ...]:

@@ -12,7 +12,7 @@ from __future__ import annotations
 import secrets
 from collections.abc import Mapping
 from decimal import Decimal
-from typing import Protocol
+from typing import Any, Protocol
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -22,7 +22,8 @@ from pydantic import BaseModel
 from tradebot.core.config import AppConfig
 from tradebot.core.models import CandleInterval
 from tradebot.engine import TradingEngine
-from tradebot.persistence import CandleStore, DecisionStore, FillStore
+from tradebot.evaluation.runner import EvaluationRunConfig
+from tradebot.persistence import CandleStore, DecisionStore, EvaluationStore, FillStore
 from tradebot.portfolio import Portfolio
 
 
@@ -65,6 +66,19 @@ class BotState(Protocol):
     @property
     def decision_store(self) -> DecisionStore:
         """The explainability trail: every signal and its fate."""
+        ...
+
+    @property
+    def evaluation_store(self) -> EvaluationStore:
+        """Persisted evaluation runs, scenarios, and verdicts."""
+        ...
+
+    async def start_evaluation(self, config: EvaluationRunConfig) -> int:
+        """Start a run (``RuntimeError`` if one is in flight, ``ValueError`` bad config)."""
+        ...
+
+    def cancel_evaluation(self, run_id: int) -> bool:
+        """Cancel the in-flight run; False when it is not running."""
         ...
 
 
@@ -162,6 +176,54 @@ class CandleResponse(BaseModel):
     low_quote: str
     close_quote: str
     volume_base: str
+
+
+class EvaluationStartRequest(BaseModel):
+    """Shape of a new evaluation run; symbols default to the active coins."""
+
+    symbols: list[str] | None = None
+    timeframes: list[str] = ["1h"]
+    history_days: int = 365
+    scenario_count: int = 200
+    lookback_candles: int = 200
+    horizon_candles: int = 60
+    seed: int = 7
+
+
+class EvaluationStartResponse(BaseModel):
+    """Acknowledgement that a run was created and launched."""
+
+    run_id: int
+    detail: str
+
+
+class EvaluationRunResponse(BaseModel):
+    """One run's status, progress, and (when completed) its report."""
+
+    id: int
+    created_at: str
+    status: str
+    symbols: list[str]
+    timeframes: list[str]
+    progress_done: int
+    progress_total: int
+    config: dict[str, Any]
+    summary: dict[str, Any] | None
+
+
+def _run_response(run: dict[str, Any]) -> EvaluationRunResponse:
+    """Serialize a run row for the API."""
+    return EvaluationRunResponse(
+        id=run["id"],
+        created_at=run["created_at"].isoformat(),
+        status=run["status"],
+        symbols=list(run["symbols"]),
+        timeframes=list(run["timeframes"]),
+        progress_done=run["progress_done"],
+        progress_total=run["progress_total"],
+        config=run["config"],
+        summary=run["summary"],
+    )
 
 
 class FillResponse(BaseModel):
@@ -519,6 +581,51 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
             )
             for decision in decisions
         ]
+
+    @protected.post("/evaluations")
+    async def start_evaluation(request: EvaluationStartRequest) -> EvaluationStartResponse:
+        """Start a blind walk-forward evaluation run (one at a time)."""
+        config = EvaluationRunConfig(
+            symbols=tuple(request.symbols) if request.symbols else tuple(active_symbols()),
+            timeframes=tuple(request.timeframes),
+            history_days=request.history_days,
+            scenario_count=request.scenario_count,
+            lookback_candles=request.lookback_candles,
+            horizon_candles=request.horizon_candles,
+            seed=request.seed,
+        )
+        try:
+            run_id = await state.start_evaluation(config)
+        except RuntimeError as error:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)
+            ) from error
+        return EvaluationStartResponse(run_id=run_id, detail="evaluation started")
+
+    @protected.get("/evaluations")
+    async def list_evaluations() -> list[EvaluationRunResponse]:
+        return [_run_response(run) for run in await state.evaluation_store.list_runs()]
+
+    @protected.get("/evaluations/{run_id}")
+    async def get_evaluation(run_id: int) -> EvaluationRunResponse:
+        run = await state.evaluation_store.fetch_run(run_id)
+        if run is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail=f"no evaluation run {run_id}"
+            )
+        return _run_response(run)
+
+    @protected.post("/evaluations/{run_id}/cancel")
+    async def cancel_evaluation(run_id: int) -> CommandResponse:
+        if not state.cancel_evaluation(run_id):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"evaluation run {run_id} is not in flight",
+            )
+        first_engine = next(iter(state.engines.values()))
+        return CommandResponse(paused=first_engine.paused, detail=f"run {run_id} cancelled")
 
     @protected.get("/fills")
     async def get_fills(symbol: str | None = Query(None)) -> list[FillResponse]:
