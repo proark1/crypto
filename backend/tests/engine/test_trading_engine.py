@@ -8,7 +8,7 @@ from decimal import Decimal
 import pytest
 
 from tradebot.core.events import CandleClosed, EventBus
-from tradebot.core.models import Candle, CandleInterval, Side
+from tradebot.core.models import Candle, CandleInterval, Fill, Side
 from tradebot.engine import TradingEngine
 from tradebot.execution import FillSimulatorConfig, SimulatedExecutionAdapter
 from tradebot.persistence import Database, FillStore
@@ -112,6 +112,26 @@ class TestPaperFlowOverBus:
         await bus.publish(CandleClosed(candle=five_minute))
 
         assert engine.fills == ()  # nothing reached the strategy or adapter
+
+    async def test_journal_failure_leaves_in_memory_books_untouched(
+        self, database: Database
+    ) -> None:
+        """Persist-first ordering: memory must never run ahead of the journal."""
+
+        class BrokenFillStore(FillStore):
+            async def append(self, fill: Fill) -> None:
+                raise ConnectionError("database write failed")
+
+        portfolio = Portfolio(INITIAL_BALANCE)
+        engine = make_engine(portfolio, BrokenFillStore(database))
+
+        with pytest.raises(ConnectionError, match="database write failed"):
+            for index, close in enumerate(CLOSES):
+                await engine.process_candle(make_candle(index, close))
+
+        assert portfolio.position("BTC/USDT") is None
+        assert portfolio.quote_balance == INITIAL_BALANCE
+        assert engine.fills == ()
 
     async def test_unbound_engine_binds_to_first_candle_then_rejects_others(self) -> None:
         portfolio = Portfolio(INITIAL_BALANCE)

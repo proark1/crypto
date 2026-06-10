@@ -103,10 +103,14 @@ class TradingEngine:
         await self._adapter.submit(order)
 
     async def _on_fill(self, fill: Fill) -> None:
-        self._portfolio.apply_fill(fill)
-        self._fills.append(fill)
+        # Journal before touching in-memory state: if the write fails, memory
+        # must not be ahead of the persistent record that restart recovery
+        # replays — losing the in-memory update is recoverable, the reverse
+        # is silent divergence.
         if self._fill_store is not None:
             await self._fill_store.append(fill)
+        self._portfolio.apply_fill(fill)
+        self._fills.append(fill)
         logger.info(
             "fill %s: %s %s %s @ %s (fee %s)",
             fill.client_order_id,
