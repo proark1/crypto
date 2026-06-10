@@ -30,6 +30,7 @@ from tradebot.core.events import EventBus
 from tradebot.engine import TradingEngine
 from tradebot.evaluation import ScenarioEvaluator
 from tradebot.evaluation.runner import EvaluationManager, EvaluationRunConfig, EvaluationRunner
+from tradebot.evaluation.sweep import SweepConfig, SweepManager, SweepRunner, build_trend_strategy
 from tradebot.execution import FillSimulatorConfig, SimulatedExecutionAdapter
 from tradebot.marketdata.live_feed import LiveMarketDataFeed, OhlcvExchange
 from tradebot.persistence import (
@@ -104,6 +105,11 @@ class Worker:
             code_version=os.environ.get("RAILWAY_GIT_COMMIT_SHA", "unknown"),
             spawn=self._spawn_background,
         )
+        self.sweeps = SweepManager(
+            SweepRunner(self.candle_store, self.evaluation_store, build_trend_strategy),
+            self.evaluation_store,
+            spawn=self._spawn_background,
+        )
 
     def _spawn_background(self, coroutine: Coroutine[Any, Any, None]) -> asyncio.Task[None]:
         """Run a coroutine under the worker's TaskGroup (shutdown cancels it)."""
@@ -118,6 +124,14 @@ class Worker:
     def cancel_evaluation(self, run_id: int) -> bool:
         """Cancel the in-flight evaluation run, if it is this one."""
         return self.evaluations.cancel(run_id)
+
+    async def start_sweep(self, config: SweepConfig) -> int:
+        """Start a walk-forward parameter sweep (one at a time)."""
+        return await self.sweeps.start(config)
+
+    def cancel_sweep(self, sweep_id: int) -> bool:
+        """Cancel the in-flight sweep, if it is this one."""
+        return self.sweeps.cancel(sweep_id)
 
     @property
     def symbols(self) -> tuple[str, ...]:

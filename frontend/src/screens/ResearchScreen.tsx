@@ -3,21 +3,26 @@ import { useCallback, useEffect, useState } from "react";
 import {
   acceptFinding,
   cancelEvaluation,
+  cancelSweep,
   fetchEvaluations,
   fetchFindings,
   fetchScenarioReplay,
   fetchScenarios,
+  fetchSweeps,
   rejectFinding,
   startEvaluation,
+  startSweep,
 } from "../api/client";
 import type {
   EvaluationRunResponse,
   FindingResponse,
   ScenarioReplayResponse,
   ScenarioSummaryResponse,
+  SweepResponse,
 } from "../api/types";
 import { FindingsPanel } from "../components/FindingsPanel";
 import { ScenarioReplay } from "../components/ScenarioReplay";
+import { SweepPanel } from "../components/SweepPanel";
 
 const POLL_INTERVAL_MS = 3000;
 const TIMEFRAMES = ["1m", "5m", "15m", "1h", "4h", "1d"];
@@ -185,10 +190,12 @@ export function ResearchScreen() {
   const [scenarios, setScenarios] = useState<ScenarioSummaryResponse[]>([]);
   const [findings, setFindings] = useState<FindingResponse[]>([]);
   const [replay, setReplay] = useState<ScenarioReplayResponse | null>(null);
+  const [sweeps, setSweeps] = useState<SweepResponse[]>([]);
 
   const refresh = useCallback(async () => {
     try {
       setRuns(await fetchEvaluations());
+      setSweeps(await fetchSweeps());
     } catch {
       // The overview screen owns auth/error UX; research polls quietly.
     }
@@ -225,6 +232,18 @@ export function ResearchScreen() {
     fetchScenarioReplay(scenarioId).then(setReplay, (caught: unknown) => {
       setNotice(caught instanceof Error ? caught.message : "failed to load the replay");
     });
+  };
+
+  const handleStartSweep = () => {
+    startSweep({ timeframe, history_days: Number(days) || 90 }).then(
+      (started) => {
+        setNotice(started.detail);
+        void refresh();
+      },
+      (caught: unknown) => {
+        setNotice(caught instanceof Error ? caught.message : "failed to start the sweep");
+      },
+    );
   };
 
   const decideFinding = (decide: (findingId: number) => Promise<FindingResponse>) => {
@@ -369,6 +388,14 @@ export function ResearchScreen() {
           )}
         </section>
       </div>
+
+      <SweepPanel
+        sweeps={sweeps}
+        onStart={handleStartSweep}
+        onCancel={(sweepId) => {
+          void cancelSweep(sweepId).then(refresh, refresh);
+        }}
+      />
     </div>
   );
 }
