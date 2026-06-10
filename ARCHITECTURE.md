@@ -140,7 +140,7 @@ operational pain with zero benefit.
   history → warm up indicators → start in **paper mode by default** → user explicitly
   promotes to live after reviewing paper results.
 - Notifications via Telegram (trade executed, stop hit, circuit breaker tripped,
-  WS disconnected). A simple web dashboard comes later; Telegram + API first.
+  WS disconnected). The full interface design is in section 6.
 
 ### 4.8 Observability
 - Structured JSON logging with event correlation (signal → order → fill chain).
@@ -210,7 +210,67 @@ by the time a headline is parsed, the price has moved. News is therefore used
   define "no new entries" windows (configurable, e.g. ±2h) because volatility around
   them breaks normal TA assumptions.
 
-## 6. Technology choices
+## 6. User experience (UI / UX)
+
+The user hands real money to an autonomous system, so **trust is the product**. The
+UX goal: at any moment the user understands what the bot holds, what it is doing, and
+*why* — and can stop everything in one click. Most trading bots are black boxes with
+a settings page; radical explainability is the UX differentiator here.
+
+### 6.1 Interfaces
+
+- **Web dashboard** (primary): React + Tailwind, **TradingView Lightweight Charts**
+  (free, OSS, the standard look traders expect) for candles; live updates pushed over
+  WebSocket from FastAPI. Responsive layout installable as a PWA so the phone
+  experience is first-class. Dark mode as default (trading convention).
+- **Telegram** (push + emergency remote control): tiered notifications and a few
+  guarded commands — `/status`, `/pause <coin>`, `/killswitch`.
+- **REST API**: everything the dashboard can do, for power users and automation.
+
+### 6.2 Core screens
+
+1. **Overview:** total equity curve, today's/total net PnL, open positions, one card
+   per coin (paper/live badge, active regime, last action + reason), and a system
+   health strip (data feed, exchange connection, last heartbeat, circuit-breaker
+   state). Designed to answer "is everything okay?" in three seconds.
+2. **Coin detail:** live candlestick chart with entries, exits, and current stop
+   plotted on the chart; active indicator overlays; and the **decision pipeline view**
+   — each gate from section 5.2 shown green/red with its live reason (e.g. "entry
+   blocked: funding at crowded-long extreme"). This is where trust is built.
+3. **Add-a-coin wizard:** search pair → screening report (volume, spread, age —
+   pass/fail with explanations) → pick strategy + risk preset (conservative /
+   balanced / aggressive, described in plain language: "risks ~0.5% of equity per
+   trade") → backfill progress → starts in paper mode.
+4. **Trade journal:** filterable table of every trade; each row expands to the full
+   decision context (signal, gate decisions, fees, slippage vs. expectation).
+5. **Research:** run backtests from the UI, equity curve vs. buy-and-hold, walk-forward
+   window results, paper-vs-backtest divergence. The **promote-to-live** action lives
+   here, enabled only when the section 10 gates pass.
+6. **Settings & risk:** risk limits edited in plain language with previews ("a losing
+   day can cost at most $X"), notification preferences, API key management.
+
+### 6.3 UX principles
+
+- **Explainability over everything:** the bot never does (or skips) something the UI
+  cannot explain. Every action and every inaction has a visible reason.
+- **Mode clarity:** paper vs. live is unmistakable — persistent colored banner per
+  coin, and promoting to live shows the paper results and requires typed confirmation.
+- **Kill switch always visible** on every screen: one click + confirm, wired directly
+  to the execution engine so it works even if the strategy engine is wedged.
+- **Critical-first notifications:** info (fills) / warning (stop hit, feed reconnect) /
+  critical (circuit breaker, news exit, feed stalled). Info is mutable; critical never.
+- **No vanity metrics:** the UI leads with net PnL after fees, max drawdown, and
+  performance vs. buy-and-hold — not win-rate dopamine.
+
+### 6.4 Control-plane security
+
+- Single-user by design (multi-tenant is a non-goal). Dashboard and API sit behind
+  authentication (token or password + session) and HTTPS via a reverse proxy — this
+  UI can move money and is never exposed unauthenticated.
+- Telegram commands accepted only from an allowlisted chat ID; destructive commands
+  require an inline confirmation tap.
+
+## 7. Technology choices
 
 | Concern | Choice | Why |
 |---|---|---|
@@ -220,12 +280,15 @@ by the time a headline is parsed, the price has moved. News is therefore used
 | Indicators | pandas-ta / TA-Lib + incremental implementations | Standard, well-tested |
 | Storage | SQLite + Parquet files first; TimescaleDB when needed | Zero ops to start; clean upgrade path |
 | API | FastAPI + Pydantic | Async, typed, quick |
+| Frontend | React + Tailwind + TradingView Lightweight Charts, WebSocket live updates, PWA | Familiar trader UI, first-class on mobile |
+| Control-plane auth | Reverse proxy with TLS (Caddy/Traefik) + session/token auth | The UI can move money |
+| Backups | Nightly SQLite/Parquet snapshot to object storage | Trade history and state survive VPS loss |
 | Backtest screening | vectorbt | Fast parameter sweeps |
 | Config | YAML per coin/strategy, Pydantic-validated | Reproducible runs |
 | Deployment | Docker Compose on a small VPS near the exchange region | 24/7 uptime, simple |
 | Secrets | Env vars; exchange API keys with **trade-only** permissions (withdrawals disabled), IP-allowlisted | Limits blast radius |
 
-## 7. Roadmap
+## 8. Roadmap
 
 **Phase 1 — Foundation (the part most bots skip and regret):**
 project skeleton, exchange adapter interface, market data service with persistence,
@@ -234,8 +297,10 @@ walk-forward report. Exit criteria: a backtest run is reproducible end-to-end.
 
 **Phase 2 — Paper trading:**
 live data feed, paper execution adapter, risk manager, Telegram alerts, control API
-with the add-a-coin flow. Exit criteria: bot paper-trades a coin unattended for 2+
-weeks with no crashes, no data gaps, and live signals matching backtest signals.
+with the add-a-coin flow, and the **dashboard MVP** (overview screen, coin detail
+with decision pipeline view, kill switch — reviewing paper results requires a UI).
+Exit criteria: bot paper-trades a coin unattended for 2+ weeks with no crashes, no
+data gaps, and live signals matching backtest signals.
 
 **Phase 3 — Live trading, small:**
 live execution adapter with reconciliation, circuit breakers and kill switch proven by
@@ -243,12 +308,13 @@ fault-injection tests, deploy to VPS. Start with small capital on one coin.
 Exit criteria: 4+ weeks live with execution quality (slippage, fill rate) matching the
 backtest model's assumptions.
 
-**Phase 4 — Edge expansion:**
+**Phase 4 — Edge expansion & full UX:**
 mean-reversion strategy + regime router, multi-coin portfolio limits, parameter
-re-optimization pipeline (scheduled walk-forward), P2 data sources, optional ML
+re-optimization pipeline (scheduled walk-forward), P2 data sources, full dashboard
+(add-a-coin wizard, trade journal, research screen with in-UI backtests), optional ML
 (e.g., regime classification) — only where it beats the simple baseline out of sample.
 
-## 8. Key risks and mitigations
+## 9. Key risks and mitigations
 
 - **Overfitting** — the #1 killer. Mitigation: walk-forward only, few parameters,
   penalize complexity, require out-of-sample beat of buy-and-hold net of fees.
@@ -261,7 +327,7 @@ re-optimization pipeline (scheduled walk-forward), P2 data sources, optional ML
 - **Key compromise.** Mitigation: trade-only API keys, IP allowlists, no withdrawal
   permission, secrets never in the repo.
 
-## 9. Profitability validation gates
+## 10. Profitability validation gates
 
 Planning cannot prove profitability — only data can. A strategy/coin combination is
 "validated" only when it has passed every gate below, in order, and it remains live
