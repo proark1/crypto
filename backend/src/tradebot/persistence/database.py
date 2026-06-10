@@ -10,6 +10,7 @@ from __future__ import annotations
 from types import TracebackType
 
 from sqlalchemy import BigInteger, Column, DateTime, MetaData, Numeric, Table, Text
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 metadata = MetaData()
@@ -46,6 +47,22 @@ fills_table = Table(
 )
 """Append-only: fills are facts. A surrogate id because one order can fill
 in several parts with identical timestamps."""
+
+decisions_table = Table(
+    "decisions",
+    metadata,
+    Column("id", BigInteger, primary_key=True, autoincrement=True),
+    Column("signal_id", Text, nullable=False),
+    Column("strategy_name", Text, nullable=False),
+    Column("symbol", Text, nullable=False, index=True),
+    Column("side", Text, nullable=False),
+    Column("stop_price_quote", Numeric, nullable=False),
+    Column("reasons", ARRAY(Text), nullable=False),
+    Column("outcome", Text, nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+)
+"""Every signal and its fate (submitted/vetoed/paused) — the audit trail the
+decision-pipeline UI reads. Append-only, like fills."""
 
 
 class Database:

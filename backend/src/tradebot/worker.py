@@ -25,7 +25,7 @@ from tradebot.core.events import EventBus
 from tradebot.engine import TradingEngine
 from tradebot.execution import FillSimulatorConfig, SimulatedExecutionAdapter
 from tradebot.marketdata.live_feed import LiveMarketDataFeed, OhlcvExchange
-from tradebot.persistence import CandleStore, Database, FillStore
+from tradebot.persistence import CandleStore, Database, DecisionStore, FillStore
 from tradebot.portfolio import Portfolio
 from tradebot.risk import RiskConfig, RiskManager
 from tradebot.strategies import TrendFollowingConfig, TrendFollowingStrategy
@@ -47,6 +47,7 @@ class Worker:
         self.bus = EventBus()
         self.candle_store = CandleStore(database)
         self.fill_store = FillStore(database)
+        self.decision_store = DecisionStore(database)
         self.portfolio = Portfolio(config.paper_initial_balance_quote)
         self.engine = TradingEngine(
             TrendFollowingStrategy(TrendFollowingConfig()),
@@ -55,6 +56,7 @@ class Worker:
             SimulatedExecutionAdapter(FillSimulatorConfig()),
             symbol=config.symbol,
             fill_store=self.fill_store,
+            decision_store=self.decision_store,
         )
         self.feed = LiveMarketDataFeed(exchange, config.symbol, self.candle_store, self.bus)
         self._database = database

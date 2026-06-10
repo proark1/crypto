@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
   ApiError,
+  fetchDecisions,
   fetchFills,
   fetchStatus,
   getStoredToken,
@@ -10,8 +11,9 @@ import {
   postResume,
   storeToken,
 } from "../api/client";
-import type { FillResponse, StatusResponse } from "../api/types";
+import type { DecisionResponse, FillResponse, StatusResponse } from "../api/types";
 import { Controls } from "../components/Controls";
+import { DecisionsPanel } from "../components/DecisionsPanel";
 import { FillsTable } from "../components/FillsTable";
 import { StatusCard } from "../components/StatusCard";
 
@@ -20,6 +22,7 @@ const POLL_INTERVAL_MS = 5000;
 export function OverviewScreen() {
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [fills, setFills] = useState<FillResponse[]>([]);
+  const [decisions, setDecisions] = useState<DecisionResponse[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [needsToken, setNeedsToken] = useState(getStoredToken() === "");
   const [tokenDraft, setTokenDraft] = useState("");
@@ -32,12 +35,17 @@ export function OverviewScreen() {
     // touch state, so stale data never overwrites fresh data.
     const requestId = ++requestIdRef.current;
     try {
-      const [nextStatus, nextFills] = await Promise.all([fetchStatus(), fetchFills()]);
+      const [nextStatus, nextFills, nextDecisions] = await Promise.all([
+        fetchStatus(),
+        fetchFills(),
+        fetchDecisions(),
+      ]);
       if (requestId !== requestIdRef.current) {
         return;
       }
       setStatus(nextStatus);
       setFills(nextFills);
+      setDecisions(nextDecisions);
       setError(null);
       setNeedsToken(false);
     } catch (caught) {
@@ -142,6 +150,7 @@ export function OverviewScreen() {
       ) : (
         <div className="text-sm text-zinc-500">loading…</div>
       )}
+      <DecisionsPanel decisions={decisions} />
       <FillsTable fills={fills} />
     </div>
   );

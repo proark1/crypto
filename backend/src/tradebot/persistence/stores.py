@@ -13,8 +13,13 @@ from datetime import datetime
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from tradebot.core.models import Candle, CandleInterval, Fill
-from tradebot.persistence.database import Database, candles_table, fills_table
+from tradebot.core.models import Candle, CandleInterval, Decision, Fill
+from tradebot.persistence.database import (
+    Database,
+    candles_table,
+    decisions_table,
+    fills_table,
+)
 
 
 def _require_aware(moment: datetime) -> None:
@@ -121,3 +126,30 @@ class FillStore:
             rows = (await connection.execute(statement)).mappings().all()
         # The surrogate ``id`` column is ignored by validation (not a model field).
         return [Fill.model_validate(dict(row)) for row in rows]
+
+
+class DecisionStore:
+    """Append-only record of every signal's fate; the explainability trail."""
+
+    def __init__(self, database: Database) -> None:
+        """Bind the store to ``database``."""
+        self._database = database
+
+    async def append(self, decision: Decision) -> None:
+        """Persist one decision."""
+        row = decision.model_dump()
+        row["reasons"] = list(decision.reasons)  # ARRAY column wants a list
+        async with self._database.engine.begin() as connection:
+            await connection.execute(decisions_table.insert(), [row])
+
+    async def fetch_recent(self, symbol: str, limit: int = 50) -> list[Decision]:
+        """Return the newest ``limit`` decisions for ``symbol``, newest first."""
+        statement = (
+            select(decisions_table)
+            .where(decisions_table.c.symbol == symbol)
+            .order_by(decisions_table.c.id.desc())
+            .limit(limit)
+        )
+        async with self._database.engine.connect() as connection:
+            rows = (await connection.execute(statement)).mappings().all()
+        return [Decision.model_validate(dict(row)) for row in rows]

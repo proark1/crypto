@@ -19,7 +19,7 @@ from pydantic import BaseModel
 from tradebot.core.config import AppConfig
 from tradebot.core.models import CandleInterval
 from tradebot.engine import TradingEngine
-from tradebot.persistence import CandleStore, FillStore
+from tradebot.persistence import CandleStore, DecisionStore, FillStore
 from tradebot.portfolio import Portfolio
 
 
@@ -49,6 +49,11 @@ class BotState(Protocol):
     @property
     def engine(self) -> TradingEngine:
         """The trading loop, for pause/resume/kill commands."""
+        ...
+
+    @property
+    def decision_store(self) -> DecisionStore:
+        """The explainability trail: every signal and its fate."""
         ...
 
 
@@ -82,6 +87,19 @@ class CommandResponse(BaseModel):
 
     paused: bool
     detail: str
+
+
+class DecisionResponse(BaseModel):
+    """One signal and its fate, with the reasons shown verbatim."""
+
+    signal_id: str
+    strategy_name: str
+    symbol: str
+    side: str
+    stop_price_quote: str
+    reasons: list[str]
+    outcome: str
+    created_at: str
 
 
 class FillResponse(BaseModel):
@@ -183,6 +201,23 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
             else "halted; no position to flatten"
         )
         return CommandResponse(paused=True, detail=detail)
+
+    @app.get("/decisions")
+    async def get_decisions(limit: int = 50) -> list[DecisionResponse]:
+        decisions = await state.decision_store.fetch_recent(state.config.symbol, limit)
+        return [
+            DecisionResponse(
+                signal_id=decision.signal_id,
+                strategy_name=decision.strategy_name,
+                symbol=decision.symbol,
+                side=decision.side.value,
+                stop_price_quote=str(decision.stop_price_quote),
+                reasons=list(decision.reasons),
+                outcome=decision.outcome.value,
+                created_at=decision.created_at.isoformat(),
+            )
+            for decision in decisions
+        ]
 
     @app.get("/fills")
     async def get_fills() -> list[FillResponse]:

@@ -8,10 +8,10 @@ from decimal import Decimal
 import pytest
 
 from tradebot.core.events import CandleClosed, EventBus, FillRecorded
-from tradebot.core.models import Candle, CandleInterval, Fill, Side
+from tradebot.core.models import Candle, CandleInterval, DecisionOutcome, Fill, Side
 from tradebot.engine import TradingEngine
 from tradebot.execution import FillSimulatorConfig, SimulatedExecutionAdapter
-from tradebot.persistence import Database, FillStore
+from tradebot.persistence import Database, DecisionStore, FillStore
 from tradebot.persistence.database import metadata
 from tradebot.portfolio import Portfolio
 from tradebot.risk import RiskConfig, RiskManager
@@ -62,7 +62,10 @@ def make_candle(index: int, close: float, symbol: str = "BTC/USDT") -> Candle:
 
 
 def make_engine(
-    portfolio: Portfolio, fill_store: FillStore | None = None, symbol: str | None = "BTC/USDT"
+    portfolio: Portfolio,
+    fill_store: FillStore | None = None,
+    symbol: str | None = "BTC/USDT",
+    decision_store: DecisionStore | None = None,
 ) -> TradingEngine:
     strategy = TrendFollowingStrategy(
         TrendFollowingConfig(fast_ema_period=3, slow_ema_period=6, atr_period=3)
@@ -74,6 +77,7 @@ def make_engine(
         SimulatedExecutionAdapter(FillSimulatorConfig()),
         symbol=symbol,
         fill_store=fill_store,
+        decision_store=decision_store,
     )
 
 
@@ -158,6 +162,28 @@ class TestPaperFlowOverBus:
         await engine.process_candle(make_candle(0, 100.0))
         with pytest.raises(ValueError, match="bound to BTC/USDT"):
             await engine.process_candle(make_candle(1, 100.0, symbol="ETH/USDT"))
+
+
+class TestDecisionJournal:
+    async def test_submitted_and_paused_outcomes_are_recorded(self, database: Database) -> None:
+        await database.create_schema()
+        store = DecisionStore(database)
+        portfolio = Portfolio(INITIAL_BALANCE)
+        engine = make_engine(portfolio, decision_store=store)
+
+        # Rally produces a submitted entry...
+        for index, close in enumerate(CLOSES[:16]):
+            await engine.process_candle(make_candle(index, close))
+        # ...then pause and ride the collapse: the exit signal is discarded.
+        engine.pause()
+        for offset, close in enumerate(CLOSES[16:]):
+            await engine.process_candle(make_candle(16 + offset, close))
+
+        decisions = await store.fetch_recent("BTC/USDT")
+        outcomes = [d.outcome for d in decisions]
+        assert DecisionOutcome.SUBMITTED in outcomes
+        assert DecisionOutcome.PAUSED in outcomes
+        assert all(d.reasons for d in decisions)  # explainability: never empty
 
 
 class TestPauseAndKill:
