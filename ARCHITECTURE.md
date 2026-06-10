@@ -330,7 +330,7 @@ a settings page; radical explainability is the UX differentiator here.
 | Concern | Choice | Why |
 |---|---|---|
 | Language | Python 3.12+, fully async (asyncio) | Best ecosystem for TA/backtesting; spot TA trading at 1m+ timescale doesn't need lower latency |
-| Primary exchange | **Binance** if available in user's region; **Kraken** as regulated alternative; **Coinbase Advanced Trade** if US-only (accepting higher fees) | Liquidity, 0.1% fees, best API & free historical data; fee level directly determines how much edge a strategy needs |
+| Primary exchange | **Deferred to deployment config.** All market data and execution code is exchange-agnostic via CCXT; the venue is an env var chosen at Phase 3 by region/fees (Binance 0.1% if available; Kraken as regulated alternative; Coinbase accepting higher fees). Binance public dumps remain the backtest dataset regardless of trading venue. | Keeps the venue decision reversible; fee level still determines how much edge a strategy needs |
 | Exchange connectivity | CCXT + native WS client for primary exchange | Breadth + low-latency streams; switching exchanges later is cheap behind the adapter |
 | Indicators | pandas-ta / TA-Lib + incremental implementations | Standard, well-tested |
 | Storage | **Railway Postgres** from day one (candles, trades, state); Parquet export for research datasets | Railway's filesystem is ephemeral, so SQLite is out; managed Postgres is zero-ops here and simplifies "one code path" |
