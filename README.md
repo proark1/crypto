@@ -49,9 +49,9 @@ asyncpg DSN (`postgresql+asyncpg://user:pass@host:port/db`).
 
 | Variable | Required | Example / default |
 |---|---|---|
-| `TRADEBOT_DATABASE_URL` | yes | `postgresql+asyncpg://...` (from the Postgres service) |
+| `TRADEBOT_DATABASE_URL` | yes | `postgresql+asyncpg://${{Postgres.PGUSER}}:${{Postgres.PGPASSWORD}}@${{Postgres.PGHOST}}:${{Postgres.PGPORT}}/${{Postgres.PGDATABASE}}` (Railway reference variables — the default `DATABASE_URL` uses the plain `postgresql://` scheme, which asyncpg's SQLAlchemy driver does not accept) |
 | `TRADEBOT_API_TOKEN` | for the API/dashboard | long random string; API stays off without it |
-| `TRADEBOT_API_PORT` | match Railway's `PORT` | `8000` |
+| `TRADEBOT_API_PORT` | yes | `${{PORT}}` (Railway assigns the port dynamically) |
 | `TRADEBOT_EXCHANGE_ID` | no | `binance` (any CCXT id: `kraken`, `coinbase`, ...) |
 | `TRADEBOT_SYMBOL` | no | `BTC/USDT` |
 | `TRADEBOT_PAPER_INITIAL_BALANCE_QUOTE` | no | `10000` |
