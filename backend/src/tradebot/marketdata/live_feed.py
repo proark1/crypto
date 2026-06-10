@@ -48,6 +48,15 @@ class OhlcvExchange(Protocol):
         ...
 
 
+def _is_well_formed(row: OhlcvRow) -> bool:
+    """Return True if the row has a timestamp and all five OHLCV fields.
+
+    Some venues occasionally emit rows with ``None`` fields through CCXT; a
+    single such row must degrade to a logged drop, never a crashed feed.
+    """
+    return len(row) >= 6 and all(row[i] is not None for i in range(6))
+
+
 def _row_to_candle(row: OhlcvRow, symbol: str, interval: CandleInterval) -> Candle:
     open_time = datetime.fromtimestamp(row[0] / 1000, tz=UTC)
     return Candle(
@@ -82,6 +91,9 @@ class OhlcvCandleTracker:
     def update(self, rows: Sequence[OhlcvRow]) -> list[Candle]:
         """Absorb a snapshot; return newly closed candles in time order."""
         for row in rows:
+            if not _is_well_formed(row):
+                logger.warning("dropping malformed OHLCV row for %s: %r", self._symbol, row)
+                continue
             timestamp_ms = int(row[0])
             if self._last_emitted_ms is not None and timestamp_ms <= self._last_emitted_ms:
                 continue  # stale repeat of an already-closed candle
@@ -130,25 +142,50 @@ class LiveMarketDataFeed:
         self._stopping = True
 
     async def backfill(self) -> int:
-        """Fetch candles missed since the newest stored one; returns count.
+        """Page forward from the newest stored candle until caught up.
 
-        The last row of a REST snapshot is the in-progress candle and is
-        always discarded — only closed candles are ever stored.
+        Pagination matters: an outage longer than one REST page (typically
+        500-1000 candles) must still repair completely. Each page's last row
+        is discarded as potentially in progress — safe under pagination,
+        because a *closed* last row is simply re-fetched as the first row of
+        the next page (the resume point is the last *inserted* candle).
         """
+        total_inserted = 0
         latest = await self._store.latest_open_time(self._symbol, self._interval)
-        since_ms: int | None = None
-        if latest is not None:
-            since_ms = int((latest + self._interval.duration).timestamp() * 1000)
-        rows = await self._exchange.fetch_ohlcv(self._symbol, self._interval.value, since=since_ms)
-        if len(rows) <= 1:
-            return 0
-        candles = [_row_to_candle(row, self._symbol, self._interval) for row in rows[:-1]]
-        candles = [c for c in candles if latest is None or c.open_time > latest]
-        await self._store.insert_batch(candles)
-        return len(candles)
+        while True:
+            since_ms: int | None = None
+            if latest is not None:
+                since_ms = utc_ms(latest + self._interval.duration)
+            rows = await self._exchange.fetch_ohlcv(
+                self._symbol, self._interval.value, since=since_ms
+            )
+            if len(rows) <= 1:
+                break
+            candles = [
+                _row_to_candle(row, self._symbol, self._interval)
+                for row in rows[:-1]
+                if _is_well_formed(row)
+            ]
+            candles = [c for c in candles if latest is None or c.open_time > latest]
+            if not candles:
+                break
+            await self._store.insert_batch(candles)
+            total_inserted += len(candles)
+            latest = candles[-1].open_time
+        return total_inserted
 
     async def run(self) -> None:
-        """Stream until :meth:`stop` is called, reconnecting with backoff."""
+        """Stream until :meth:`stop` is called, reconnecting with backoff.
+
+        Backfills once before streaming: candles missed while the bot was
+        offline must be repaired even if the first connect succeeds.
+        """
+        try:
+            repaired = await self.backfill()
+            if repaired:
+                logger.info("startup backfill repaired %d candles for %s", repaired, self._symbol)
+        except Exception:
+            logger.warning("startup backfill failed; stream will repair later", exc_info=True)
         failures = 0
         while not self._stopping:
             try:

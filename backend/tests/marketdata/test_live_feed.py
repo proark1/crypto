@@ -45,9 +45,11 @@ class FakeExchange:
         self,
         watch_script: list[list[OhlcvRow] | Exception],
         rest_rows: list[OhlcvRow] | None = None,
+        page_limit: int | None = None,
     ) -> None:
         self.watch_script = list(watch_script)
         self.rest_rows = rest_rows or []
+        self.page_limit = page_limit
         self.rest_calls: list[int | None] = []
 
     async def watch_ohlcv(self, symbol: str, timeframe: str) -> list[OhlcvRow]:
@@ -62,9 +64,10 @@ class FakeExchange:
         self, symbol: str, timeframe: str, since: int | None = None, limit: int | None = None
     ) -> list[OhlcvRow]:
         self.rest_calls.append(since)
-        if since is None:
-            return self.rest_rows
-        return [r for r in self.rest_rows if r[0] >= since]
+        rows = self.rest_rows if since is None else [r for r in self.rest_rows if r[0] >= since]
+        if self.page_limit is not None:
+            rows = rows[: self.page_limit]
+        return rows
 
 
 class StopFeed(Exception):
@@ -114,6 +117,13 @@ class TestTracker:
         closed = tracker.update([row(0), row(1), row(2), row(3)])
         assert [c.open_time for c in closed] == [BASE_TIME + timedelta(minutes=2)]
 
+    def test_rows_with_none_fields_are_dropped_not_crashed(self) -> None:
+        tracker = OhlcvCandleTracker("BTC/USDT", CandleInterval.M1)
+        broken: list[float | None] = [BASE_MS, 100.0, 101.0, 99.0, 100.0, None]
+        closed = tracker.update([broken, row(1), row(2)])  # type: ignore[list-item]
+        # The broken bucket is dropped entirely; the stream keeps flowing.
+        assert [c.open_time for c in closed] == [BASE_TIME + timedelta(minutes=1)]
+
 
 class TestFeed:
     async def test_closed_candles_are_persisted_and_published(self, database: Database) -> None:
@@ -155,7 +165,8 @@ class TestFeed:
             BASE_TIME + timedelta(minutes=2),
             BASE_TIME + timedelta(minutes=3),
         ]
-        assert exchange.rest_calls == [BASE_MS + 1 * MINUTE_MS]  # resumed after stored minute 0
+        # Startup backfill (None, then resume page) plus the post-disconnect repair.
+        assert exchange.rest_calls == [None, BASE_MS + 3 * MINUTE_MS, BASE_MS + 3 * MINUTE_MS]
 
     async def test_malformed_candles_are_quarantined(self, database: Database) -> None:
         store = CandleStore(database)
@@ -186,7 +197,7 @@ class TestFeed:
 
         inserted = await feed.backfill()
         assert inserted == 2  # row(2) is in progress
-        assert exchange.rest_calls == [None]
+        assert exchange.rest_calls == [None, BASE_MS + 2 * MINUTE_MS]  # final caught-up page
 
     async def test_backfill_resumes_after_latest_stored(self, database: Database) -> None:
         store = CandleStore(database)
@@ -197,7 +208,31 @@ class TestFeed:
         exchange.rest_rows = [row(3), row(4), row(5)]
         inserted = await feed.backfill()
         assert inserted == 2  # 3 and 4; 5 in progress
-        assert exchange.rest_calls[-1] == BASE_MS + 3 * MINUTE_MS
+        assert BASE_MS + 3 * MINUTE_MS in exchange.rest_calls  # resumed after stored minute 2
+
+    async def test_backfill_paginates_through_long_outages(self, database: Database) -> None:
+        store = CandleStore(database)
+        exchange = FakeExchange([], rest_rows=[row(minute) for minute in range(10)], page_limit=4)
+        feed = LiveMarketDataFeed(exchange, "BTC/USDT", store, EventBus())
+
+        inserted = await feed.backfill()
+        assert inserted == 9  # minutes 0-8; minute 9 is in progress
+        stored = await store.fetch_range(
+            "BTC/USDT", CandleInterval.M1, BASE_TIME, BASE_TIME + timedelta(minutes=60)
+        )
+        assert len(stored) == 9
+        assert len(exchange.rest_calls) > 2  # genuinely paged, not one big fetch
+
+    async def test_run_backfills_on_startup_before_streaming(self, database: Database) -> None:
+        store = CandleStore(database)
+        exchange = FakeExchange([], rest_rows=[row(0), row(1), row(2)])
+        feed = LiveMarketDataFeed(exchange, "BTC/USDT", store, EventBus())
+        await run_feed_until_script_ends(feed, exchange)  # empty script: stops at once
+
+        stored = await store.fetch_range(
+            "BTC/USDT", CandleInterval.M1, BASE_TIME, BASE_TIME + timedelta(minutes=60)
+        )
+        assert [c.open_time for c in stored] == [BASE_TIME, BASE_TIME + timedelta(minutes=1)]
 
     async def test_backfill_when_caught_up_inserts_nothing(self, database: Database) -> None:
         store = CandleStore(database)
