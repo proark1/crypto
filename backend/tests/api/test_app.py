@@ -10,6 +10,7 @@ import pytest
 
 from tradebot.api import create_app, create_health_only_app
 from tradebot.core.config import AppConfig, TradingMode
+from tradebot.core.metrics import MetricsCollector
 from tradebot.core.models import (
     Candle,
     CandleInterval,
@@ -22,6 +23,7 @@ from tradebot.engine import TradingEngine
 from tradebot.evaluation.runner import EvaluationRunConfig
 from tradebot.evaluation.sweep import SweepConfig
 from tradebot.execution import FillSimulatorConfig, SimulatedExecutionAdapter
+from tradebot.news import NewsFlags
 from tradebot.persistence import CandleStore, Database, DecisionStore, EvaluationStore, FillStore
 from tradebot.persistence.database import metadata
 from tradebot.portfolio import Portfolio
@@ -64,6 +66,8 @@ class StubBot:
         }
         self.engine = self.engines[self.config.symbol_list()[0]]
         self.evaluation_store = EvaluationStore(database)
+        self.metrics = MetricsCollector()
+        self.news_flags = NewsFlags()
         self._evaluation_running = False
         self._sweep_running = False
 
@@ -923,6 +927,32 @@ class TestSweeps:
         assert cancelled.status_code == 200
         assert again.status_code == 409
         assert missing.status_code == 404
+
+
+class TestMetrics:
+    async def test_metrics_render_gauges_and_counters(self, database: Database) -> None:
+        bot = StubBot(database)
+        bot.metrics.candles_total["BTC/USDT"] = 7
+        await bot.candle_store.insert_batch([make_candle(close="110")])
+
+        async with make_client(bot) as client:
+            response = await client.get("/metrics")
+
+        assert response.status_code == 200
+        text = response.text
+        assert "tradebot_up 1" in text
+        assert "tradebot_quote_balance 10000.0" in text
+        assert 'tradebot_candles_processed_total{symbol="BTC/USDT"} 7' in text
+        assert 'tradebot_last_candle_age_seconds{symbol="BTC/USDT"}' in text
+        assert "tradebot_breaker_tripped 0" in text
+
+    async def test_metrics_require_the_bearer_token(self, database: Database) -> None:
+        """Balances live in here; an unauthenticated scraper gets nothing."""
+        app = create_app(StubBot(database), TOKEN)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://control"
+        ) as client:
+            assert (await client.get("/metrics")).status_code == 401
 
 
 class TestFills:

@@ -134,6 +134,40 @@ class AppConfig(BaseSettings):
         EventCalendar.from_json(self.event_calendar_json)
         return self
 
+    backup_s3_endpoint: str | None = None
+    """S3-compatible endpoint for scheduled DB backups (e.g. an R2 URL).
+    Backups run only when endpoint, bucket, and both keys are all set."""
+
+    backup_s3_bucket: str | None = None
+    backup_s3_access_key: str | None = None
+    backup_s3_secret_key: str | None = None
+    backup_s3_region: str = "auto"
+    """R2 uses the literal region ``auto``; AWS wants a real one."""
+
+    backup_interval_hours: int = Field(default=24, ge=1)
+    backup_prefix: str = "tradebot"
+
+    @model_validator(mode="after")
+    def _backup_config_is_all_or_nothing(self) -> AppConfig:
+        """Reject half-configured backups at deploy: a typo is not a choice.
+
+        Backups that silently never run are exactly the failure §7 backups
+        exist to prevent.
+        """
+        values = (
+            self.backup_s3_endpoint,
+            self.backup_s3_bucket,
+            self.backup_s3_access_key,
+            self.backup_s3_secret_key,
+        )
+        configured = [value for value in values if value]
+        if configured and len(configured) != len(values):
+            raise ValueError(
+                "backup misconfigured: endpoint, bucket, access key, and secret key "
+                "must all be set together (or none of them)"
+            )
+        return self
+
     history_backfill_days: int = Field(default=0, ge=0)
     """How many days of candle history to fetch for a symbol that has none
     stored yet (first boot, newly added coin). Binance-class venues serve

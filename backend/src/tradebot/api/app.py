@@ -16,16 +16,19 @@ from typing import Any, Protocol
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import PlainTextResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 
 from tradebot.core.config import AppConfig
-from tradebot.core.models import Candle, CandleInterval
+from tradebot.core.metrics import MetricsCollector, format_metric
+from tradebot.core.models import Candle, CandleInterval, utc_now
 from tradebot.engine import TradingEngine
 from tradebot.evaluation.models import LearningFinding
 from tradebot.evaluation.replay import load_replay
 from tradebot.evaluation.runner import EvaluationRunConfig
 from tradebot.evaluation.sweep import DEFAULT_TREND_CANDIDATES, SweepCandidate, SweepConfig
+from tradebot.news import NewsFlags
 from tradebot.persistence import CandleStore, DecisionStore, EvaluationStore, FillStore
 from tradebot.portfolio import Portfolio
 
@@ -90,6 +93,16 @@ class BotState(Protocol):
 
     def cancel_sweep(self, sweep_id: int) -> bool:
         """Cancel the in-flight sweep; False when it is not running."""
+        ...
+
+    @property
+    def metrics(self) -> MetricsCollector:
+        """Bus-fed counters for the /metrics endpoint."""
+        ...
+
+    @property
+    def news_flags(self) -> NewsFlags:
+        """Active negative-news flags (gauge + status surfaces)."""
         ...
 
 
@@ -941,6 +954,56 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
             )
         first_engine = next(iter(state.engines.values()))
         return CommandResponse(paused=first_engine.paused, detail=f"sweep {sweep_id} cancelled")
+
+    @protected.get("/metrics")
+    async def get_metrics() -> PlainTextResponse:
+        """Prometheus text exposition (ARCHITECTURE.md 4.9).
+
+        Behind the bearer token on purpose: balances and positions are in
+        here, and Prometheus scrapes support bearer auth natively. Floats
+        are fine in this one place — metrics are display, not accounting.
+        """
+        now = utc_now()
+        portfolio = state.portfolio
+        lines: list[str] = [
+            "# TYPE tradebot_up gauge",
+            format_metric("tradebot_up", 1),
+            "# TYPE tradebot_quote_balance gauge",
+            format_metric("tradebot_quote_balance", float(portfolio.quote_balance)),
+            "# TYPE tradebot_realized_pnl_quote gauge",
+            format_metric("tradebot_realized_pnl_quote", float(portfolio.realized_pnl_quote())),
+            "# TYPE tradebot_open_positions gauge",
+            format_metric("tradebot_open_positions", len(portfolio.positions)),
+        ]
+        lines.append("# TYPE tradebot_engine_paused gauge")
+        for symbol, engine in state.engines.items():
+            lines.append(
+                format_metric("tradebot_engine_paused", int(engine.paused), {"symbol": symbol})
+            )
+        first_engine = next(iter(state.engines.values()), None)
+        if first_engine is not None:
+            lines.append("# TYPE tradebot_breaker_tripped gauge")
+            lines.append(
+                format_metric(
+                    "tradebot_breaker_tripped",
+                    int(first_engine.breakers.tripped_reason is not None),
+                )
+            )
+        # Data-feed lag per symbol: the staleness alarm §4.9 asks for.
+        lines.append("# TYPE tradebot_last_candle_age_seconds gauge")
+        for symbol in state.engines:
+            latest = await state.candle_store.latest_candle(symbol, CandleInterval.M1)
+            if latest is not None:
+                age = (now - latest.close_time).total_seconds()
+                lines.append(
+                    format_metric("tradebot_last_candle_age_seconds", age, {"symbol": symbol})
+                )
+        lines.append("# TYPE tradebot_news_flags_active gauge")
+        lines.append(
+            format_metric("tradebot_news_flags_active", len(state.news_flags.active_flags(now)))
+        )
+        lines.extend(state.metrics.render_counters())
+        return PlainTextResponse("\n".join(lines) + "\n")
 
     @protected.get("/fills")
     async def get_fills(symbol: str | None = Query(None)) -> list[FillResponse]:
