@@ -6,6 +6,7 @@
 
 import type {
   CandleResponse,
+  EvaluationRunResponse,
   CommandResponse,
   DecisionResponse,
   FillResponse,
@@ -121,4 +122,24 @@ export function approveProposal(signalId: string): Promise<CommandResponse> {
 
 export function rejectProposal(signalId: string): Promise<CommandResponse> {
   return request<CommandResponse>("/proposals/reject", "POST", { signal_id: signalId });
+}
+
+export function fetchEvaluations(): Promise<EvaluationRunResponse[]> {
+  return request<EvaluationRunResponse[]>("/evaluations", "GET");
+}
+
+export function fetchEvaluation(runId: number): Promise<EvaluationRunResponse> {
+  return request<EvaluationRunResponse>(`/evaluations/${String(runId)}`, "GET");
+}
+
+export function startEvaluation(body: {
+  timeframes: string[];
+  history_days: number;
+  scenario_count: number;
+}): Promise<{ run_id: number; detail: string }> {
+  return request<{ run_id: number; detail: string }>("/evaluations", "POST", body);
+}
+
+export function cancelEvaluation(runId: number): Promise<CommandResponse> {
+  return request<CommandResponse>(`/evaluations/${String(runId)}/cancel`, "POST");
 }

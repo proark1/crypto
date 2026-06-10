@@ -25,6 +25,7 @@ import type {
   StatusResponse,
 } from "../api/types";
 import { CandleChart } from "../components/CandleChart";
+import { ResearchScreen } from "./ResearchScreen";
 import { CoinManager } from "../components/CoinManager";
 import { CoinTabs } from "../components/CoinTabs";
 import { Controls } from "../components/Controls";
@@ -49,6 +50,7 @@ export function OverviewScreen() {
   // null until the first status arrives: the backend's first configured
   // coin is the default, and the frontend must not hardcode one.
   const [selectedSymbol, setSelectedSymbol] = useState<string | null>(null);
+  const [screen, setScreen] = useState<"trade" | "research">("trade");
   const requestIdRef = useRef(0);
 
   const refresh = useCallback(async () => {
@@ -182,8 +184,26 @@ export function OverviewScreen() {
   return (
     <div className="mx-auto max-w-4xl space-y-4 p-4">
       <header className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-zinc-100">tradebot</h1>
-        {status && (
+        <div className="flex items-center gap-4">
+          <h1 className="text-2xl font-bold text-zinc-100">tradebot</h1>
+          <nav className="flex gap-1 rounded-lg bg-zinc-900 p-1">
+            {(["trade", "research"] as const).map((tab) => (
+              <button
+                key={tab}
+                type="button"
+                onClick={() => {
+                  setScreen(tab);
+                }}
+                className={`rounded-md px-3 py-1 text-sm font-semibold ${
+                  screen === tab ? "bg-zinc-700 text-zinc-100" : "text-zinc-400"
+                }`}
+              >
+                {tab}
+              </button>
+            ))}
+          </nav>
+        </div>
+        {screen === "trade" && status && (
           <Controls
             paused={status.paused}
             disabled={commandPending}
@@ -203,7 +223,8 @@ export function OverviewScreen() {
           {error}
         </div>
       )}
-      {status && (
+      {screen === "research" && <ResearchScreen />}
+      {screen === "trade" && status && (
         <CoinTabs
           symbols={status.symbols}
           selected={status.symbol}
@@ -211,7 +232,7 @@ export function OverviewScreen() {
           onSelect={setSelectedSymbol}
         />
       )}
-      {status && (
+      {screen === "trade" && status && (
         <CoinManager
           selected={status.symbol}
           disabled={commandPending}
@@ -219,24 +240,29 @@ export function OverviewScreen() {
           onRemove={(symbol) => void handleRemoveCoin(symbol)}
         />
       )}
-      {status ? (
-        <StatusCard status={status} />
-      ) : (
-        <div className="text-sm text-zinc-500">loading…</div>
+      {screen === "trade" &&
+        (status ? (
+          <StatusCard status={status} />
+        ) : (
+          <div className="text-sm text-zinc-500">loading…</div>
+        ))}
+      {screen === "trade" && (
+        <>
+          <ProposalsPanel
+            proposals={proposals}
+            disabled={commandPending}
+            onApprove={(signalId) => void runCommand(() => approveProposal(signalId))}
+            onReject={(signalId) => void runCommand(() => rejectProposal(signalId))}
+          />
+          <CandleChart
+            candles={candles}
+            // Markers must match the charted coin; the journal spans them all.
+            fills={status ? fills.filter((fill) => fill.symbol === status.symbol) : fills}
+          />
+          <DecisionsPanel decisions={decisions} />
+          <FillsTable fills={fills} />
+        </>
       )}
-      <ProposalsPanel
-        proposals={proposals}
-        disabled={commandPending}
-        onApprove={(signalId) => void runCommand(() => approveProposal(signalId))}
-        onReject={(signalId) => void runCommand(() => rejectProposal(signalId))}
-      />
-      <CandleChart
-        candles={candles}
-        // Markers must match the charted coin; the journal spans them all.
-        fills={status ? fills.filter((fill) => fill.symbol === status.symbol) : fills}
-      />
-      <DecisionsPanel decisions={decisions} />
-      <FillsTable fills={fills} />
     </div>
   );
 }
