@@ -68,7 +68,7 @@ class Worker:
         return len(fills)
 
     async def run(self) -> None:
-        """Start the bot and block until :meth:`stop` is called."""
+        """Start the bot (and the control API, if configured) until stopped."""
         await self._database.create_schema()
         replayed = await self.replay_journal()
         position = self.portfolio.position(self.config.symbol)
@@ -81,8 +81,29 @@ class Worker:
             self.portfolio.quote_balance,
         )
         self.engine.attach_to(self.bus)
-        await self.feed.run()
+        api_task = self._start_api_if_configured()
+        try:
+            await self.feed.run()
+        finally:
+            if api_task is not None:
+                api_task.cancel()
         logger.info("worker stopped cleanly")
+
+    def _start_api_if_configured(self) -> asyncio.Task[None] | None:
+        """Serve the control API as a background task when a token is set."""
+        if self.config.api_token is None:
+            logger.info("control API disabled: TRADEBOT_API_TOKEN is not set")
+            return None
+        import uvicorn  # local import: only the running worker serves HTTP
+
+        from tradebot.api import create_app
+
+        app = create_app(self, self.config.api_token)
+        server = uvicorn.Server(
+            uvicorn.Config(app, host="0.0.0.0", port=self.config.api_port, log_level="warning")
+        )
+        logger.info("control API listening on port %d", self.config.api_port)
+        return asyncio.create_task(server.serve())
 
     def stop(self) -> None:
         """Request shutdown (also wired to SIGTERM for Railway deploys)."""

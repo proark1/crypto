@@ -74,6 +74,21 @@ class CandleStore:
             rows = (await connection.execute(statement)).mappings().all()
         return [Candle.model_validate(dict(row)) for row in rows]
 
+    async def latest_candle(self, symbol: str, interval: CandleInterval) -> Candle | None:
+        """Return the newest stored candle — the mark price for valuations."""
+        statement = (
+            select(candles_table)
+            .where(
+                candles_table.c.symbol == symbol,
+                candles_table.c.interval == interval.value,
+            )
+            .order_by(candles_table.c.open_time.desc())
+            .limit(1)
+        )
+        async with self._database.engine.connect() as connection:
+            row = (await connection.execute(statement)).mappings().first()
+        return None if row is None else Candle.model_validate(dict(row))
+
     async def latest_open_time(self, symbol: str, interval: CandleInterval) -> datetime | None:
         """Return the newest stored open time — where backfill resumes from."""
         statement = select(func.max(candles_table.c.open_time)).where(
