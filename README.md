@@ -43,8 +43,9 @@ other mode.
 
 ### 1. Postgres
 
-Add Railway's Postgres. Note its connection string; the bot needs it as an
-asyncpg DSN (`postgresql+asyncpg://user:pass@host:port/db`).
+Add Railway's Postgres. Its default `DATABASE_URL` can be used as-is — the
+bot accepts any standard Postgres DSN and switches it to its async driver
+internally.
 
 ### 2. `bot` (backend worker + control API)
 
@@ -56,7 +57,7 @@ asyncpg DSN (`postgresql+asyncpg://user:pass@host:port/db`).
 
 | Variable | Required | Example / default |
 |---|---|---|
-| `TRADEBOT_DATABASE_URL` | yes | `postgresql+asyncpg://${{Postgres.PGUSER}}:${{Postgres.PGPASSWORD}}@${{Postgres.PGHOST}}:${{Postgres.PGPORT}}/${{Postgres.PGDATABASE}}` (Railway reference variables — the default `DATABASE_URL` uses the plain `postgresql://` scheme, which asyncpg's SQLAlchemy driver does not accept) |
+| `TRADEBOT_DATABASE_URL` | yes | `${{Postgres.DATABASE_URL}}` — any standard Postgres DSN works; the bot rewrites the scheme to its asyncpg driver itself |
 | `TRADEBOT_API_TOKEN` | for the API/dashboard | long random string; API stays off without it |
 | `TRADEBOT_API_PORT` | no | falls back to Railway's injected `PORT` automatically |
 | `TRADEBOT_EXCHANGE_ID` | no | `binance` (any CCXT id: `kraken`, `coinbase`, ...) |
