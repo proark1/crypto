@@ -10,6 +10,8 @@ composition root.
 from __future__ import annotations
 
 import secrets
+from collections.abc import Mapping
+from decimal import Decimal
 from typing import Protocol
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, status
@@ -48,8 +50,8 @@ class BotState(Protocol):
         ...
 
     @property
-    def engine(self) -> TradingEngine:
-        """The trading loop, for pause/resume/kill commands."""
+    def engines(self) -> Mapping[str, TradingEngine]:
+        """One trading loop per symbol, for pause/resume/kill commands."""
         ...
 
     @property
@@ -81,6 +83,7 @@ class StatusResponse(BaseModel):
     mode: str
     paused: bool
     symbol: str
+    symbols: list[str]
     exchange_id: str
     quote_currency: str
     quote_balance: str
@@ -202,6 +205,38 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
                 detail="missing or invalid bearer token",
             )
 
+    configured_symbols = list(state.config.symbol_list())
+
+    def resolve_symbol(symbol: str | None) -> str:
+        """Default to the first configured symbol; 404 unknown ones."""
+        if symbol is None:
+            return configured_symbols[0]
+        if symbol not in state.engines:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"unknown symbol {symbol!r}; configured: {configured_symbols}",
+            )
+        return symbol
+
+    async def account_equity() -> Decimal | None:
+        """Mark every open position at its latest stored close; ``None`` if any lacks one.
+
+        Marks are gathered for every *configured* symbol first, and only then
+        is the portfolio read — synchronously, with no awaits in between. An
+        await between reading positions and valuing them would let a fill on
+        the trading loop open a position the marks don't cover, turning a
+        status request into a 500.
+        """
+        marks: dict[str, Decimal] = {}
+        for configured in configured_symbols:
+            candle = await state.candle_store.latest_candle(configured, CandleInterval.M1)
+            if candle is not None:
+                marks[configured] = candle.close_quote
+        for open_symbol in state.portfolio.positions:
+            if open_symbol not in marks:
+                return None  # refuse to guess, never wrong
+        return state.portfolio.equity_quote(marks)
+
     app = FastAPI(title="tradebot control plane")
     # The dashboard is served from a different origin than the API (two
     # Railway services), so without these headers the browser blocks every
@@ -231,19 +266,17 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
         return {"status": "ok"}
 
     @protected.get("/status")
-    async def get_status() -> StatusResponse:
+    async def get_status(symbol: str | None = Query(None)) -> StatusResponse:
         portfolio = state.portfolio
-        symbol = state.config.symbol
-        latest = await state.candle_store.latest_candle(symbol, CandleInterval.M1)
-        position = portfolio.position(symbol)
+        selected = resolve_symbol(symbol)
+        engine = state.engines[selected]
+        latest = await state.candle_store.latest_candle(selected, CandleInterval.M1)
+        position = portfolio.position(selected)
 
         mark_price = latest.close_quote if latest is not None else None
-        if mark_price is not None:
-            equity = portfolio.equity_quote({symbol: mark_price})
-        elif position is None:
-            equity = portfolio.equity_quote({})
-        else:
-            equity = None  # open position but no mark price: refuse to guess
+        # Account-wide equity: every open position (any symbol) marked at
+        # its latest stored close.
+        equity = await account_equity()
         position_response = None
         if position is not None:
             position_response = PositionResponse(
@@ -256,10 +289,10 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
                     else None
                 ),
             )
-        breakers = state.engine.breakers
+        breakers = engine.breakers  # one shared account-level instance
         return StatusResponse(
             mode=state.config.mode.value,
-            paused=state.engine.paused,
+            paused=engine.paused,
             breakers=BreakersResponse(
                 tripped_reason=breakers.tripped_reason,
                 cooldown_until=(
@@ -269,7 +302,8 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
                 ),
                 entries_today=breakers.entries_today,
             ),
-            symbol=symbol,
+            symbol=selected,
+            symbols=configured_symbols,
             exchange_id=state.config.exchange_id,
             quote_currency=state.config.quote_currency,
             quote_balance=str(portfolio.quote_balance),
@@ -282,25 +316,46 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
 
     @protected.post("/pause")
     async def pause() -> CommandResponse:
-        state.engine.pause()
-        return CommandResponse(paused=True, detail="strategy muted; resting orders stay live")
+        # Whole-bot commands on purpose: pause/resume/kill are operator
+        # actions, and "I paused it" must never mean "except that symbol".
+        for engine in state.engines.values():
+            engine.pause()
+        return CommandResponse(paused=True, detail="strategies muted; resting orders stay live")
 
     @protected.post("/resume")
     async def resume() -> CommandResponse:
-        state.engine.resume()
-        return CommandResponse(paused=False, detail="strategy resumed")
+        for engine in state.engines.values():
+            engine.resume()
+        return CommandResponse(paused=False, detail="strategies resumed")
 
     @protected.post("/kill")
     async def kill() -> CommandResponse:
-        try:
-            exit_submitted = await state.engine.kill()
-        except RuntimeError as error:
+        exits_submitted = 0
+        failures: list[str] = []
+        # Kill every engine before reporting any failure: one symbol's
+        # unpriceable exit must not leave the others trading.
+        for engine in state.engines.values():
+            try:
+                if await engine.kill():
+                    exits_submitted += 1
+            except RuntimeError as error:
+                failures.append(str(error))
+        if failures:
             # Halted but NOT flat — surface it as a clear conflict, never as
-            # a 500 and never as a misleading "nothing to flatten".
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+            # a 500 and never as a misleading "nothing to flatten". The
+            # successes are reported too: "it failed" must not hide that
+            # some exits *were* submitted.
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"halted with failures ({exits_submitted} exit order(s) submitted): "
+                    + "; ".join(failures)
+                ),
+            )
+        plural = "s" if exits_submitted != 1 else ""
         detail = (
-            "halted; exit order submitted, fills on next candle"
-            if exit_submitted
+            f"halted; {exits_submitted} exit order{plural} submitted, fills on next candle"
+            if exits_submitted
             else "halted; no position to flatten"
         )
         return CommandResponse(paused=True, detail=detail)
@@ -310,10 +365,23 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
         """Clear a tripped circuit breaker — the explicit human reset.
 
         Deliberately does not resume a paused engine or forget the equity
-        peak: it re-permits entries, nothing more.
+        peak: it re-permits entries, nothing more. The breakers are one
+        account-level instance shared by every engine, so resetting through
+        any engine resets them all.
         """
-        state.engine.reset_breakers()
-        return CommandResponse(paused=state.engine.paused, detail="circuit breakers reset")
+        first_engine = next(iter(state.engines.values()))
+        first_engine.reset_breakers()
+        return CommandResponse(paused=first_engine.paused, detail="circuit breakers reset")
+
+    def engine_for_proposal(signal_id: str) -> TradingEngine:
+        """Route a proposal action to the engine whose queue knows the id."""
+        for engine in state.engines.values():
+            if engine.has_proposal(signal_id):
+                return engine
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"no pending proposal {signal_id!r}",
+        )
 
     @protected.get("/proposals")
     async def get_proposals() -> list[ProposalResponse]:
@@ -329,39 +397,43 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
                 created_at=proposal.created_at.isoformat(),
                 expires_at=proposal.expires_at.isoformat(),
             )
-            for proposal in state.engine.pending_proposals()
+            for engine in state.engines.values()
+            for proposal in engine.pending_proposals()
         ]
 
     @protected.post("/proposals/approve")
     async def approve_proposal(request: ProposalActionRequest) -> CommandResponse:
+        engine = engine_for_proposal(request.signal_id)
         try:
-            detail = await state.engine.approve_proposal(request.signal_id)
+            detail = await engine.approve_proposal(request.signal_id)
         except KeyError as error:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
         except ValueError as error:
             # Expired or drifted: the yes was given to a market that no
             # longer exists, so the approval is refused — loudly.
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
-        return CommandResponse(paused=state.engine.paused, detail=detail)
+        return CommandResponse(paused=engine.paused, detail=detail)
 
     @protected.post("/proposals/reject")
     async def reject_proposal(request: ProposalActionRequest) -> CommandResponse:
+        engine = engine_for_proposal(request.signal_id)
         try:
-            await state.engine.reject_proposal(request.signal_id)
+            await engine.reject_proposal(request.signal_id)
         except KeyError as error:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
         except ValueError as error:
             # Already resolved (expired/drifted/answered): truthful conflict,
             # not a 500 and not a misleading "not found".
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
-        return CommandResponse(paused=state.engine.paused, detail="proposal rejected")
+        return CommandResponse(paused=engine.paused, detail="proposal rejected")
 
     @protected.get("/candles")
     async def get_candles(
         limit: int = Query(300, ge=1, le=1000),
+        symbol: str | None = Query(None),
     ) -> list[CandleResponse]:
         candles = await state.candle_store.fetch_recent(
-            state.config.symbol, CandleInterval.M1, limit
+            resolve_symbol(symbol), CandleInterval.M1, limit
         )
         return [
             CandleResponse(
@@ -378,8 +450,9 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
     @protected.get("/decisions")
     async def get_decisions(
         limit: int = Query(50, ge=1, le=200),
+        symbol: str | None = Query(None),
     ) -> list[DecisionResponse]:
-        decisions = await state.decision_store.fetch_recent(state.config.symbol, limit)
+        decisions = await state.decision_store.fetch_recent(resolve_symbol(symbol), limit)
         return [
             DecisionResponse(
                 signal_id=decision.signal_id,
@@ -395,8 +468,11 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
         ]
 
     @protected.get("/fills")
-    async def get_fills() -> list[FillResponse]:
-        fills = await state.fill_store.fetch_all(state.config.symbol)
+    async def get_fills(symbol: str | None = Query(None)) -> list[FillResponse]:
+        # The journal view spans the whole account by default. Any symbol
+        # may narrow it — including ones no longer configured: fills are
+        # history, and history must stay queryable after a coin is removed.
+        fills = await state.fill_store.fetch_all(symbol)
         return [
             FillResponse(
                 client_order_id=fill.client_order_id,

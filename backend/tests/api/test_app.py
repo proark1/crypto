@@ -49,19 +49,31 @@ async def database() -> AsyncIterator[Database]:
 class StubBot:
     """Minimal BotState for the app factory."""
 
-    def __init__(self, database: Database) -> None:
-        self.config = AppConfig(mode=TradingMode.PAPER, symbol="BTC/USDT")
+    def __init__(self, database: Database, symbols: str = "BTC/USDT") -> None:
+        self.config = AppConfig(mode=TradingMode.PAPER, symbols=symbols)
         self.portfolio = Portfolio(Decimal("10000"))
         self.candle_store = CandleStore(database)
         self.fill_store = FillStore(database)
         self.decision_store = DecisionStore(database)
-        self.engine = TradingEngine(
-            TrendFollowingStrategy(TrendFollowingConfig()),
-            RiskManager(RiskConfig(), self.portfolio),
-            self.portfolio,
-            SimulatedExecutionAdapter(FillSimulatorConfig()),
-            symbol="BTC/USDT",
-        )
+        # One risk manager shared by all engines, mirroring the worker.
+        risk_manager = RiskManager(RiskConfig(), self.portfolio)
+        self.engines: dict[str, TradingEngine] = {
+            symbol: TradingEngine(
+                TrendFollowingStrategy(TrendFollowingConfig()),
+                risk_manager,
+                self.portfolio,
+                SimulatedExecutionAdapter(FillSimulatorConfig()),
+                symbol=symbol,
+            )
+            for symbol in self.config.symbol_list()
+        }
+        self.engine = self.engines[self.config.symbol_list()[0]]
+
+    def replace_first_engine(self, engine: TradingEngine) -> None:
+        """Swap the first symbol's engine (for co-pilot test setups)."""
+        first = self.config.symbol_list()[0]
+        self.engines[first] = engine
+        self.engine = engine
 
 
 def make_fill(price: str = "100", quantity: str = "2") -> Fill:
@@ -180,7 +192,7 @@ class TestCors:
         bot = StubBot(database)
         bot.config = AppConfig(
             mode=TradingMode.PAPER,
-            symbol="BTC/USDT",
+            symbols="BTC/USDT",
             # Trailing slash on purpose: pasted from a browser address bar.
             api_cors_origins="https://dash.example.com/, https://other.example.com",
         )
@@ -377,16 +389,20 @@ class TestProposals:
         from tradebot.core.models import AutonomyMode
 
         bot = StubBot(database)
-        bot.engine = TradingEngine(
-            TrendFollowingStrategy(
-                TrendFollowingConfig(fast_ema_period=3, slow_ema_period=6, atr_period=3)
-            ),
-            RiskManager(RiskConfig(), bot.portfolio),
-            bot.portfolio,
-            SimulatedExecutionAdapter(FillSimulatorConfig()),
-            symbol="BTC/USDT",
-            autonomy_mode=AutonomyMode.COPILOT,
-            proposal_queue=ProposalQueue(ttl=td(minutes=60), max_drift_fraction=Decimal("0.10")),
+        bot.replace_first_engine(
+            TradingEngine(
+                TrendFollowingStrategy(
+                    TrendFollowingConfig(fast_ema_period=3, slow_ema_period=6, atr_period=3)
+                ),
+                RiskManager(RiskConfig(), bot.portfolio),
+                bot.portfolio,
+                SimulatedExecutionAdapter(FillSimulatorConfig()),
+                symbol="BTC/USDT",
+                autonomy_mode=AutonomyMode.COPILOT,
+                proposal_queue=ProposalQueue(
+                    ttl=td(minutes=60), max_drift_fraction=Decimal("0.10")
+                ),
+            )
         )
         return bot
 
@@ -460,6 +476,57 @@ class TestProposals:
         async with make_client(bot) as client:
             assert (await client.post("/proposals/approve", json=ghost)).status_code == 404
             assert (await client.post("/proposals/reject", json=ghost)).status_code == 404
+
+
+class TestMultiSymbol:
+    async def test_status_selects_symbol_and_lists_all(self, database: Database) -> None:
+        bot = StubBot(database, symbols="BTC/USDT,ETH/USDT")
+        async with make_client(bot) as client:
+            default = (await client.get("/status")).json()
+            eth = (await client.get("/status", params={"symbol": "ETH/USDT"})).json()
+
+        assert default["symbol"] == "BTC/USDT"  # first configured is the default
+        assert default["symbols"] == ["BTC/USDT", "ETH/USDT"]
+        assert eth["symbol"] == "ETH/USDT"
+
+    async def test_unknown_symbol_is_404(self, database: Database) -> None:
+        bot = StubBot(database)
+        async with make_client(bot) as client:
+            response = await client.get("/status", params={"symbol": "DOGE/USDT"})
+        assert response.status_code == 404
+        assert "unknown symbol" in response.json()["detail"]
+
+    async def test_account_equity_spans_all_open_positions(self, database: Database) -> None:
+        bot = StubBot(database, symbols="BTC/USDT,ETH/USDT")
+        bot.portfolio.apply_fill(make_fill(price="100", quantity="2"))  # BTC
+        eth_fill = make_fill(price="10", quantity="5").model_copy(
+            update={"symbol": "ETH/USDT", "client_order_id": "ord-eth"}
+        )
+        bot.portfolio.apply_fill(eth_fill)
+        await bot.candle_store.insert_batch([make_candle(close="110")])  # BTC mark only
+
+        async with make_client(bot) as client:
+            without_eth_mark = (await client.get("/status")).json()
+            eth_candle = make_candle(close="12").model_copy(update={"symbol": "ETH/USDT"})
+            await bot.candle_store.insert_batch([eth_candle])
+            with_both_marks = (await client.get("/status")).json()
+
+        # An unmarkable open position means equity is unknown, never a guess.
+        assert without_eth_mark["equity_quote"] is None
+        # 10000 - 200.2 (BTC cost) - 50.2 (ETH cost) + 220 + 60 marked
+        assert with_both_marks["equity_quote"] == "10029.6"
+
+    async def test_pause_and_kill_act_on_every_symbol(self, database: Database) -> None:
+        bot = StubBot(database, symbols="BTC/USDT,ETH/USDT")
+        async with make_client(bot) as client:
+            await client.post("/pause")
+            assert all(engine.paused for engine in bot.engines.values())
+            await client.post("/resume")
+            assert not any(engine.paused for engine in bot.engines.values())
+            body = (await client.post("/kill")).json()
+
+        assert "no position" in body["detail"]
+        assert all(engine.paused for engine in bot.engines.values())
 
 
 class TestFills:

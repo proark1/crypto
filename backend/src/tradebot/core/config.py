@@ -11,7 +11,7 @@ from __future__ import annotations
 import enum
 from decimal import Decimal
 
-from pydantic import AliasChoices, Field
+from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from tradebot.core.models import AutonomyMode
@@ -32,7 +32,7 @@ class AppConfig(BaseSettings):
     (ARCHITECTURE.md section 11); this object holds only process-wide settings.
     """
 
-    model_config = SettingsConfigDict(env_prefix="TRADEBOT_", frozen=True)
+    model_config = SettingsConfigDict(env_prefix="TRADEBOT_", frozen=True, populate_by_name=True)
 
     mode: TradingMode = TradingMode.PAPER
     """Execution mode. Defaults to paper; live is never a default anywhere."""
@@ -46,8 +46,44 @@ class AppConfig(BaseSettings):
     exchange_id: str = "binance"
     """CCXT exchange id for market data (and, in Phase 3, execution)."""
 
-    symbol: str = "BTC/USDT"
-    """The pair the worker trades; multi-coin arrives with the control API."""
+    symbols: str = Field(
+        default="BTC/USDT",
+        validation_alias=AliasChoices("TRADEBOT_SYMBOLS", "TRADEBOT_SYMBOL"),
+    )
+    """Comma-separated pairs the worker trades (e.g. ``BTC/USDT,ETH/USDT``).
+    All must be quoted in ``quote_currency``. The singular ``TRADEBOT_SYMBOL``
+    is accepted as an alias so existing deployments keep working."""
+
+    @model_validator(mode="after")
+    def _symbols_must_parse(self) -> AppConfig:
+        """Validate the pair list at config load, not first use.
+
+        A bad list must stop the deploy before any component is built
+        around it.
+        """
+        self.symbol_list()
+        return self
+
+    def symbol_list(self) -> tuple[str, ...]:
+        """Parse ``symbols`` into an ordered, de-duplicated tuple.
+
+        Raises ``ValueError`` when empty or when a pair is not quoted in the
+        accounting currency — one quote currency is a portfolio invariant.
+        """
+        seen: dict[str, None] = {}
+        for raw in self.symbols.split(","):
+            symbol = raw.strip()
+            if symbol:
+                seen[symbol] = None
+        if not seen:
+            raise ValueError("TRADEBOT_SYMBOLS must name at least one trading pair")
+        for symbol in seen:
+            if not symbol.endswith(f"/{self.quote_currency}"):
+                raise ValueError(
+                    f"symbol {symbol!r} is not quoted in {self.quote_currency}; "
+                    "all pairs must share the accounting currency"
+                )
+        return tuple(seen)
 
     database_url: str | None = None
     """Postgres DSN (``postgresql+asyncpg://...``); required to run the worker."""

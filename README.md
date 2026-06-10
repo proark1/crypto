@@ -65,7 +65,7 @@ internally.
 | `TRADEBOT_API_PORT` | no | falls back to Railway's injected `PORT` automatically |
 | `TRADEBOT_API_CORS_ORIGINS` | no | `*` (safe with bearer-header auth); set to the dashboard URL, e.g. `https://frontend-xxxx.up.railway.app`, for defence in depth |
 | `TRADEBOT_EXCHANGE_ID` | no | `binance` (any CCXT id: `kraken`, `coinbase`, ...) |
-| `TRADEBOT_SYMBOL` | no | `BTC/USDT` |
+| `TRADEBOT_SYMBOLS` | no | `BTC/USDT` — comma-separated for multi-coin, e.g. `BTC/USDT,ETH/USDT` (all pairs share the quote currency; the singular `TRADEBOT_SYMBOL` still works) |
 | `TRADEBOT_PAPER_INITIAL_BALANCE_QUOTE` | no | `10000` |
 | `TRADEBOT_HEARTBEAT_URL` | recommended | a healthchecks.io ping URL; the monitor alerts when the bot (or its data feed) goes silent |
 | `TRADEBOT_HEARTBEAT_INTERVAL_SECONDS` | no | `60` |

@@ -38,6 +38,31 @@ def test_explicit_api_port_beats_platform_port(monkeypatch: pytest.MonkeyPatch) 
     assert AppConfig().api_port == 9000
 
 
+def test_symbols_parse_strip_and_dedupe(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TRADEBOT_SYMBOLS", " BTC/USDT, ETH/USDT,BTC/USDT ,")
+    assert AppConfig().symbol_list() == ("BTC/USDT", "ETH/USDT")
+
+
+def test_legacy_singular_symbol_env_still_works(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Existing deployments set TRADEBOT_SYMBOL; renaming must not break them."""
+    monkeypatch.delenv("TRADEBOT_SYMBOLS", raising=False)
+    monkeypatch.setenv("TRADEBOT_SYMBOL", "ETH/USDT")
+    assert AppConfig().symbol_list() == ("ETH/USDT",)
+
+
+def test_symbol_in_wrong_quote_currency_fails_at_load(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A bad pair list stops the deploy at config load, not at first use."""
+    monkeypatch.setenv("TRADEBOT_SYMBOLS", "BTC/USDT,BTC/EUR")
+    with pytest.raises(ValidationError, match="not quoted in"):
+        AppConfig()
+
+
+def test_empty_symbols_fail_at_load(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TRADEBOT_SYMBOLS", " , ")
+    with pytest.raises(ValidationError, match="at least one"):
+        AppConfig()
+
+
 def test_non_positive_heartbeat_interval_fails_at_load(monkeypatch: pytest.MonkeyPatch) -> None:
     """A bad interval must fail config load, before any client or task exists."""
     monkeypatch.setenv("TRADEBOT_HEARTBEAT_INTERVAL_SECONDS", "0")

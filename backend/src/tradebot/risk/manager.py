@@ -47,13 +47,16 @@ class RiskManager:
     (capital protection must never be blocked by entry-oriented limits) and
     is sized to the full held quantity.
 
-    Phase 1 scope (single-symbol backtests). Three known extensions arrive
-    with the paper/live engine and are deliberately not faked here:
-    ``evaluate`` will take a price map once portfolios hold multiple symbols;
-    balance committed to resting orders will be subtracted from spendable
-    once an order-state tracker exists; exchange lot-size/min-notional
-    rounding stays in the execution engine's pre-submit checks
-    (ARCHITECTURE.md 4.8) where the venue rules live.
+    One manager serves every symbol's engine: the breakers and equity caps
+    are account-level, so they must see all positions through one pair of
+    eyes. Other symbols' positions are marked at their last seen close
+    (cached in :meth:`on_candle`).
+
+    Two known extensions arrive with live trading and are deliberately not
+    faked here: balance committed to resting orders will be subtracted from
+    spendable once an order-state tracker exists, and exchange
+    lot-size/min-notional rounding stays in the execution engine's
+    pre-submit checks (ARCHITECTURE.md 4.8) where the venue rules live.
     """
 
     def __init__(self, config: RiskConfig, portfolio: Portfolio) -> None:
@@ -63,6 +66,7 @@ class RiskManager:
         self._breakers = CircuitBreakers(config.breakers)
         self._observed_realized_pnl: dict[str, Decimal] = {}
         self._open_round_trip_pnl: dict[str, Decimal] = {}
+        self._last_price_quote: dict[str, Decimal] = {}
 
     @property
     def breakers(self) -> CircuitBreakers:
@@ -73,10 +77,41 @@ class RiskManager:
         """Feed one closed candle's equity mark to the circuit breakers.
 
         Called by the engine after fills are applied, so the breakers see
-        the same post-fill equity in backtest, paper, and live.
+        the same post-fill equity in backtest, paper, and live. One manager
+        is shared by every symbol's engine (the breakers are account-level),
+        so the latest close per symbol is cached to mark all open positions;
+        until every open position has a mark — e.g. right after a restart
+        with positions restored but no candles yet — the observation is
+        skipped rather than computed on a guessed price.
         """
-        equity = self._portfolio.equity_quote({candle.symbol: candle.close_quote})
-        self._breakers.observe(candle.close_time, equity)
+        self._last_price_quote[candle.symbol] = candle.close_quote
+        marks = self._marks_for_open_positions()
+        if marks is None:
+            logger.warning(
+                "breaker equity observation skipped: an open position has no mark price yet"
+            )
+            return
+        self._breakers.observe(candle.close_time, self._portfolio.equity_quote(marks))
+
+    def rebase_realized_pnl(self) -> None:
+        """Adopt the portfolio's current realized PnL as the streak baseline.
+
+        Called after journal replay on restart: history replayed into the
+        portfolio is not a fresh round trip, and the first real trade after
+        a restart must not inherit the account's lifetime PnL as its result.
+        """
+        for symbol, realized in self._portfolio.realized_pnl_by_symbol().items():
+            self._observed_realized_pnl[symbol] = realized
+
+    def _marks_for_open_positions(self) -> dict[str, Decimal] | None:
+        """Return last-known prices covering every open position, else ``None``."""
+        marks: dict[str, Decimal] = {}
+        for symbol in self._portfolio.positions:
+            price = self._last_price_quote.get(symbol)
+            if price is None:
+                return None
+            marks[symbol] = price
+        return marks
 
     def on_fill(self, fill: Fill) -> None:
         """Feed one applied fill to the loss-streak tracker.
@@ -140,7 +175,17 @@ class RiskManager:
         if stop_distance <= 0:
             return None  # stop above price: no defined risk per unit
 
-        equity = self._portfolio.equity_quote({signal.symbol: current_price_quote})
+        # Equity is account-wide: other symbols' open positions are marked
+        # at their last seen close. No mark for an open position means the
+        # account cannot be valued — veto rather than size on a guess.
+        marks = self._marks_for_open_positions()
+        if marks is None:
+            logger.warning(
+                "entry vetoed for %s: an open position has no mark price yet", signal.symbol
+            )
+            return None
+        marks[signal.symbol] = current_price_quote
+        equity = self._portfolio.equity_quote(marks)
         risk_budget = equity * self._config.risk_per_trade_fraction
         quantity = risk_budget / stop_distance
 

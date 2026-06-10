@@ -1,5 +1,6 @@
 """Worker composition tests: end-to-end paper trading with a scripted feed."""
 
+import asyncio
 import os
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
@@ -43,12 +44,15 @@ async def database() -> AsyncIterator[Database]:
         yield db
 
 
-def make_config() -> AppConfig:
+def make_config(symbols: str = "BTC/USDT", api_port: int = 8901) -> AppConfig:
+    # Distinct ports per test: each worker.run() binds an HTTP server, and
+    # a just-closed listener can linger long enough to collide.
     return AppConfig(
         mode=TradingMode.PAPER,
-        symbol="BTC/USDT",
+        symbols=symbols,
         exchange_id="binance",
         paper_initial_balance_quote=Decimal("10000"),
+        api_port=api_port,
     )
 
 
@@ -80,6 +84,40 @@ class ScriptedExchange:
         return []
 
 
+class MultiSymbolScriptedExchange:
+    """Per-symbol scripted candles; stops the worker once all are exhausted."""
+
+    def __init__(self, closes_by_symbol: dict[str, list[float]]) -> None:
+        self._rows: dict[str, list[OhlcvRow]] = {
+            symbol: [
+                [BASE_MS + i * MINUTE_MS, close, close + 0.5, close - 0.5, close, 10.0]
+                for i, close in enumerate(closes)
+            ]
+            for symbol, closes in closes_by_symbol.items()
+        }
+        self._cursors: dict[str, int] = dict.fromkeys(closes_by_symbol, 0)
+        self.worker: Worker | None = None
+
+    async def watch_ohlcv(self, symbol: str, timeframe: str) -> list[OhlcvRow]:
+        rows = self._rows[symbol]
+        cursor = self._cursors[symbol]
+        if cursor >= len(rows):
+            if all(self._cursors[s] >= len(self._rows[s]) for s in self._rows):
+                assert self.worker is not None
+                self.worker.stop()
+            # Yield so the other symbol's feed keeps making progress.
+            await asyncio.sleep(0.001)
+            return []
+        snapshot = rows[max(0, cursor - 1) : cursor + 1]
+        self._cursors[symbol] = cursor + 1
+        return snapshot
+
+    async def fetch_ohlcv(
+        self, symbol: str, timeframe: str, since: int | None = None, limit: int | None = None
+    ) -> list[OhlcvRow]:
+        return []
+
+
 class TestWorker:
     async def test_paper_trades_end_to_end(self, database: Database) -> None:
         exchange = ScriptedExchange(CLOSES)
@@ -95,6 +133,29 @@ class TestWorker:
             worker.portfolio.equity_quote({})
             == Decimal("10000") + worker.portfolio.realized_pnl_quote()
         )
+
+    async def test_two_symbols_trade_one_shared_account(self, database: Database) -> None:
+        """Both feeds drive their own engine; books and breakers are shared."""
+        exchange = MultiSymbolScriptedExchange(
+            {"BTC/USDT": list(CLOSES), "ETH/USDT": [c / 10 for c in CLOSES]}
+        )
+        worker = Worker(make_config("BTC/USDT,ETH/USDT", api_port=8902), database, exchange)
+        exchange.worker = worker
+
+        await worker.run()
+
+        for symbol in ("BTC/USDT", "ETH/USDT"):
+            journal = await worker.fill_store.fetch_all(symbol)
+            assert [f.side for f in journal] == [Side.BUY, Side.SELL], symbol
+            assert worker.portfolio.position(symbol) is None
+        # The equity identity holds across the whole account.
+        assert (
+            worker.portfolio.equity_quote({})
+            == Decimal("10000") + worker.portfolio.realized_pnl_quote()
+        )
+        # One shared risk manager: both engines expose the same breakers.
+        engines = list(worker.engines.values())
+        assert engines[0].breakers is engines[1].breakers
 
     async def test_restart_replays_journal_into_portfolio(self, database: Database) -> None:
         await database.create_schema()
