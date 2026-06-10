@@ -22,6 +22,7 @@ export interface StatusResponse {
   mode: string;
   paused: boolean;
   symbol: string;
+  symbols: string[];
   exchange_id: string;
   quote_currency: string;
   quote_balance: string;

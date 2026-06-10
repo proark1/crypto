@@ -252,6 +252,16 @@ class TradingEngine:
             return ()
         return self._proposal_queue.pending()
 
+    def has_proposal(self, signal_id: str) -> bool:
+        """Return whether this engine's queue knows ``signal_id`` (any status).
+
+        Lets a multi-symbol control plane route an approve/reject to the
+        right engine without parsing symbols out of signal ids.
+        """
+        return self._proposal_queue is not None and (
+            self._proposal_queue.status_of(signal_id) is not None
+        )
+
     async def approve_proposal(self, signal_id: str) -> str:
         """Execute a pending proposal; risk checks re-run at approval time.
 

@@ -8,6 +8,7 @@ const FLAT_STATUS: StatusResponse = {
   mode: "paper",
   paused: false,
   symbol: "BTC/USDT",
+  symbols: ["BTC/USDT"],
   exchange_id: "binance",
   quote_currency: "USDT",
   quote_balance: "10000",

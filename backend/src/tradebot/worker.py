@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 
 
 class Worker:
-    """One symbol, one strategy, paper fills — the Phase 2 bot."""
+    """N symbols, one strategy each, one account, paper fills — the Phase 2 bot."""
 
     def __init__(self, config: AppConfig, database: Database, exchange: OhlcvExchange) -> None:
         """Compose every component; raises unless ``config.mode`` is paper."""
@@ -51,21 +51,32 @@ class Worker:
         self.fill_store = FillStore(database)
         self.decision_store = DecisionStore(database)
         self.portfolio = Portfolio(config.paper_initial_balance_quote)
-        self.engine = TradingEngine(
-            TrendFollowingStrategy(TrendFollowingConfig()),
-            RiskManager(RiskConfig(), self.portfolio),
-            self.portfolio,
-            SimulatedExecutionAdapter(FillSimulatorConfig()),
-            symbol=config.symbol,
-            fill_store=self.fill_store,
-            decision_store=self.decision_store,
-            autonomy_mode=config.autonomy_mode,
-            proposal_queue=ProposalQueue(
-                ttl=timedelta(seconds=config.proposal_ttl_seconds),
-                max_drift_fraction=config.proposal_max_drift_fraction,
-            ),
-        )
-        self.feed = LiveMarketDataFeed(exchange, config.symbol, self.candle_store, self.bus)
+        # One risk manager for all symbols: the circuit breakers and equity
+        # caps are account-level and must see every position through one
+        # pair of eyes (engines and feeds are per-symbol).
+        self.risk_manager = RiskManager(RiskConfig(), self.portfolio)
+        self.symbols = config.symbol_list()
+        self.engines: dict[str, TradingEngine] = {
+            symbol: TradingEngine(
+                TrendFollowingStrategy(TrendFollowingConfig()),
+                self.risk_manager,
+                self.portfolio,
+                SimulatedExecutionAdapter(FillSimulatorConfig()),
+                symbol=symbol,
+                fill_store=self.fill_store,
+                decision_store=self.decision_store,
+                autonomy_mode=config.autonomy_mode,
+                proposal_queue=ProposalQueue(
+                    ttl=timedelta(seconds=config.proposal_ttl_seconds),
+                    max_drift_fraction=config.proposal_max_drift_fraction,
+                ),
+            )
+            for symbol in self.symbols
+        }
+        self.feeds = [
+            LiveMarketDataFeed(exchange, symbol, self.candle_store, self.bus)
+            for symbol in self.symbols
+        ]
         self._database = database
 
     async def replay_journal(self) -> int:
@@ -73,26 +84,36 @@ class Worker:
 
         Paper-mode reconciliation: the journal is the source of truth across
         restarts (live mode will reconcile against the exchange instead).
+        Replayed history is then rebased out of the loss-streak tracker —
+        an old losing streak must not start a new cooldown at boot.
         """
-        fills = await self.fill_store.fetch_all(self.config.symbol)
+        fills = await self.fill_store.fetch_all()
         for fill in fills:
             self.portfolio.apply_fill(fill)
+        self.risk_manager.rebase_realized_pnl()
         return len(fills)
 
     async def run(self) -> None:
         """Start the bot (and the control API, if configured) until stopped."""
         await self._database.create_schema()
         replayed = await self.replay_journal()
-        position = self.portfolio.position(self.config.symbol)
+        positions = (
+            ", ".join(
+                f"{symbol}={position.quantity_base}"
+                for symbol, position in self.portfolio.positions.items()
+            )
+            or "flat"
+        )
         logger.info(
-            "worker starting: %s on %s (paper), %d fills replayed, position=%s, balance=%s",
-            self.config.symbol,
+            "worker starting: %s on %s (paper), %d fills replayed, positions=%s, balance=%s",
+            ", ".join(self.symbols),
             self.config.exchange_id,
             replayed,
-            position.quantity_base if position else "flat",
+            positions,
             self.portfolio.quote_balance,
         )
-        self.engine.attach_to(self.bus)
+        for engine in self.engines.values():
+            engine.attach_to(self.bus)
         # Started inside the try so a failure in any later startup step still
         # tears down whatever already runs (no leaked tasks or clients).
         api_task: asyncio.Task[None] | None = None
@@ -103,7 +124,7 @@ class Worker:
             api_task = self._start_api()
             notifier_client = await self._start_notifier_if_configured()
             heartbeat_task, heartbeat_client = self._start_heartbeat_if_configured()
-            await self.feed.run()
+            await asyncio.gather(*(feed.run() for feed in self.feeds))
         finally:
             for task in (api_task, heartbeat_task):
                 if task is None:
@@ -137,7 +158,7 @@ class Worker:
         notifier = TelegramNotifier(token, chat_id, client)
         notifier.attach_to(self.bus)
         await notifier.send(
-            f"tradebot started: {self.config.symbol} on {self.config.exchange_id} (paper)"
+            f"tradebot started: {', '.join(self.symbols)} on {self.config.exchange_id} (paper)"
         )
         return client
 
@@ -235,7 +256,8 @@ class Worker:
 
     def stop(self) -> None:
         """Request shutdown (also wired to SIGTERM for Railway deploys)."""
-        self.feed.stop()
+        for feed in self.feeds:
+            feed.stop()
 
 
 async def run_from_env() -> None:

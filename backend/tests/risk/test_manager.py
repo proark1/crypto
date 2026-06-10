@@ -108,10 +108,10 @@ class TestEntrySizing:
                 assert order.quantity_base * price <= equity * Decimal("0.25")
 
 
-def make_candle(close: str, minute: int = 0) -> Candle:
+def make_candle(close: str, minute: int = 0, symbol: str = "BTC/USDT") -> Candle:
     open_time = SIGNAL_TIME + timedelta(minutes=minute)
     return Candle(
-        symbol="BTC/USDT",
+        symbol=symbol,
         interval=CandleInterval.M1,
         open_time=open_time,
         close_time=open_time + timedelta(minutes=1),
@@ -244,6 +244,50 @@ class TestBreakerIntegration:
 
         # One completed round trip = streak of 1: no cooldown yet.
         assert manager.evaluate(make_signal(Side.BUY, stop="95"), Decimal("100")) is not None
+
+
+class TestMultiSymbolEquity:
+    def test_entry_is_vetoed_until_other_open_positions_have_marks(self) -> None:
+        """Account equity cannot be guessed: no mark for ETH, no BTC entry."""
+        manager, portfolio = make_manager()
+        portfolio.apply_fill(
+            Fill(
+                client_order_id="eth",
+                symbol="ETH/USDT",
+                side=Side.BUY,
+                price_quote=Decimal("10"),
+                quantity_base=Decimal("5"),
+                fee_quote=Decimal("0"),
+                filled_at=SIGNAL_TIME,
+            )
+        )
+
+        assert manager.evaluate(make_signal(Side.BUY, stop="95"), Decimal("100")) is None
+
+        # Once ETH has a mark, the entry sizes against account-wide equity.
+        manager.on_candle(make_candle("12", symbol="ETH/USDT"))
+        order = manager.evaluate(make_signal(Side.BUY, stop="95"), Decimal("100"))
+        assert order is not None
+        # equity = 9950 free + 5 * 12 marked = 10010; 1% / 5 stop distance
+        assert order.quantity_base == Decimal("20.02")
+
+    def test_exits_never_need_marks(self) -> None:
+        manager, portfolio = make_manager()
+        portfolio.apply_fill(
+            Fill(
+                client_order_id="eth",
+                symbol="ETH/USDT",
+                side=Side.BUY,
+                price_quote=Decimal("10"),
+                quantity_base=Decimal("5"),
+                fee_quote=Decimal("0"),
+                filled_at=SIGNAL_TIME,
+            )
+        )
+        open_position(portfolio, price="100", quantity="1")
+        # No marks cached at all; the exit must still pass.
+        exit_order = manager.evaluate(make_signal(Side.SELL, stop="100"), Decimal("100"))
+        assert exit_order is not None
 
 
 class TestExits:

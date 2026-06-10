@@ -81,6 +81,10 @@ class Portfolio:
             return self._realized_pnl.get(symbol, Decimal(0))
         return sum(self._realized_pnl.values(), Decimal(0))
 
+    def realized_pnl_by_symbol(self) -> Mapping[str, Decimal]:
+        """Read-only view of cumulative realized PnL per symbol."""
+        return dict(self._realized_pnl)
+
     def equity_quote(self, current_prices_quote: Mapping[str, Decimal]) -> Decimal:
         """Account value: free balance plus open positions marked to market.
 
