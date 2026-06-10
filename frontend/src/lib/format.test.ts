@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { signClass, trimAmount } from "./format";
+import { signClass, trimAmount, truncateAmount } from "./format";
 
 describe("trimAmount", () => {
   it("removes trailing zeros without rounding", () => {
@@ -27,5 +27,22 @@ describe("signClass", () => {
   it("keeps zero and unknown neutral", () => {
     expect(signClass("0.00")).toContain("zinc");
     expect(signClass(null)).toContain("zinc");
+  });
+});
+
+describe("truncateAmount", () => {
+  it("cuts headline metrics to two decimals without rounding", () => {
+    expect(truncateAmount("9989.997850243007523490000000")).toBe("9989.99");
+    expect(truncateAmount("-10.002149756992476510000000")).toBe("-10");
+  });
+
+  it("keeps the first significant digit of a tiny PnL", () => {
+    expect(truncateAmount("-0.000149756992476510000000")).toBe("-0.0001");
+    expect(truncateAmount("0.00500000")).toBe("0.005");
+  });
+
+  it("leaves integers and exact zero alone", () => {
+    expect(truncateAmount("10000")).toBe("10000");
+    expect(truncateAmount("0.000000")).toBe("0");
   });
 });
