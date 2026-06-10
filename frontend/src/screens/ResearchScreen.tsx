@@ -23,6 +23,16 @@ import type {
 import { FindingsPanel } from "../components/FindingsPanel";
 import { ScenarioReplay } from "../components/ScenarioReplay";
 import { SweepPanel } from "../components/SweepPanel";
+import {
+  TONE_PANEL_CLASS,
+  TONE_TEXT_CLASS,
+  VERDICT_CHIP_CLASS,
+  VERDICT_LEGEND,
+  expectancyTone,
+  interpretRun,
+  profitFactorTone,
+  type Tone,
+} from "../lib/interpret";
 
 const POLL_INTERVAL_MS = 3000;
 const TIMEFRAMES = ["1m", "5m", "15m", "1h", "4h", "1d"];
@@ -43,11 +53,14 @@ function text(value: unknown): string {
   return "—";
 }
 
-function Metric(props: { label: string; value: string }) {
+function Metric(props: { label: string; value: string; hint: string; tone?: Tone }) {
   return (
     <div>
       <div className="text-xs uppercase tracking-wide text-zinc-500">{props.label}</div>
-      <div className="text-lg font-semibold text-zinc-100">{props.value}</div>
+      <div className={`text-lg font-semibold ${TONE_TEXT_CLASS[props.tone ?? "neutral"]}`}>
+        {props.value}
+      </div>
+      <div className="text-xs text-zinc-500">{props.hint}</div>
     </div>
   );
 }
@@ -72,12 +85,15 @@ function BreakdownTable(props: { title: string; data: Record<string, unknown> | 
         <tbody>
           {Object.entries(props.data).map(([label, raw]) => {
             const row = asRecord(raw);
+            const tone = expectancyTone(row?.expectancy_r);
             return (
               <tr key={label} className="border-t border-zinc-800/60 text-zinc-300">
                 <td className="py-1 pr-2">{label.replace(/_/g, " ")}</td>
                 <td className="py-1 pr-2">{text(row?.scenario_count)}</td>
                 <td className="py-1 pr-2">{text(row?.trade_count)}</td>
-                <td className="py-1 pr-2">{text(row?.expectancy_r)}</td>
+                <td className={`py-1 pr-2 ${tone === "neutral" ? "" : TONE_TEXT_CLASS[tone]}`}>
+                  {text(row?.expectancy_r)}
+                </td>
                 <td className="py-1">{text(row?.win_rate)}</td>
               </tr>
             );
@@ -96,27 +112,65 @@ export function RunReport(props: { run: EvaluationRunResponse }) {
     );
   }
   const verdicts = asRecord(summary.verdicts) ?? {};
+  const reading = interpretRun(summary);
   return (
     <div className="space-y-4">
+      <div className={`rounded-lg border p-3 ${TONE_PANEL_CLASS[reading.tone]}`}>
+        <div className="text-sm font-bold">{reading.headline}</div>
+        <p className="mt-1 text-sm opacity-90">{reading.explanation}</p>
+      </div>
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-        <Metric label="expectancy (R)" value={text(summary.expectancy_r)} />
-        <Metric label="profit factor" value={text(summary.profit_factor)} />
-        <Metric label="win rate" value={text(summary.win_rate)} />
+        <Metric
+          label="expectancy (R)"
+          value={text(summary.expectancy_r)}
+          tone={expectancyTone(summary.expectancy_r)}
+          hint="average R per trade — above 0 makes money"
+        />
+        <Metric
+          label="profit factor"
+          value={text(summary.profit_factor)}
+          tone={profitFactorTone(summary.profit_factor)}
+          hint="wins ÷ losses — above 1.0 makes money"
+        />
+        <Metric
+          label="win rate"
+          value={text(summary.win_rate)}
+          hint="alone says little — win size matters more"
+        />
         <Metric
           label="trades / scenarios"
           value={`${text(summary.trade_count)} / ${text(summary.scenario_count)}`}
+          hint="sample size — small samples lie"
         />
       </div>
-      <p className="text-xs text-zinc-500">
-        expectancy (average R per trade) and profit factor are the honest headliners — a bot
-        that is right less often but wins bigger beats a high win rate that bleeds.
-      </p>
-      <div className="flex flex-wrap gap-2">
-        {Object.entries(verdicts).map(([verdict, count]) => (
-          <span key={verdict} className="rounded bg-zinc-800 px-2 py-0.5 text-xs text-zinc-300">
-            {verdict.replace(/_/g, " ")}: {text(count)}
-          </span>
-        ))}
+      <div>
+        <h4 className="mb-1 text-xs uppercase tracking-wide text-zinc-500">
+          how each scenario was graded — hover a chip for its meaning
+        </h4>
+        <div className="flex flex-wrap gap-2">
+          {Object.entries(verdicts).map(([verdict, count]) => {
+            const legend = VERDICT_LEGEND[verdict];
+            return (
+              <span
+                key={verdict}
+                title={legend?.meaning}
+                className={`rounded px-2 py-0.5 text-xs ${
+                  VERDICT_CHIP_CLASS[legend?.tone ?? "neutral"]
+                }`}
+              >
+                {verdict.replace(/_/g, " ")}: {text(count)}
+              </span>
+            );
+          })}
+        </div>
+      </div>
+      <div className="rounded-lg border border-zinc-800 bg-zinc-950/60 p-3">
+        <h4 className="text-xs uppercase tracking-wide text-zinc-500">what to do next</h4>
+        <ol className="mt-1 list-decimal space-y-1 pl-5 text-sm text-zinc-300">
+          {reading.nextSteps.map((step) => (
+            <li key={step}>{step}</li>
+          ))}
+        </ol>
       </div>
       <div className="grid gap-4 sm:grid-cols-2">
         <BreakdownTable title="by trend" data={asRecord(summary.by_trend)} />

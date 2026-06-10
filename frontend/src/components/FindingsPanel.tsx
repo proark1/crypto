@@ -17,9 +17,16 @@ export function FindingsPanel(props: {
   }
   return (
     <div>
-      <h4 className="mb-1 text-xs uppercase tracking-wide text-zinc-500">
+      <h4 className="text-xs uppercase tracking-wide text-zinc-500">
         findings — suggestions only; nothing changes without your verdict
       </h4>
+      <p className="mb-2 mt-0.5 text-xs text-zinc-500">
+        Each card is a money-losing (or money-missing) pattern mined from this run, with the
+        scenarios as evidence — click one to replay it. Accepting a finding records “I believe
+        this”; rejecting records “noise”. Neither changes the bot by itself — accepted findings
+        are your reasons to try a parameter sweep below. Confidence is sample size: low means
+        few examples, treat with suspicion.
+      </p>
       <ul className="space-y-2">
         {props.findings.map((finding) => (
           <li
