@@ -98,10 +98,9 @@ class Worker:
         try:
             await self.feed.run()
         finally:
-            if api_task is not None:
-                api_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await api_task
+            api_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await api_task
             if notifier_client is not None:
                 await notifier_client.aclose()
         logger.info("worker stopped cleanly")
@@ -125,7 +124,7 @@ class Worker:
         )
         return client
 
-    def _start_api(self) -> asyncio.Task[None] | None:
+    def _start_api(self) -> asyncio.Task[None]:
         """Serve HTTP as a background task.
 
         With ``TRADEBOT_API_TOKEN`` set this is the full control plane;
@@ -138,7 +137,9 @@ class Worker:
 
         from tradebot.api import create_app, create_health_only_app
 
-        if self.config.api_token is None:
+        if not self.config.api_token:
+            # Truthiness: an empty-string env var must disable the control
+            # plane gracefully, not crash create_app at startup.
             logger.info("control API disabled (no TRADEBOT_API_TOKEN); serving /health only")
             app = create_health_only_app()
         else:
