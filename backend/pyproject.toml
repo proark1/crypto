@@ -53,6 +53,11 @@ files = ["src", "tests"]
 plugins = ["pydantic.mypy"]
 mypy_path = "src"
 
+[[tool.mypy.overrides]]
+# Only used by the manually-run reference generator (tests/golden/), never in CI.
+module = ["talib", "numpy"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
