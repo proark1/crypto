@@ -17,6 +17,7 @@ from decimal import ROUND_DOWN, Decimal
 
 from pydantic import BaseModel, ConfigDict
 
+from tradebot.core.logging import log_event
 from tradebot.core.models import (
     ACCOUNTING_RESOLUTION,
     Candle,
@@ -205,7 +206,15 @@ class RiskManager:
         if block_reason is not None:
             # Entries only: exits returned above so capital protection can
             # never be blocked by an account-level brake.
-            logger.warning("entry vetoed for %s: %s", signal.symbol, block_reason)
+            log_event(
+                logger,
+                logging.WARNING,
+                "entry_vetoed",
+                signal_id=signal.signal_id,
+                symbol=signal.symbol,
+                strategy_name=signal.strategy_name,
+                reason=block_reason,
+            )
             return None
         order = self._size_entry(signal, current_price_quote)
         if order is not None:
@@ -296,7 +305,15 @@ class RiskManager:
                 return None
             block_reason = filters.entry_block_reason(quantity, current_price_quote)
             if block_reason is not None:
-                logger.warning("entry vetoed for %s: %s", signal.symbol, block_reason)
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "entry_vetoed",
+                    signal_id=signal.signal_id,
+                    symbol=signal.symbol,
+                    strategy_name=signal.strategy_name,
+                    reason=block_reason,
+                )
                 return None
         if quantity <= 0:
             return None

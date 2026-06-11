@@ -43,6 +43,7 @@ from tradebot.competition import (
 from tradebot.competition.lineup import ScopedSignalStrategy
 from tradebot.core.config import AppConfig, TradingMode, validate_symbol_quote
 from tradebot.core.events import CandleClosed, EventBus
+from tradebot.core.logging import configure_logging
 from tradebot.core.metrics import MetricsCollector
 from tradebot.core.models import AutonomyMode, CandleInterval, Fill, SymbolFilters
 from tradebot.engine import TradingEngine
@@ -1912,10 +1913,7 @@ class Worker:
 async def run_from_env() -> None:
     """Build the worker from environment variables and run it until signaled."""
     config = AppConfig()
-    logging.basicConfig(
-        level=config.log_level,
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
-    )
+    configure_logging(config.log_level, config.log_format)
     if config.database_url is None:
         raise ValueError("TRADEBOT_DATABASE_URL is required to run the worker")
 
