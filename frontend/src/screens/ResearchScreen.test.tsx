@@ -1,8 +1,32 @@
-import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { render, screen, waitFor } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
 
 import type { EvaluationRunResponse } from "../api/types";
-import { RunReport } from "./ResearchScreen";
+import { ResearchScreen, RunReport } from "./ResearchScreen";
+
+// The poll fetches reject; everything else is an unused stub. RunReport is a
+// pure component and never touches the client, so mocking it here is harmless.
+vi.mock("../api/client", () => {
+  const rejecting = () => vi.fn().mockRejectedValue(new Error("offline"));
+  return {
+    fetchEvaluations: rejecting(),
+    fetchSweeps: rejecting(),
+    fetchStrategyVersions: rejecting(),
+    fetchComparisons: rejecting(),
+    fetchEvaluationSuggestions: rejecting(),
+    fetchScenarios: rejecting(),
+    fetchFindings: rejecting(),
+    fetchScenarioReplay: rejecting(),
+    acceptFinding: vi.fn(),
+    cancelEvaluation: vi.fn(),
+    cancelSweep: vi.fn(),
+    rejectFinding: vi.fn(),
+    revertStrategyVersion: vi.fn(),
+    startComparison: vi.fn(),
+    startEvaluation: vi.fn(),
+    startSweep: vi.fn(),
+  };
+});
 
 const RUN: EvaluationRunResponse = {
   id: 1,
@@ -52,5 +76,16 @@ describe("RunReport", () => {
   it("says so when the run has no report yet", () => {
     render(<RunReport run={{ ...RUN, summary: null }} />);
     expect(screen.getByText(/no report yet/)).toBeDefined();
+  });
+});
+
+describe("ResearchScreen", () => {
+  it("surfaces a stale banner when polling fails instead of looking fresh", async () => {
+    render(<ResearchScreen />);
+    // The first poll rejects; rather than swallowing it silently, the screen
+    // tells the user its data is no longer refreshing.
+    await waitFor(() => {
+      expect(screen.getByText("not refreshing")).toBeDefined();
+    });
   });
 });
