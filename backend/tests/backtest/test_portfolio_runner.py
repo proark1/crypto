@@ -125,3 +125,68 @@ class TestPortfolioBacktestRunner:
         # The failed run still consumed it: state may be half-built.
         with pytest.raises(RuntimeError, match="single-use"):
             await runner.run([make_candle(0, 100.0, "BTC/USDT")])
+
+
+class TestAccountReport:
+    async def test_two_symbol_run_reports_account_level_figures(self) -> None:
+        from tradebot.backtest import build_account_report
+
+        eth_closes = [100.0] * 3 + [c / 10 for c in CLOSES]
+        candles = [make_candle(i, c, "BTC/USDT") for i, c in enumerate(CLOSES)] + [
+            make_candle(i, c, "ETH/USDT") for i, c in enumerate(eth_closes)
+        ]
+        portfolio = Portfolio(INITIAL_BALANCE)
+        result = await PortfolioBacktestRunner(
+            make_strategy, RiskManager(RiskConfig(), portfolio), portfolio
+        ).run(candles)
+
+        report = build_account_report(result, INITIAL_BALANCE)
+
+        # Turnover and fees are exact sums over the journaled fills.
+        assert report.turnover_quote == sum(
+            (f.price_quote * f.quantity_base for f in result.fills), Decimal(0)
+        )
+        assert report.total_fees_quote == sum((f.fee_quote for f in result.fills), Decimal(0))
+        assert report.turnover_ratio == report.turnover_quote / INITIAL_BALANCE
+        # Exposure stayed within the configured account ceiling and was
+        # actually used (both coins held positions at some point).
+        assert Decimal(0) < report.peak_exposure_fraction <= Decimal("0.5")
+        assert Decimal(0) < report.average_exposure_fraction < report.peak_exposure_fraction
+        # Per-symbol attribution reconciles with the account total.
+        assert set(report.fills_by_symbol) == {"BTC/USDT", "ETH/USDT"}
+        assert sum(report.realized_pnl_by_symbol.values()) == result.realized_pnl_quote
+        assert (
+            report.total_return_fraction
+            == (report.final_equity_quote - INITIAL_BALANCE) / INITIAL_BALANCE
+        )
+
+    async def test_flat_window_reports_zeroes_not_nonsense(self) -> None:
+        from tradebot.backtest import build_account_report
+
+        portfolio = Portfolio(INITIAL_BALANCE)
+        result = await PortfolioBacktestRunner(
+            make_strategy, RiskManager(RiskConfig(), portfolio), portfolio
+        ).run([make_candle(i, 100.0, "BTC/USDT") for i in range(8)])  # no signals
+
+        report = build_account_report(result, INITIAL_BALANCE)
+        assert report.turnover_quote == 0
+        assert report.max_drawdown_fraction == 0
+        assert report.average_exposure_fraction == 0
+        assert report.fills_by_symbol == {}
+
+    async def test_composes_per_walk_forward_window(self) -> None:
+        """Account-level walk-forward: one report per validation window."""
+        from tradebot.backtest import build_account_report
+
+        candles = [make_candle(i, c, "BTC/USDT") for i, c in enumerate(CLOSES)]
+        halves = (candles[: len(candles) // 2], candles[len(candles) // 2 :])
+        reports = []
+        for window in halves:
+            portfolio = Portfolio(INITIAL_BALANCE)
+            result = await PortfolioBacktestRunner(
+                make_strategy, RiskManager(RiskConfig(), portfolio), portfolio
+            ).run(window)
+            reports.append(build_account_report(result, INITIAL_BALANCE))
+
+        assert len(reports) == 2
+        assert all(r.initial_balance_quote == INITIAL_BALANCE for r in reports)

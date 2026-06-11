@@ -20,6 +20,19 @@ from datetime import datetime
 from decimal import Decimal
 
 from tradebot.backtest.runner import BacktestResult
+
+
+class PortfolioBacktestResult(BacktestResult):
+    """Account-level outcome: everything per-run, plus what one book lacks."""
+
+    exposure_curve: tuple[tuple[datetime, Decimal], ...]
+    """Total open-position notional (quote) at each candle close, marked at
+    the same last-seen prices the equity curve uses."""
+
+    realized_pnl_by_symbol: dict[str, Decimal]
+    """Net realized PnL per traded symbol (fees included)."""
+
+
 from tradebot.core.models import Candle
 from tradebot.engine import TradingEngine
 from tradebot.execution import FillSimulatorConfig, SimulatedExecutionAdapter
@@ -52,7 +65,7 @@ class PortfolioBacktestRunner:
         self._engines: dict[str, TradingEngine] = {}
         self._consumed = False
 
-    async def run(self, candles: Sequence[Candle]) -> BacktestResult:
+    async def run(self, candles: Sequence[Candle]) -> PortfolioBacktestResult:
         """Replay ``candles`` (any symbol mix) and report the account outcome.
 
         Single-use, like the single-symbol runner: every component carries
@@ -73,6 +86,7 @@ class PortfolioBacktestRunner:
         # not one stale-marked point per symbol. Insertion order is
         # chronological because the sort gives non-decreasing close times.
         equity_by_close: dict[datetime, Decimal] = {}
+        exposure_by_close: dict[datetime, Decimal] = {}
         for candle in ordered:
             engine = self._engines.get(candle.symbol)
             if engine is None:
@@ -87,6 +101,14 @@ class PortfolioBacktestRunner:
             await engine.process_candle(candle)
             marks[candle.symbol] = candle.close_quote
             equity_by_close[candle.close_time] = self._portfolio.equity_quote(marks)
+            exposure_by_close[candle.close_time] = sum(
+                (
+                    position.quantity_base * marks[symbol]
+                    for symbol, position in self._portfolio.positions.items()
+                    if symbol in marks
+                ),
+                Decimal(0),
+            )
 
         # Per-engine fills are already time-ordered; the merge key adds the
         # symbol and order id so simultaneous fills order deterministically.
@@ -95,9 +117,11 @@ class PortfolioBacktestRunner:
             key=lambda fill: (fill.filled_at, fill.symbol, fill.client_order_id),
         )
         equity_curve = tuple(equity_by_close.items())
-        return BacktestResult(
+        return PortfolioBacktestResult(
             fills=tuple(fills),
             equity_curve=equity_curve,
             final_equity_quote=equity_curve[-1][1],
             realized_pnl_quote=self._portfolio.realized_pnl_quote(),
+            exposure_curve=tuple(exposure_by_close.items()),
+            realized_pnl_by_symbol=dict(self._portfolio.realized_pnl_by_symbol()),
         )
