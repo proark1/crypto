@@ -7,10 +7,10 @@ that fitting server-side: for every active coin it proposes exactly three
 ready-to-run shapes, one per granularity rung, each reaching as far back
 as the stored data allows so every sample is as large as it can be.
 
-The three rungs deliberately yield comparable sample sizes (~8.7k candles
-at full depth) while probing different horizons: a whole ~4-year halving
-cycle on 4h candles, a full year on the 1h trading timeframe, and the
-most recent quarter on 15m. A coin whose stored history is shallower than
+The three rungs probe different granularities over windows fitted to the
+data: a whole ~4-year halving cycle on 4h candles, the same full cycle on
+the 1h trading timeframe (the ladder's biggest sample), and the most
+recent quarter on 15m. A coin whose stored history is shallower than
 a rung's target simply gets the window clamped to what exists — the
 suggestion is always runnable as-is.
 """
@@ -73,11 +73,12 @@ _LADDER: tuple[_Rung, ...] = (
     ),
     _Rung(
         interval=CandleInterval.H1,
-        target_days=365,
-        title="regime year",
+        target_days=1460,
+        title="deep cycle",
         rationale=(
-            "1h candles across a full year — the research default window "
-            "at the timeframe the bot trades"
+            "1h candles across the same ~4-year cycle — the timeframe the "
+            "bot trades at four times the resolution, the ladder's biggest "
+            "sample"
         ),
     ),
     _Rung(
@@ -90,10 +91,12 @@ _LADDER: tuple[_Rung, ...] = (
         ),
     ),
 )
-"""Targets are tuned so every rung yields ~8.7k candles at full depth:
-comparable statistical weight per suggestion, each probing a different
-horizon. Always exactly three per coin (CLAUDE.md: research needs sample
-sizes as large as the data allows)."""
+"""Both cycle rungs reach the full backfill horizon — every regime the
+database holds, with the 1h rung the heavyweight (~35k candles at full
+depth) because it is the timeframe the bot trades; the 15m rung stays a
+quarter so its fine-grained read reflects current conditions, not a
+years-old microstructure. Always exactly three per coin (CLAUDE.md:
+research needs sample sizes as large as the data allows)."""
 
 
 def _fit(rung: _Rung, symbol: str, available_days: int) -> SuggestedEvaluation:

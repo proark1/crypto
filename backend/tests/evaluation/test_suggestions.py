@@ -28,11 +28,11 @@ async def test_deep_history_yields_three_full_rungs() -> None:
 
     assert [(s.timeframe, s.history_days) for s in suggestions] == [
         ("4h", 1460),
-        ("1h", 365),
+        ("1h", 1460),
         ("15m", 91),
     ]
-    # The rungs are tuned to comparable sample sizes — none dwarfs another.
-    assert [s.expected_candles for s in suggestions] == [8760, 8760, 8736]
+    # Both cycle rungs span the full backfill horizon; 1h is the heavyweight.
+    assert [s.expected_candles for s in suggestions] == [8760, 35040, 8736]
     assert all(s.scenario_count == DEFAULT_SCENARIO_COUNT for s in suggestions)
     assert all(s.symbol == "BTC/USDT" for s in suggestions)
 
