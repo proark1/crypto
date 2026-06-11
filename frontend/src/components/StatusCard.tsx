@@ -1,5 +1,6 @@
 import type { StatusResponse } from "../api/types";
 import { formatTime, signClass, trimAmount, truncateAmount } from "../lib/format";
+import { StatusAlerts } from "./StatusAlerts";
 
 function Metric(props: { label: string; value: string; hint?: string; valueClass?: string }) {
   return (
@@ -86,30 +87,7 @@ export function StatusCard(props: { status: StatusResponse }) {
           hint="latest price of the coin"
         />
       </div>
-      {status.breakers.tripped_reason !== null && (
-        <div className="mt-4 rounded-lg border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-700 dark:text-red-300">
-          <span className="font-bold uppercase">circuit breaker tripped</span> —{" "}
-          {status.breakers.tripped_reason}
-        </div>
-      )}
-      {status.breakers.tripped_reason === null && status.breakers.cooldown_until !== null && (
-        <div className="mt-4 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-700 dark:text-amber-300">
-          <span className="font-bold uppercase">loss-streak cooldown</span> — entries blocked
-          until {formatTime(status.breakers.cooldown_until)}
-        </div>
-      )}
-      {!status.data_health.healthy && (
-        <div className="mt-4 rounded-lg border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-700 dark:text-red-300">
-          <span className="font-bold uppercase">market data degraded</span> — new entries paused
-          until the feed recovers
-          {status.data_health.reason !== null ? ` (${status.data_health.reason})` : ""}
-        </div>
-      )}
-      {status.regime.reason !== null && (
-        <div className="mt-4 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-700 dark:text-amber-300">
-          <span className="font-bold uppercase">regime gate off</span> — {status.regime.reason}
-        </div>
-      )}
+      <StatusAlerts status={status} className="mt-4" />
       <div className="mt-4 border-t border-zinc-200 dark:border-zinc-800 pt-4">
         {status.position === null ? (
           <div className="text-sm text-zinc-500">flat — no open position</div>

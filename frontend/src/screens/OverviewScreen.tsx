@@ -32,31 +32,33 @@ import type {
   StatusResponse,
   WalletResponse,
 } from "../api/types";
-import { CandleChart } from "../components/CandleChart";
-import { IntervalSwitcher } from "../components/IntervalSwitcher";
-import { toTradeMarkers } from "../lib/chart";
 import type { Theme } from "../lib/theme";
+import { Alert } from "../ui";
+import { CompetitionCard } from "../components/CompetitionCard";
+import { Controls } from "../components/Controls";
+import { StatusPill } from "../components/StatusPill";
 import { BotBuilderScreen } from "./BotBuilderScreen";
 import { BotDetailScreen } from "./BotDetailScreen";
+import { CoinsScreen } from "./CoinsScreen";
+import { DashboardScreen } from "./DashboardScreen";
 import { ResearchScreen } from "./ResearchScreen";
-import { CoinManager } from "../components/CoinManager";
-import { CompetitionCard } from "../components/CompetitionCard";
-import { CoinTabs } from "../components/CoinTabs";
-import { Controls } from "../components/Controls";
-import { DecisionsPanel } from "../components/DecisionsPanel";
-import { FillsTable } from "../components/FillsTable";
-import { ProposalsPanel } from "../components/ProposalsPanel";
-import { StatusCard } from "../components/StatusCard";
-import { WalletCard } from "../components/WalletCard";
 
 const POLL_INTERVAL_MS = 5000;
 
-/** Client-side navigation: there is no router, so the visible screen is
- * plain state — the two tabs plus the bot detail and bot builder pages,
- * each with an explicit way back. */
+/** The four top-level destinations. The bot detail and builder pages are
+ * drill-downs that live under the Bots tab, each with an explicit way back. */
+type Tab = "dashboard" | "coins" | "bots" | "research";
+const TABS: { tab: Tab; label: string }[] = [
+  { tab: "dashboard", label: "Dashboard" },
+  { tab: "coins", label: "Coins" },
+  { tab: "bots", label: "Bots" },
+  { tab: "research", label: "Research" },
+];
+
+/** Client-side navigation: there is no router, so the visible screen is plain
+ * state — the four tabs plus the bot detail and builder drill-downs. */
 type View =
-  | { name: "overview" }
-  | { name: "research" }
+  | { name: Tab }
   | { name: "bot"; botId: string }
   | { name: "builder"; editBotId: string | null };
 
@@ -111,7 +113,7 @@ export function OverviewScreen(props: { theme: Theme; onToggleTheme: () => void 
   // coin is the default, and the frontend must not hardcode one.
   const [selectedSymbol, setSelectedSymbol] = useState<string | null>(null);
   const [chartInterval, setChartInterval] = useState<ChartInterval>("1m");
-  const [view, setView] = useState<View>({ name: "overview" });
+  const [view, setView] = useState<View>({ name: "dashboard" });
   const requestIdRef = useRef(0);
 
   const refresh = useCallback(async () => {
@@ -268,38 +270,20 @@ export function OverviewScreen(props: { theme: Theme; onToggleTheme: () => void 
     );
   }
 
-  // The bot pages live under the overview tab; keep it highlighted there
-  // so the way back is always visible.
-  const activeTab = view.name === "research" ? "research" : "overview";
+  // Drill-downs keep the Bots tab highlighted so the way back is always clear.
+  const activeTab: Tab = view.name === "bot" || view.name === "builder" ? "bots" : view.name;
 
   return (
     <div className="mx-auto max-w-4xl space-y-4 p-4">
       <header className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex items-center justify-between gap-4 sm:justify-start">
+        <div className="flex items-center gap-3">
           <h1 className="text-2xl font-bold tracking-tight text-zinc-900 dark:text-zinc-100">
             tradebot
           </h1>
-          <nav className="flex gap-1 rounded-lg bg-zinc-200/60 p-1 dark:bg-zinc-900">
-            {(["overview", "research"] as const).map((tab) => (
-              <button
-                key={tab}
-                type="button"
-                onClick={() => {
-                  setView(tab === "overview" ? { name: "overview" } : { name: "research" });
-                }}
-                className={`rounded-md px-3 py-1.5 text-sm font-semibold ${
-                  activeTab === tab
-                    ? "bg-white text-zinc-900 shadow-sm dark:bg-zinc-700 dark:text-zinc-100"
-                    : "text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-200"
-                }`}
-              >
-                {tab}
-              </button>
-            ))}
-          </nav>
+          <StatusPill status={status} />
         </div>
         <div className="flex flex-wrap items-center gap-3">
-          {view.name === "overview" && status && (
+          {status && (
             <Controls
               paused={status.paused}
               disabled={commandPending}
@@ -332,73 +316,58 @@ export function OverviewScreen(props: { theme: Theme; onToggleTheme: () => void 
           </button>
         </div>
       </header>
-      {notice && (
-        <div className="rounded-lg border border-zinc-300 bg-white px-4 py-2 text-sm text-zinc-700 shadow-sm dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300">
-          {notice}
-        </div>
-      )}
-      {error && (
-        <div className="rounded-lg border border-red-300 bg-red-50 px-4 py-2 text-sm text-red-700 dark:border-red-800 dark:bg-red-950/50 dark:text-red-300">
-          {error}
-        </div>
-      )}
-      {view.name === "research" && <ResearchScreen />}
-      {view.name === "bot" && (
-        <BotDetailScreen
-          botId={view.botId}
-          symbol={status?.symbol ?? null}
-          onBack={() => {
-            setView({ name: "overview" });
-          }}
-          onEdit={(botId) => {
-            setView({ name: "builder", editBotId: botId });
-          }}
-          onDeleted={() => {
-            setView({ name: "overview" });
-            void refresh();
-          }}
-        />
-      )}
-      {view.name === "builder" && (
-        <BotBuilderScreen
-          editBotId={view.editBotId}
-          onCancel={() => {
-            setView(
-              view.editBotId === null
-                ? { name: "overview" }
-                : { name: "bot", botId: view.editBotId },
-            );
-          }}
-          onSaved={(botId) => {
-            setView({ name: "bot", botId });
-            void refresh();
-          }}
-        />
-      )}
-      {view.name === "overview" && status && (
-        <CoinTabs
-          symbols={status.symbols}
-          selected={status.symbol}
-          disabled={commandPending}
-          onSelect={setSelectedSymbol}
-        />
-      )}
-      {view.name === "overview" && status && (
-        <CoinManager
-          selected={status.symbol}
-          disabled={commandPending}
-          onAdd={(symbol) => void runCommand(() => addCoin(symbol))}
-          onRemove={(symbol) => void handleRemoveCoin(symbol)}
-        />
-      )}
-      {view.name === "overview" &&
-        (status ? (
-          <StatusCard status={status} />
-        ) : (
-          <div className="text-sm text-zinc-500">loading…</div>
+      <nav className="flex gap-1 overflow-x-auto rounded-lg bg-zinc-200/60 p-1 dark:bg-zinc-900">
+        {TABS.map(({ tab, label }) => (
+          <button
+            key={tab}
+            type="button"
+            onClick={() => {
+              setView({ name: tab });
+            }}
+            className={`whitespace-nowrap rounded-md px-3 py-1.5 text-sm font-semibold ${
+              activeTab === tab
+                ? "bg-white text-zinc-900 shadow-sm dark:bg-zinc-700 dark:text-zinc-100"
+                : "text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-200"
+            }`}
+          >
+            {label}
+          </button>
         ))}
-      {view.name === "overview" && <WalletCard wallet={wallet} />}
-      {view.name === "overview" && (
+      </nav>
+      {notice && <Alert tone="info">{notice}</Alert>}
+      {error && <Alert tone="error">{error}</Alert>}
+      {view.name === "dashboard" && (
+        <DashboardScreen
+          status={status}
+          competition={competition}
+          wallet={wallet}
+          proposals={proposals}
+          disabled={commandPending}
+          onApprove={(signalId) => void runCommand(() => approveProposal(signalId))}
+          onReject={(signalId) => void runCommand(() => rejectProposal(signalId))}
+          onViewAllBots={() => {
+            setView({ name: "bots" });
+          }}
+          onSelectBot={(botId) => {
+            setView({ name: "bot", botId });
+          }}
+        />
+      )}
+      {view.name === "coins" && (
+        <CoinsScreen
+          status={status}
+          candles={candles}
+          decisions={decisions}
+          fills={fills}
+          chartInterval={chartInterval}
+          disabled={commandPending}
+          onSelectSymbol={setSelectedSymbol}
+          onSelectInterval={setChartInterval}
+          onAddCoin={(symbol) => void runCommand(() => addCoin(symbol))}
+          onRemoveCoin={(symbol) => void handleRemoveCoin(symbol)}
+        />
+      )}
+      {view.name === "bots" && (
         <CompetitionCard
           competition={competition}
           disabled={commandPending}
@@ -413,27 +382,38 @@ export function OverviewScreen(props: { theme: Theme; onToggleTheme: () => void 
           onKillBot={(botId) => void runCommand(() => killBot(botId))}
         />
       )}
-      {view.name === "overview" && (
-        <>
-          <ProposalsPanel
-            proposals={proposals}
-            disabled={commandPending}
-            onApprove={(signalId) => void runCommand(() => approveProposal(signalId))}
-            onReject={(signalId) => void runCommand(() => rejectProposal(signalId))}
-          />
-          <div className="flex justify-end">
-            <IntervalSwitcher selected={chartInterval} onSelect={setChartInterval} />
-          </div>
-          <CandleChart
-            candles={candles}
-            // Markers must match the charted coin; the journal spans them all.
-            markers={toTradeMarkers(
-              status ? fills.filter((fill) => fill.symbol === status.symbol) : fills,
-            )}
-          />
-          <DecisionsPanel decisions={decisions} />
-          <FillsTable fills={fills} />
-        </>
+      {view.name === "research" && <ResearchScreen />}
+      {view.name === "bot" && (
+        <BotDetailScreen
+          botId={view.botId}
+          symbol={status?.symbol ?? null}
+          onBack={() => {
+            setView({ name: "bots" });
+          }}
+          onEdit={(botId) => {
+            setView({ name: "builder", editBotId: botId });
+          }}
+          onDeleted={() => {
+            setView({ name: "bots" });
+            void refresh();
+          }}
+        />
+      )}
+      {view.name === "builder" && (
+        <BotBuilderScreen
+          editBotId={view.editBotId}
+          onCancel={() => {
+            setView(
+              view.editBotId === null
+                ? { name: "bots" }
+                : { name: "bot", botId: view.editBotId },
+            );
+          }}
+          onSaved={(botId) => {
+            setView({ name: "bot", botId });
+            void refresh();
+          }}
+        />
       )}
     </div>
   );
