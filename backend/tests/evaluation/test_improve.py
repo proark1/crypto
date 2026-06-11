@@ -364,7 +364,7 @@ class TestEvaluateBeforeSweeping:
         assert await improver.run_cycle() is None
         assert sweeps.configs == []  # nothing to learn from yet: no sweep
         (config,) = evaluations.configs
-        assert config.scenario_count == 400  # unstarved sample size
+        assert config.scenario_count == 1600  # unstarved sample size
 
     async def test_a_stale_run_is_refreshed_before_sweeping(self) -> None:
         stale = {
@@ -404,7 +404,7 @@ class TestEvaluateBeforeSweeping:
         assert "trend_filtered_reversion" in names and "anti_chase" in names
         # Rejected finding 9 contributes nothing; 7 and 8 are the lineage.
         assert set(config.motivating_finding_ids) == {7, 8}
-        assert config.scenario_count == 400
+        assert config.scenario_count == 1600
 
     async def test_busy_evaluation_manager_just_waits_for_the_next_cycle(self) -> None:
         evaluations = ScriptedEvaluations(running=True)

@@ -57,11 +57,14 @@ MIN_SWEEP_TRADES = 10
 """Candidates with fewer graded trades than this cannot be compared
 honestly; expectancy over a handful of trades is noise."""
 
-DEFAULT_SCENARIO_COUNT = 400
+DEFAULT_SCENARIO_COUNT = 1600
 """Default scenarios per candidate per period, manual and automated alike.
-The strategies trade in only a few percent of scenarios, so the old
-default of 100 yielded 3-4 trades per candidate — every sweep ended
-"insufficient evidence" by construction."""
+The strategies trade in only a few percent of sampled scenarios (observed
+~1-4% on BTC/USDT 1h), so the budget must clear ``MIN_SWEEP_TRADES`` with
+real margin: 100 yielded 3-4 trades and 400 still only 4-8 — every sweep
+ended "insufficient evidence" by construction. At 1600, even a 1% entry
+rate grades ~16 training trades, and validation pools the same budget
+across its windows."""
 
 STRATEGY_FAMILIES: Mapping[str, tuple[type[BaseModel], Callable[..., Strategy]]] = {
     "trend_following": (TrendFollowingConfig, TrendFollowingStrategy),
@@ -123,7 +126,7 @@ class SweepConfig(BaseModel):
 
     symbol: str
     timeframe: str = "1h"
-    history_days: int = Field(default=180, gt=0)
+    history_days: int = Field(default=365, gt=0)
     scenario_count: int = Field(default=DEFAULT_SCENARIO_COUNT, gt=0)
     """Scenarios per candidate per window side (training and validation)."""
 

@@ -247,8 +247,11 @@ export function ScenarioTable(props: {
 export function ResearchScreen() {
   const [runs, setRuns] = useState<EvaluationRunResponse[]>([]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
-  const [days, setDays] = useState("90");
-  const [count, setCount] = useState("400");
+  // Defaults sized so per-trade stats mean something: a year of regimes,
+  // and enough sampled moments that a few-percent entry rate still grades
+  // a three-digit trade count.
+  const [days, setDays] = useState("365");
+  const [count, setCount] = useState("1600");
   const [timeframe, setTimeframe] = useState("1h");
   const [notice, setNotice] = useState<string | null>(null);
   const [scenarios, setScenarios] = useState<ScenarioSummaryResponse[]>([]);
@@ -330,7 +333,11 @@ export function ResearchScreen() {
   };
 
   const handleStartSweep = () => {
-    startSweep({ timeframe, history_days: Number(days) || 90 }).then(
+    // No parameters on purpose: the backend's defaults are sized so the
+    // sweep clears its minimum-trades bar — inheriting the evaluation
+    // form's values here used to starve every sweep into "insufficient
+    // evidence" without the user ever seeing why.
+    startSweep().then(
       (started) => {
         setNotice(started.detail);
         void refresh();
@@ -401,8 +408,8 @@ export function ResearchScreen() {
             try {
               const started = await startEvaluation({
                 timeframes: [timeframe],
-                history_days: Number(days) || 90,
-                scenario_count: Number(count) || 200,
+                history_days: Number(days) || 365,
+                scenario_count: Number(count) || 1600,
               });
               setNotice(started.detail);
               setSelectedId(started.run_id);
@@ -413,6 +420,10 @@ export function ResearchScreen() {
           })();
         }}
       >
+        <p className="w-full text-xs text-zinc-500">
+          custom evaluation — replays past moments and grades every decision the bot would have
+          made; the suggestions above are usually the better start
+        </p>
         <label className="text-xs text-zinc-400">
           history (days)
           <input
@@ -422,6 +433,9 @@ export function ResearchScreen() {
             }}
             className="mt-1 block w-24 rounded-lg border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-sm text-zinc-100"
           />
+          <span className="mt-0.5 block text-[11px] text-zinc-600">
+            more days = more market moods covered
+          </span>
         </label>
         <label className="text-xs text-zinc-400">
           scenarios per coin
@@ -432,6 +446,9 @@ export function ResearchScreen() {
             }}
             className="mt-1 block w-28 rounded-lg border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-sm text-zinc-100"
           />
+          <span className="mt-0.5 block text-[11px] text-zinc-600">
+            more scenarios = more trades = trustworthy stats
+          </span>
         </label>
         <label className="text-xs text-zinc-400">
           timeframe
@@ -446,6 +463,9 @@ export function ResearchScreen() {
               <option key={value}>{value}</option>
             ))}
           </select>
+          <span className="mt-0.5 block text-[11px] text-zinc-600">
+            candle size the bot decides on
+          </span>
         </label>
         <button
           type="submit"
