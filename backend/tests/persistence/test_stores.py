@@ -562,3 +562,48 @@ class TestRiskStateStore:
         from tradebot.persistence import RiskStateStore
 
         assert await RiskStateStore(database).load() is None
+
+
+class TestSchemaSync:
+    """Deploys must add new columns to shipped tables, not crash on them."""
+
+    async def test_missing_column_is_added_on_create_schema(self, database: Database) -> None:
+        from sqlalchemy import text
+
+        # Simulate a deployed DB from before a column existed.
+        async with database.engine.begin() as connection:
+            await connection.execute(
+                text('ALTER TABLE "orders" DROP COLUMN "protective_trail_distance_quote"')
+            )
+        await database.create_schema()  # the deploy-time sync
+
+        store = OrderStore(database)
+        planned = make_order().model_copy(
+            update={
+                "protective_exit": ProtectiveExitPlan(
+                    stop_price_quote=Decimal("95"),
+                    limit_price_quote=Decimal("94"),
+                    trail_distance_quote=Decimal("2"),
+                )
+            }
+        )
+        await store.record_submitted(planned)  # would crash without the column
+        (loaded,) = await store.fetch_open()
+        assert loaded.order == planned
+
+    async def test_not_null_without_server_default_is_refused_loudly(
+        self, database: Database
+    ) -> None:
+        import pytest
+        from sqlalchemy import Column, MetaData, Table, Text
+
+        from tradebot.persistence.database import _add_missing_columns
+
+        hostile = MetaData()
+        Table("orders", hostile, Column("mandatory_no_default", Text, nullable=False))
+
+        async with database.engine.begin() as connection:
+            with pytest.raises(RuntimeError, match="server_default"):
+                await connection.run_sync(
+                    lambda sync_connection: _add_missing_columns(sync_connection, hostile)
+                )
