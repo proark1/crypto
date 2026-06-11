@@ -7,8 +7,13 @@ The bot runs a **strategy competition** (ARCHITECTURE.md §13): five paper
 accounts — the production regime router plus four solo challengers (trend
 following, mean reversion, breakout, MACD momentum) — trade the same coins,
 candles, and gates from their own journal-backed balances. The dashboard's
-leaderboard ranks them by equity, and the research screen can grade all five
-on identical historical scenarios for a direct side-by-side comparison.
+leaderboard ranks them by equity (each bot is clickable for a full detail
+page and individually pausable/stoppable), and the research screen can grade
+the whole lineup on identical historical scenarios for a direct side-by-side
+comparison. You can also **build your own bot** from the dashboard: pick one
+or more rules, mix them ("any rule fires" vs. "all rules agree"), tune the
+parameters, and it joins the competition live. The dashboard supports light
+and dark mode.
 
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** — the design document and source of truth
   (includes the implementation-status table).

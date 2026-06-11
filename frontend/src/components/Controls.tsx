@@ -32,7 +32,7 @@ export function Controls(props: {
           onClick={props.onPause}
           disabled={disabled}
           title="stop opening new positions — open positions and their stops stay managed"
-          className="rounded-lg bg-zinc-700 px-4 py-2 text-sm font-semibold text-white hover:bg-zinc-600 disabled:opacity-50"
+          className="rounded-lg bg-zinc-200 px-4 py-2 text-sm font-semibold text-zinc-800 hover:bg-zinc-300 disabled:opacity-50 dark:bg-zinc-700 dark:text-white dark:hover:bg-zinc-600"
         >
           pause
         </button>
@@ -54,7 +54,7 @@ export function Controls(props: {
               setConfirmingKill(false);
             }}
             disabled={disabled}
-            className="rounded-lg bg-zinc-800 px-4 py-2 text-sm text-zinc-300 hover:bg-zinc-700 disabled:opacity-50"
+            className="rounded-lg bg-zinc-100 dark:bg-zinc-800 px-4 py-2 text-sm text-zinc-700 dark:text-zinc-300 hover:bg-zinc-200 dark:hover:bg-zinc-700 disabled:opacity-50"
           >
             cancel
           </button>
@@ -66,7 +66,7 @@ export function Controls(props: {
           }}
           disabled={disabled}
           title="emergency stop: sell everything at market and halt — asks for confirmation first"
-          className="rounded-lg border border-red-600 px-4 py-2 text-sm font-bold text-red-400 hover:bg-red-600/10 disabled:opacity-50"
+          className="rounded-lg border border-red-600 px-4 py-2 text-sm font-bold text-red-600 dark:text-red-400 hover:bg-red-600/10 disabled:opacity-50"
         >
           kill switch
         </button>

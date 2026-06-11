@@ -103,14 +103,17 @@ function ComparisonTable(props: { group: ComparisonGroupResponse }) {
           <tr>
             <th className="py-1 pr-3" />
             {runs.map((run) => (
-              <th key={run.id} className="py-1 pr-3 font-semibold text-zinc-300">
+              <th
+                key={run.id}
+                className="py-1 pr-3 font-semibold text-zinc-700 dark:text-zinc-300"
+              >
                 {strategyLabel(run.strategy)}
               </th>
             ))}
           </tr>
         </thead>
         <tbody>
-          <tr className="border-t border-zinc-800/60 text-zinc-400">
+          <tr className="border-t border-zinc-200/70 dark:border-zinc-800/60 text-zinc-600 dark:text-zinc-400">
             <td className="py-1 pr-3 text-xs uppercase tracking-wide text-zinc-500">status</td>
             {runs.map((run) => (
               <td key={run.id} className="py-1 pr-3 text-xs">
@@ -126,7 +129,10 @@ function ComparisonTable(props: { group: ComparisonGroupResponse }) {
             const best =
               row.highlightBest === true && finite.length > 1 ? Math.max(...finite) : null;
             return (
-              <tr key={row.key} className="border-t border-zinc-800/60 text-zinc-300">
+              <tr
+                key={row.key}
+                className="border-t border-zinc-200/70 dark:border-zinc-800/60 text-zinc-700 dark:text-zinc-300"
+              >
                 <td
                   className="py-1 pr-3 text-xs uppercase tracking-wide text-zinc-500"
                   title={row.hint}
@@ -139,7 +145,7 @@ function ComparisonTable(props: { group: ComparisonGroupResponse }) {
                   return (
                     <td
                       key={run.id}
-                      className={`py-1 pr-3 ${isBest ? "font-semibold text-emerald-300" : ""}`}
+                      className={`py-1 pr-3 ${isBest ? "font-semibold text-emerald-700 dark:text-emerald-300" : ""}`}
                     >
                       {row.percent === true ? asPercent(raw) : text(raw)}
                       {isBest && (
@@ -174,9 +180,11 @@ export function ComparisonPanel(props: {
     props.groups.find((group) => group.group_id === selectedGroupId) ?? props.groups[0];
 
   return (
-    <section className="rounded-xl border border-zinc-800 bg-zinc-900 p-4">
+    <section className="rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900 p-4">
       <div className="flex flex-wrap items-center gap-3">
-        <h3 className="text-sm font-semibold text-zinc-100">strategy comparison</h3>
+        <h3 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+          strategy comparison
+        </h3>
         <button
           type="button"
           onClick={props.onStart}
@@ -203,8 +211,8 @@ export function ComparisonPanel(props: {
                   }}
                   className={`w-full rounded-lg px-2 py-1.5 text-left text-sm ${
                     selected.group_id === group.group_id
-                      ? "bg-zinc-800 text-zinc-100"
-                      : "text-zinc-400 hover:bg-zinc-800/60"
+                      ? "bg-zinc-100 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100"
+                      : "text-zinc-600 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800/60"
                   }`}
                 >
                   comparison #{group.group_id}

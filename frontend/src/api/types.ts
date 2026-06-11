@@ -207,13 +207,19 @@ export interface EvaluationRunResponse {
   comparison_group: number | null;
 }
 
-/** One paper bot in the strategy competition: the production regime router
- * or one of the single-strategy challengers, each with its own account. */
+/** Where a competing bot came from: the production regime router, a
+ * built-in single-strategy challenger, or a user-built custom recipe. */
+export type BotKind = "production" | "builtin" | "custom";
+
+/** One paper bot in the strategy competition: the production regime router,
+ * a single-strategy challenger, or a custom bot — each its own account. */
 export interface CompetitorResponse {
   bot_id: string;
   label: string;
   description: string;
   is_production: boolean;
+  kind: BotKind;
+  paused: boolean;
   equity_quote: string | null;
   initial_balance_quote: string;
   /** Return on the starting balance as a fraction (e.g. "0.0123" = +1.23%),
@@ -258,6 +264,69 @@ export interface ComparisonGroupResponse {
   created_at: string;
   /** Runs in lineup order (production first, then the challengers). */
   runs: EvaluationRunResponse[];
+}
+
+/** How a multi-rule custom bot combines its rules' buy signals. */
+export type EntryMode = "any" | "all";
+
+/** One pickable strategy family in the bot builder, with the complete
+ * default parameter set the backend would use (JSON values, not money). */
+export interface StrategyFamilyOption {
+  family: string;
+  label: string;
+  description: string;
+  defaults: Record<string, unknown>;
+}
+
+export interface BotOptionsResponse {
+  families: StrategyFamilyOption[];
+  entry_modes: EntryMode[];
+}
+
+/** A custom bot's recipe: chosen families with parameter overrides. The
+ * backend normalizes omissions, so sending the full default set is fine. */
+export interface CustomBotRules {
+  entry_mode?: EntryMode;
+  families: Record<string, Record<string, unknown>>;
+}
+
+/** One open position in a competing bot's paper account. */
+export interface BotPositionResponse {
+  symbol: string;
+  quantity_base: string;
+  average_entry_price_quote: string;
+  mark_price_quote: string | null;
+  unrealized_pnl_quote: string | null;
+}
+
+/** How a bot trades, discriminated on `kind` to match the backend shape. */
+export type BotStrategyResponse =
+  | {
+      kind: "production";
+      regime_routed: boolean;
+      families: Record<string, Record<string, unknown>>;
+    }
+  | { kind: "builtin"; family: string; params: Record<string, unknown> }
+  | {
+      kind: "custom";
+      rules: { entry_mode: EntryMode; families: Record<string, Record<string, unknown>> };
+    };
+
+export interface BotDetailResponse {
+  summary: CompetitorResponse;
+  positions: BotPositionResponse[];
+  strategy: BotStrategyResponse;
+}
+
+export interface BotCreateRequest {
+  name: string;
+  description?: string;
+  rules: CustomBotRules;
+}
+
+export interface BotCreateResponse {
+  bot_id: string;
+  detail: string;
 }
 
 /** One ready-to-run evaluation shape, fitted server-side to the coin's

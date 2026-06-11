@@ -31,11 +31,13 @@ export function FindingsPanel(props: {
         {props.findings.map((finding) => (
           <li
             key={finding.id}
-            className="rounded-lg border border-zinc-800 bg-zinc-950/60 p-3 text-sm"
+            className="rounded-lg border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950/60 p-3 text-sm"
           >
             <div className="flex flex-wrap items-center gap-2">
-              <span className="font-semibold text-zinc-100">{finding.pattern}</span>
-              <span className="rounded bg-zinc-800 px-2 py-0.5 text-xs text-zinc-400">
+              <span className="font-semibold text-zinc-900 dark:text-zinc-100">
+                {finding.pattern}
+              </span>
+              <span className="rounded bg-zinc-100 dark:bg-zinc-800 px-2 py-0.5 text-xs text-zinc-600 dark:text-zinc-400">
                 {finding.affected_count} scenarios · {finding.average_r_impact}R ·{" "}
                 {finding.confidence} confidence
               </span>
@@ -43,15 +45,15 @@ export function FindingsPanel(props: {
                 <span
                   className={`rounded px-2 py-0.5 text-xs ${
                     finding.status === "accepted"
-                      ? "bg-emerald-900/60 text-emerald-300"
-                      : "bg-zinc-800 text-zinc-500"
+                      ? "bg-emerald-100 dark:bg-emerald-900/60 text-emerald-700 dark:text-emerald-300"
+                      : "bg-zinc-100 dark:bg-zinc-800 text-zinc-500"
                   }`}
                 >
                   {finding.status}
                 </span>
               )}
             </div>
-            <p className="mt-1 text-zinc-300">{finding.suggestion}</p>
+            <p className="mt-1 text-zinc-700 dark:text-zinc-300">{finding.suggestion}</p>
             <div className="mt-2 flex flex-wrap items-center gap-2">
               {finding.status === "proposed" && (
                 <>
@@ -69,7 +71,7 @@ export function FindingsPanel(props: {
                     onClick={() => {
                       props.onReject(finding.id);
                     }}
-                    className="rounded-lg border border-zinc-700 px-3 py-1 text-xs text-zinc-300 hover:bg-zinc-800"
+                    className="rounded-lg border border-zinc-300 dark:border-zinc-700 px-3 py-1 text-xs text-zinc-700 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800"
                   >
                     reject
                   </button>
@@ -83,7 +85,7 @@ export function FindingsPanel(props: {
                   onClick={() => {
                     props.onReplayEvidence(scenarioId);
                   }}
-                  className="text-xs text-sky-400 hover:text-sky-300"
+                  className="text-xs text-sky-600 dark:text-sky-400 hover:text-sky-500 dark:hover:text-sky-300"
                 >
                   #{scenarioId}
                 </button>

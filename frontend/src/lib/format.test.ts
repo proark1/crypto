@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { formatFractionPercent, signClass, trimAmount, truncateAmount } from "./format";
+import {
+  formatFractionPercent,
+  humanizeParamName,
+  signClass,
+  trimAmount,
+  truncateAmount,
+} from "./format";
 
 describe("trimAmount", () => {
   it("removes trailing zeros without rounding", () => {
@@ -40,6 +46,15 @@ describe("formatFractionPercent", () => {
   it("shows a dash for unknown or unparsable values", () => {
     expect(formatFractionPercent(null)).toBe("—");
     expect(formatFractionPercent("not-a-number")).toBe("—");
+  });
+});
+
+describe("humanizeParamName", () => {
+  it("spaces out snake_case and keeps indicator acronyms loud", () => {
+    expect(humanizeParamName("fast_ema_period")).toBe("fast EMA period");
+    expect(humanizeParamName("rsi_period")).toBe("RSI period");
+    expect(humanizeParamName("atr_multiplier")).toBe("ATR multiplier");
+    expect(humanizeParamName("lookback")).toBe("lookback");
   });
 });
 

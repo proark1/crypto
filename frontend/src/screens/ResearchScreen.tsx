@@ -98,7 +98,10 @@ function BreakdownTable(props: { title: string; data: Record<string, unknown> | 
               const row = asRecord(raw);
               const tone = expectancyTone(row?.expectancy_r);
               return (
-                <tr key={label} className="border-t border-zinc-800/60 text-zinc-300">
+                <tr
+                  key={label}
+                  className="border-t border-zinc-200/70 dark:border-zinc-800/60 text-zinc-700 dark:text-zinc-300"
+                >
                   <td className="py-1 pr-2">{label.replace(/_/g, " ")}</td>
                   <td className="py-1 pr-2">{text(row?.scenario_count)}</td>
                   <td className="py-1 pr-2">{text(row?.trade_count)}</td>
@@ -178,9 +181,9 @@ export function RunReport(props: { run: EvaluationRunResponse }) {
           })}
         </div>
       </div>
-      <div className="rounded-lg border border-zinc-800 bg-zinc-950/60 p-3">
+      <div className="rounded-lg border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950/60 p-3">
         <h4 className="text-xs uppercase tracking-wide text-zinc-500">what to do next</h4>
-        <ol className="mt-1 list-decimal space-y-1 pl-5 text-sm text-zinc-300">
+        <ol className="mt-1 list-decimal space-y-1 pl-5 text-sm text-zinc-700 dark:text-zinc-300">
           {reading.nextSteps.map((step) => (
             <li key={step}>{step}</li>
           ))}
@@ -227,7 +230,7 @@ export function ScenarioTable(props: {
                 onClick={() => {
                   props.onReplay(scenario.scenario_id);
                 }}
-                className="cursor-pointer border-t border-zinc-800/60 text-zinc-300 hover:bg-zinc-800/60"
+                className="cursor-pointer border-t border-zinc-200/70 dark:border-zinc-800/60 text-zinc-700 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800/60"
               >
                 <td className="py-1 pr-2">{scenario.scenario_id}</td>
                 <td className="py-1 pr-2 text-xs">
@@ -397,7 +400,7 @@ export function ResearchScreen() {
   return (
     <div className="space-y-4">
       {suggestions.length > 0 && (
-        <section className="rounded-xl border border-zinc-800 bg-zinc-900 p-4">
+        <section className="rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900 p-4">
           <h3 className="text-xs uppercase tracking-wide text-zinc-500">
             suggested evaluations — fitted to each coin&apos;s stored history
           </h3>
@@ -405,17 +408,19 @@ export function ResearchScreen() {
             {suggestions.map((suggestion) => (
               <div
                 key={`${suggestion.symbol}-${suggestion.timeframe}`}
-                className="flex flex-col justify-between rounded-lg border border-zinc-800 bg-zinc-950/60 p-3"
+                className="flex flex-col justify-between rounded-lg border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950/60 p-3"
               >
                 <div>
-                  <div className="text-sm font-semibold text-zinc-100">
+                  <div className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
                     {suggestion.title} · {suggestion.symbol}
                   </div>
                   <div className="mt-0.5 text-xs text-zinc-500">
                     {suggestion.timeframe} · {suggestion.history_days} days · ~
                     {suggestion.expected_candles.toLocaleString()} candles
                   </div>
-                  <p className="mt-1 text-xs text-zinc-400">{suggestion.rationale}</p>
+                  <p className="mt-1 text-xs text-zinc-600 dark:text-zinc-400">
+                    {suggestion.rationale}
+                  </p>
                 </div>
                 <button
                   type="button"
@@ -432,7 +437,7 @@ export function ResearchScreen() {
         </section>
       )}
       <form
-        className="flex flex-wrap items-end gap-3 rounded-xl border border-zinc-800 bg-zinc-900 p-4"
+        className="flex flex-wrap items-end gap-3 rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900 p-4"
         onSubmit={(event) => {
           event.preventDefault();
           void (async () => {
@@ -455,46 +460,46 @@ export function ResearchScreen() {
           custom evaluation — replays past moments and grades every decision the bot would have
           made; the suggestions above are usually the better start
         </p>
-        <label className="text-xs text-zinc-400">
+        <label className="text-xs text-zinc-600 dark:text-zinc-400">
           history (days)
           <input
             value={days}
             onChange={(event) => {
               setDays(event.target.value);
             }}
-            className="mt-1 block w-24 rounded-lg border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-sm text-zinc-100"
+            className="mt-1 block w-24 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-950 px-2 py-1.5 text-sm text-zinc-900 dark:text-zinc-100"
           />
-          <span className="mt-0.5 block text-[11px] text-zinc-600">
+          <span className="mt-0.5 block text-[11px] text-zinc-400 dark:text-zinc-600">
             more days = more market moods covered
           </span>
         </label>
-        <label className="text-xs text-zinc-400">
+        <label className="text-xs text-zinc-600 dark:text-zinc-400">
           scenarios per coin
           <input
             value={count}
             onChange={(event) => {
               setCount(event.target.value);
             }}
-            className="mt-1 block w-28 rounded-lg border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-sm text-zinc-100"
+            className="mt-1 block w-28 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-950 px-2 py-1.5 text-sm text-zinc-900 dark:text-zinc-100"
           />
-          <span className="mt-0.5 block text-[11px] text-zinc-600">
+          <span className="mt-0.5 block text-[11px] text-zinc-400 dark:text-zinc-600">
             more scenarios = more trades = trustworthy stats
           </span>
         </label>
-        <label className="text-xs text-zinc-400">
+        <label className="text-xs text-zinc-600 dark:text-zinc-400">
           timeframe
           <select
             value={timeframe}
             onChange={(event) => {
               setTimeframe(event.target.value);
             }}
-            className="mt-1 block rounded-lg border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-sm text-zinc-100"
+            className="mt-1 block rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-950 px-2 py-1.5 text-sm text-zinc-900 dark:text-zinc-100"
           >
             {TIMEFRAMES.map((value) => (
               <option key={value}>{value}</option>
             ))}
           </select>
-          <span className="mt-0.5 block text-[11px] text-zinc-600">
+          <span className="mt-0.5 block text-[11px] text-zinc-400 dark:text-zinc-600">
             candle size the bot decides on
           </span>
         </label>
@@ -504,11 +509,11 @@ export function ResearchScreen() {
         >
           start evaluation
         </button>
-        {notice && <span className="text-sm text-zinc-400">{notice}</span>}
+        {notice && <span className="text-sm text-zinc-600 dark:text-zinc-400">{notice}</span>}
       </form>
 
       <div className="grid gap-4 lg:grid-cols-[16rem_1fr]">
-        <section className="rounded-xl border border-zinc-800 bg-zinc-900 p-3">
+        <section className="rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900 p-3">
           {runs.length === 0 && <div className="text-sm text-zinc-500">no runs yet</div>}
           <ul className="space-y-1">
             {runs.map((run) => (
@@ -520,8 +525,8 @@ export function ResearchScreen() {
                   }}
                   className={`w-full rounded-lg px-2 py-1.5 text-left text-sm ${
                     selected?.id === run.id
-                      ? "bg-zinc-800 text-zinc-100"
-                      : "text-zinc-400 hover:bg-zinc-800/60"
+                      ? "bg-zinc-100 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100"
+                      : "text-zinc-600 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800/60"
                   }`}
                 >
                   run #{run.id} · {run.status}
@@ -536,7 +541,7 @@ export function ResearchScreen() {
                     onClick={() => {
                       void cancelEvaluation(run.id).then(refresh, refresh);
                     }}
-                    className="mt-0.5 px-2 text-xs text-red-400 hover:text-red-300"
+                    className="mt-0.5 px-2 text-xs text-red-600 dark:text-red-400 hover:text-red-500 dark:hover:text-red-300"
                   >
                     cancel
                   </button>
@@ -545,7 +550,7 @@ export function ResearchScreen() {
             ))}
           </ul>
         </section>
-        <section className="rounded-xl border border-zinc-800 bg-zinc-900 p-4">
+        <section className="rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900 p-4">
           {replay ? (
             <ScenarioReplay
               replay={replay}

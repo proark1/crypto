@@ -31,37 +31,40 @@ export function ScenarioReplay(props: { replay: ScenarioReplayResponse; onBack: 
         <button
           type="button"
           onClick={props.onBack}
-          className="rounded-lg border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:bg-zinc-800"
+          className="rounded-lg border border-zinc-300 dark:border-zinc-700 px-3 py-1.5 text-sm text-zinc-700 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800"
         >
           ← back to run
         </button>
-        <h3 className="text-sm font-semibold text-zinc-100">
+        <h3 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
           scenario #{replay.scenario.scenario_id} · {replay.scenario.symbol} ·{" "}
           {replay.scenario.timeframe}
         </h3>
         <div className="flex flex-wrap gap-1">
           {conditionChips.map((chip) => (
-            <span key={chip} className="rounded bg-zinc-800 px-2 py-0.5 text-xs text-zinc-400">
+            <span
+              key={chip}
+              className="rounded bg-zinc-100 dark:bg-zinc-800 px-2 py-0.5 text-xs text-zinc-600 dark:text-zinc-400"
+            >
               {chip.replace(/_/g, " ")}
             </span>
           ))}
         </div>
       </div>
 
-      <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4">
+      <div className="rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900 p-4">
         <div className="text-xs uppercase tracking-wide text-zinc-500">
           decided blind at {replay.scenario.decision_time}
         </div>
-        <div className="mt-1 text-lg font-semibold text-zinc-100">
+        <div className="mt-1 text-lg font-semibold text-zinc-900 dark:text-zinc-100">
           {replay.scenario.decision.toUpperCase()}
           {replay.confidence !== null && (
-            <span className="ml-2 text-sm font-normal text-zinc-400">
+            <span className="ml-2 text-sm font-normal text-zinc-600 dark:text-zinc-400">
               confidence {replay.confidence.toFixed(2)}
             </span>
           )}
         </div>
         {replay.reasons.length > 0 && (
-          <ul className="mt-2 list-inside list-disc text-sm text-zinc-300">
+          <ul className="mt-2 list-inside list-disc text-sm text-zinc-700 dark:text-zinc-300">
             {replay.reasons.map((reason) => (
               <li key={reason}>{reason}</li>
             ))}
@@ -82,7 +85,7 @@ export function ScenarioReplay(props: { replay: ScenarioReplayResponse; onBack: 
           onClick={() => {
             setRevealed((count) => Math.min(count + 1, horizonTotal));
           }}
-          className="rounded-lg bg-zinc-800 px-3 py-1.5 text-sm text-zinc-200 hover:bg-zinc-700 disabled:opacity-40"
+          className="rounded-lg bg-zinc-100 dark:bg-zinc-800 px-3 py-1.5 text-sm text-zinc-800 dark:text-zinc-200 hover:bg-zinc-200 dark:hover:bg-zinc-700 disabled:opacity-40"
         >
           reveal next candle
         </button>
@@ -102,7 +105,7 @@ export function ScenarioReplay(props: { replay: ScenarioReplayResponse; onBack: 
           onClick={() => {
             setRevealed(0);
           }}
-          className="rounded-lg border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:bg-zinc-800 disabled:opacity-40"
+          className="rounded-lg border border-zinc-300 dark:border-zinc-700 px-3 py-1.5 text-sm text-zinc-700 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800 disabled:opacity-40"
         >
           hide the future again
         </button>
@@ -112,12 +115,12 @@ export function ScenarioReplay(props: { replay: ScenarioReplayResponse; onBack: 
       </div>
 
       {fullyRevealed ? (
-        <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4">
+        <div className="rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900 p-4">
           <div className="text-xs uppercase tracking-wide text-zinc-500">the grade</div>
-          <div className="mt-1 text-lg font-semibold text-zinc-100">
+          <div className="mt-1 text-lg font-semibold text-zinc-900 dark:text-zinc-100">
             {replay.scenario.verdict.replace(/_/g, " ")}
             {replay.scenario.timing !== null && (
-              <span className="ml-2 text-sm font-normal text-zinc-400">
+              <span className="ml-2 text-sm font-normal text-zinc-600 dark:text-zinc-400">
                 {replay.scenario.timing.replace(/_/g, " ")}
               </span>
             )}
@@ -137,7 +140,7 @@ export function ScenarioReplay(props: { replay: ScenarioReplayResponse; onBack: 
           </dl>
         </div>
       ) : (
-        <div className="rounded-xl border border-dashed border-zinc-700 p-4 text-sm text-zinc-500">
+        <div className="rounded-xl border border-dashed border-zinc-300 dark:border-zinc-700 p-4 text-sm text-zinc-500">
           the grade is hidden until the full horizon is revealed — judge the decision the way
           the bot had to make it
         </div>
@@ -150,7 +153,7 @@ function GradeItem(props: { label: string; value: string | null }) {
   return (
     <>
       <dt className="text-zinc-500">{props.label}</dt>
-      <dd className="text-zinc-200">{props.value ?? "—"}</dd>
+      <dd className="text-zinc-800 dark:text-zinc-200">{props.value ?? "—"}</dd>
     </>
   );
 }

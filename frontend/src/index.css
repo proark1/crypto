@@ -1,1 +1,6 @@
 @import "tailwindcss";
+
+/* Dark mode is class-based, not media-based: main.tsx puts `.dark` on <html>
+   from the stored choice or the system preference, and the header toggle
+   flips it. Every `dark:` utility in the app hangs off this variant. */
+@custom-variant dark (&:where(.dark, .dark *));

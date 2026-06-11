@@ -13,26 +13,30 @@ export function WalletCard(props: { wallet: WalletResponse | null }) {
   }
   const { wallet } = props;
   return (
-    <section className="rounded-xl border border-zinc-800 bg-zinc-900 p-5">
+    <section className="rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900 p-5">
       <div className="mb-3 flex flex-wrap items-baseline gap-x-2 gap-y-1">
-        <h2 className="text-sm font-bold uppercase tracking-wide text-zinc-400">wallet</h2>
+        <h2 className="text-sm font-bold uppercase tracking-wide text-zinc-600 dark:text-zinc-400">
+          wallet
+        </h2>
         <span className="text-xs text-zinc-500">
           what the account holds, valued at the latest prices
         </span>
-        <div className="ml-auto text-sm text-zinc-400">
+        <div className="ml-auto text-sm text-zinc-600 dark:text-zinc-400">
           total ≈{" "}
-          <span className="font-semibold text-zinc-100">
+          <span className="font-semibold text-zinc-900 dark:text-zinc-100">
             {wallet.equity_quote === null
               ? "unknown"
               : `${truncateAmount(wallet.equity_quote)} ${wallet.quote_currency}`}
           </span>
         </div>
       </div>
-      <ul className="divide-y divide-zinc-800/60">
+      <ul className="divide-y divide-zinc-200/70 dark:divide-zinc-800/60">
         {wallet.holdings.map((holding) => (
           <li key={holding.asset} className="flex items-baseline gap-3 py-2">
-            <span className="w-14 font-bold text-zinc-100">{holding.asset}</span>
-            <span className="font-mono text-sm text-zinc-200">
+            <span className="w-14 font-bold text-zinc-900 dark:text-zinc-100">
+              {holding.asset}
+            </span>
+            <span className="font-mono text-sm text-zinc-800 dark:text-zinc-200">
               {holding.symbol === null
                 ? truncateAmount(holding.quantity)
                 : trimAmount(holding.quantity)}

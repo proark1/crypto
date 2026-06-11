@@ -18,9 +18,11 @@ export function SweepPanel(props: {
   const selected = props.sweeps.find((sweep) => sweep.id === selectedId) ?? props.sweeps[0];
 
   return (
-    <section className="rounded-xl border border-zinc-800 bg-zinc-900 p-4">
+    <section className="rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900 p-4">
       <div className="flex flex-wrap items-center gap-3">
-        <h3 className="text-sm font-semibold text-zinc-100">parameter sweeps (walk-forward)</h3>
+        <h3 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+          parameter sweeps (walk-forward)
+        </h3>
         <button
           type="button"
           onClick={props.onStart}
@@ -47,8 +49,8 @@ export function SweepPanel(props: {
                   }}
                   className={`w-full rounded-lg px-2 py-1.5 text-left text-sm ${
                     selected?.id === sweep.id
-                      ? "bg-zinc-800 text-zinc-100"
-                      : "text-zinc-400 hover:bg-zinc-800/60"
+                      ? "bg-zinc-100 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100"
+                      : "text-zinc-600 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800/60"
                   }`}
                 >
                   sweep #{sweep.id} · {sweep.status}
@@ -62,7 +64,7 @@ export function SweepPanel(props: {
                     onClick={() => {
                       props.onCancel(sweep.id);
                     }}
-                    className="mt-0.5 px-2 text-xs text-red-400 hover:text-red-300"
+                    className="mt-0.5 px-2 text-xs text-red-600 dark:text-red-400 hover:text-red-500 dark:hover:text-red-300"
                   >
                     cancel
                   </button>
@@ -93,12 +95,16 @@ function text(value: unknown): string {
   return "—";
 }
 
-const NEUTRAL_VERDICT_STYLE = "border-zinc-700 bg-zinc-800/60 text-zinc-300";
+const NEUTRAL_VERDICT_STYLE =
+  "border-zinc-300 dark:border-zinc-700 bg-zinc-100 dark:bg-zinc-800/60 text-zinc-700 dark:text-zinc-300";
 const VERDICT_STYLES: Record<string, string> = {
-  validated: "border-emerald-700 bg-emerald-900/40 text-emerald-200",
-  overfit: "border-red-800 bg-red-900/30 text-red-200",
+  validated:
+    "border-emerald-300 dark:border-emerald-700 bg-emerald-50 dark:bg-emerald-900/40 text-emerald-900 dark:text-emerald-200",
+  overfit:
+    "border-red-300 dark:border-red-800 bg-red-50 dark:bg-red-900/30 text-red-900 dark:text-red-200",
   baseline_best: NEUTRAL_VERDICT_STYLE,
-  insufficient_evidence: "border-amber-800 bg-amber-900/30 text-amber-200",
+  insufficient_evidence:
+    "border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/30 text-amber-900 dark:text-amber-200",
 };
 
 /** One plain sentence per verdict: what it means for the user and whether
@@ -163,7 +169,10 @@ function ScoreTable(props: { title: string; data: Record<string, unknown> | null
           {Object.entries(props.data).map(([name, raw]) => {
             const row = asRecord(raw);
             return (
-              <tr key={name} className="border-t border-zinc-800/60 text-zinc-300">
+              <tr
+                key={name}
+                className="border-t border-zinc-200/70 dark:border-zinc-800/60 text-zinc-700 dark:text-zinc-300"
+              >
                 <td className="py-1 pr-2">{name.replace(/_/g, " ")}</td>
                 <td className="py-1 pr-2">{text(row?.trade_count)}</td>
                 <td className="py-1 pr-2">{text(row?.expectancy_r)}</td>

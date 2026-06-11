@@ -17,10 +17,10 @@ export function ProposalsPanel(props: {
   }
   const disabled = props.disabled ?? false;
   return (
-    <section className="rounded-xl border border-amber-700/60 bg-amber-950/20">
-      <h3 className="border-b border-amber-900/40 px-4 py-3 text-xs uppercase tracking-wide text-amber-400">
+    <section className="rounded-xl border border-amber-300 dark:border-amber-700/60 bg-amber-50/70 dark:bg-amber-950/20">
+      <h3 className="border-b border-amber-200 dark:border-amber-900/40 px-4 py-3 text-xs uppercase tracking-wide text-amber-600 dark:text-amber-400">
         <span className="font-bold">awaiting your approval</span>
-        <span className="ml-2 normal-case tracking-normal text-amber-500/80">
+        <span className="ml-2 normal-case tracking-normal text-amber-700/80 dark:text-amber-500/80">
           — co-pilot mode: these trades happen only if you approve them before they expire
         </span>
       </h3>
@@ -30,21 +30,25 @@ export function ProposalsPanel(props: {
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
               <span
                 className={`text-sm font-bold uppercase ${
-                  proposal.side === "buy" ? "text-emerald-400" : "text-red-400"
+                  proposal.side === "buy"
+                    ? "text-emerald-600 dark:text-emerald-400"
+                    : "text-red-600 dark:text-red-400"
                 }`}
               >
                 {proposal.side}
               </span>
-              <span className="text-sm text-zinc-200">{proposal.symbol}</span>
-              <span className="text-sm text-zinc-400">
+              <span className="text-sm text-zinc-800 dark:text-zinc-200">
+                {proposal.symbol}
+              </span>
+              <span className="text-sm text-zinc-600 dark:text-zinc-400">
                 @ ~{trimAmount(proposal.proposal_price_quote)} · stop{" "}
                 {trimAmount(proposal.stop_price_quote)}
               </span>
-              <span className="ml-auto text-xs text-amber-500">
+              <span className="ml-auto text-xs text-amber-600 dark:text-amber-500">
                 expires {formatTime(proposal.expires_at)}
               </span>
             </div>
-            <ul className="mt-1 text-sm text-zinc-400">
+            <ul className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
               {proposal.reasons.map((reason, index) => (
                 <li key={`${String(index)}-${reason}`}>· {reason}</li>
               ))}
@@ -64,7 +68,7 @@ export function ProposalsPanel(props: {
                   props.onReject(proposal.signal_id);
                 }}
                 disabled={disabled}
-                className="rounded-lg border border-red-600 px-4 py-1.5 text-sm font-semibold text-red-400 hover:bg-red-600/10 disabled:opacity-50"
+                className="rounded-lg border border-red-600 px-4 py-1.5 text-sm font-semibold text-red-600 dark:text-red-400 hover:bg-red-600/10 disabled:opacity-50"
               >
                 reject
               </button>
