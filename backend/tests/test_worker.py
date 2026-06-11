@@ -800,3 +800,32 @@ class TestGapReplay:
         (stop,) = worker.engines["BTC/USDT"].open_orders()
         assert stop.client_order_id == "stop-ord-gap"
         assert await order_store.fetch_open("BTC/USDT") != []
+
+
+class TestDivergenceReport:
+    async def test_live_paper_run_replays_to_zero_divergence(self, database: Database) -> None:
+        """The one-code-path invariant, measured: a live paper run and a
+        backtest over the same stored candles must produce identical fills."""
+        exchange = ScriptedExchange(CLOSES)
+        worker = Worker(make_config(api_port=8908), database, exchange)
+        exchange.worker = worker
+        await worker.run()
+        live_fills = await worker.fill_store.fetch_all("BTC/USDT")
+        assert len(live_fills) == 2  # the scripted round trip happened
+
+        # A pinned window over the scripted 2026-01-02 candles: reproducible
+        # regardless of when the test runs.
+        report = await worker.divergence_report(
+            "BTC/USDT", window_hours=24, window_end=BASE_TIME + timedelta(days=1)
+        )
+
+        assert report.live_fill_count == 2
+        assert report.replay_fill_count == 2
+        assert report.divergence_fraction == 0.0
+        assert report.mismatches == ()
+
+    async def test_unknown_symbol_raises(self, database: Database) -> None:
+        worker = Worker(make_config(), database, ScriptedExchange([]))
+        await worker.initialize()
+        with pytest.raises(KeyError, match="DOGE/USDT"):
+            await worker.divergence_report("DOGE/USDT")
