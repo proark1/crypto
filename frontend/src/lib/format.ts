@@ -52,12 +52,28 @@ export function formatFractionPercent(fraction: string | null): string {
 
 export function signClass(amount: string | null): string {
   if (amount === null) {
-    return "text-zinc-400";
+    return "text-zinc-600 dark:text-zinc-400";
   }
   if (amount.startsWith("-")) {
-    return "text-red-400";
+    return "text-red-600 dark:text-red-400";
   }
-  return trimAmount(amount) === "0" ? "text-zinc-400" : "text-emerald-400";
+  return trimAmount(amount) === "0"
+    ? "text-zinc-600 dark:text-zinc-400"
+    : "text-emerald-600 dark:text-emerald-400";
+}
+
+/** Indicator acronyms that should stay uppercase when humanizing keys. */
+const PARAM_ACRONYMS = new Set(["ema", "sma", "rsi", "atr", "adx", "macd", "bb", "vwap"]);
+
+/**
+ * Turn a snake_case parameter name into readable words for non-technical
+ * users, keeping indicator acronyms loud: fast_ema_period → "fast EMA period".
+ */
+export function humanizeParamName(name: string): string {
+  return name
+    .split("_")
+    .map((word) => (PARAM_ACRONYMS.has(word.toLowerCase()) ? word.toUpperCase() : word))
+    .join(" ");
 }
 
 export function formatTime(iso: string | null): string {

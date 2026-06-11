@@ -4,21 +4,21 @@ import { formatTime, trimAmount } from "../lib/format";
 export function FillsTable(props: { fills: FillResponse[] }) {
   if (props.fills.length === 0) {
     return (
-      <section className="rounded-xl border border-zinc-800 bg-zinc-900 p-5 text-sm text-zinc-500">
+      <section className="rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900 p-5 text-sm text-zinc-500">
         no trades yet — executed buys and sells will appear here
       </section>
     );
   }
   return (
-    <section className="overflow-x-auto rounded-xl border border-zinc-800 bg-zinc-900">
-      <h3 className="sticky left-0 border-b border-zinc-800 bg-zinc-900 px-4 py-3 text-xs uppercase tracking-wide text-zinc-500">
+    <section className="overflow-x-auto rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+      <h3 className="sticky left-0 border-b border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900 px-4 py-3 text-xs uppercase tracking-wide text-zinc-500">
         <span className="font-bold">trades</span>
         <span className="ml-2 normal-case tracking-normal">
           — every executed buy and sell across all coins, newest first
         </span>
       </h3>
       <table className="w-full text-left text-sm">
-        <thead className="border-b border-zinc-800 text-xs uppercase tracking-wide text-zinc-500">
+        <thead className="border-b border-zinc-200 dark:border-zinc-800 text-xs uppercase tracking-wide text-zinc-500">
           <tr>
             <th className="px-4 py-3">time</th>
             <th className="px-4 py-3">coin</th>
@@ -33,20 +33,30 @@ export function FillsTable(props: { fills: FillResponse[] }) {
           {[...props.fills].reverse().map((fill, index) => (
             <tr
               key={`${fill.client_order_id}-${String(index)}`}
-              className="border-b border-zinc-800/50"
+              className="border-b border-zinc-200/70 dark:border-zinc-800/50"
             >
-              <td className="px-4 py-2 text-zinc-400">{formatTime(fill.filled_at)}</td>
-              <td className="px-4 py-2 text-zinc-300">{fill.symbol}</td>
+              <td className="px-4 py-2 text-zinc-600 dark:text-zinc-400">
+                {formatTime(fill.filled_at)}
+              </td>
+              <td className="px-4 py-2 text-zinc-700 dark:text-zinc-300">{fill.symbol}</td>
               <td
                 className={`px-4 py-2 font-bold uppercase ${
-                  fill.side === "buy" ? "text-emerald-400" : "text-red-400"
+                  fill.side === "buy"
+                    ? "text-emerald-600 dark:text-emerald-400"
+                    : "text-red-600 dark:text-red-400"
                 }`}
               >
                 {fill.side}
               </td>
-              <td className="px-4 py-2 text-zinc-100">{trimAmount(fill.quantity_base)}</td>
-              <td className="px-4 py-2 text-zinc-100">{trimAmount(fill.price_quote)}</td>
-              <td className="px-4 py-2 text-zinc-400">{trimAmount(fill.fee_quote)}</td>
+              <td className="px-4 py-2 text-zinc-900 dark:text-zinc-100">
+                {trimAmount(fill.quantity_base)}
+              </td>
+              <td className="px-4 py-2 text-zinc-900 dark:text-zinc-100">
+                {trimAmount(fill.price_quote)}
+              </td>
+              <td className="px-4 py-2 text-zinc-600 dark:text-zinc-400">
+                {trimAmount(fill.fee_quote)}
+              </td>
               <td className="px-4 py-2 font-mono text-xs text-zinc-500">
                 {fill.client_order_id}
               </td>

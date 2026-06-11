@@ -5,7 +5,9 @@ function Metric(props: { label: string; value: string; hint?: string; valueClass
   return (
     <div>
       <div className="text-xs uppercase tracking-wide text-zinc-500">{props.label}</div>
-      <div className={`text-lg font-semibold ${props.valueClass ?? "text-zinc-100"}`}>
+      <div
+        className={`text-lg font-semibold ${props.valueClass ?? "text-zinc-900 dark:text-zinc-100"}`}
+      >
         {props.value}
       </div>
       {props.hint !== undefined && <div className="text-xs text-zinc-500">{props.hint}</div>}
@@ -17,21 +19,21 @@ export function StatusCard(props: { status: StatusResponse }) {
   const { status } = props;
   const quote = status.quote_currency;
   return (
-    <section className="rounded-xl border border-zinc-800 bg-zinc-900 p-5">
+    <section className="rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900 p-5">
       <div className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-1">
-        <h2 className="text-xl font-bold text-zinc-100">{status.symbol}</h2>
+        <h2 className="text-xl font-bold text-zinc-900 dark:text-zinc-100">{status.symbol}</h2>
         <span
           title={
             status.mode === "live"
               ? "trading real money"
               : "practice mode — simulated money, real prices"
           }
-          className="rounded bg-amber-500/20 px-2 py-0.5 text-xs font-bold uppercase text-amber-400"
+          className="rounded bg-amber-500/20 px-2 py-0.5 text-xs font-bold uppercase text-amber-600 dark:text-amber-400"
         >
           {status.mode}
         </span>
         {status.paused && (
-          <span className="rounded bg-red-500/20 px-2 py-0.5 text-xs font-bold uppercase text-red-400">
+          <span className="rounded bg-red-500/20 px-2 py-0.5 text-xs font-bold uppercase text-red-600 dark:text-red-400">
             paused
           </span>
         )}
@@ -39,8 +41,8 @@ export function StatusCard(props: { status: StatusResponse }) {
           <span
             className={`rounded px-2 py-0.5 text-xs font-bold uppercase ${
               status.regime.label === "risk_off" || status.regime.label === "warming_up"
-                ? "bg-red-500/20 text-red-400"
-                : "bg-sky-500/20 text-sky-400"
+                ? "bg-red-500/20 text-red-600 dark:text-red-400"
+                : "bg-sky-500/20 text-sky-600 dark:text-sky-400"
             }`}
             title={status.regime.reasons.join("; ")}
           >
@@ -77,18 +79,18 @@ export function StatusCard(props: { status: StatusResponse }) {
         />
       </div>
       {status.breakers.tripped_reason !== null && (
-        <div className="mt-4 rounded-lg border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-300">
+        <div className="mt-4 rounded-lg border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-700 dark:text-red-300">
           <span className="font-bold uppercase">circuit breaker tripped</span> —{" "}
           {status.breakers.tripped_reason}
         </div>
       )}
       {status.breakers.tripped_reason === null && status.breakers.cooldown_until !== null && (
-        <div className="mt-4 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-300">
+        <div className="mt-4 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-700 dark:text-amber-300">
           <span className="font-bold uppercase">loss-streak cooldown</span> — entries blocked
           until {formatTime(status.breakers.cooldown_until)}
         </div>
       )}
-      <div className="mt-4 border-t border-zinc-800 pt-4">
+      <div className="mt-4 border-t border-zinc-200 dark:border-zinc-800 pt-4">
         {status.position === null ? (
           <div className="text-sm text-zinc-500">flat — no open position</div>
         ) : (
@@ -121,7 +123,9 @@ export function StatusCard(props: { status: StatusResponse }) {
                   : truncateAmount(status.protective_stop_quote)
               }
               valueClass={
-                status.protective_stop_quote === null ? "text-red-400" : "text-zinc-100"
+                status.protective_stop_quote === null
+                  ? "text-red-600 dark:text-red-400"
+                  : "text-zinc-900 dark:text-zinc-100"
               }
               hint="auto-sell level guarding the position"
             />

@@ -24,6 +24,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 
 from tradebot.backtest.parity import DivergenceReport
+from tradebot.competition import ENTRY_MODES, FAMILY_DESCRIPTIONS, LINEUP
 from tradebot.core.config import AppConfig
 from tradebot.core.metrics import MetricsCollector, format_metric
 from tradebot.core.models import Candle, CandleInterval, utc_now
@@ -35,6 +36,7 @@ from tradebot.evaluation.runner import EvaluationRunConfig
 from tradebot.evaluation.suggestions import build_suggestions
 from tradebot.evaluation.sweep import (
     DEFAULT_SCENARIO_COUNT,
+    STRATEGY_FAMILIES,
     SweepCandidate,
     SweepConfig,
 )
@@ -96,6 +98,44 @@ class BotState(Protocol):
 
     async def start_comparison(self, config: EvaluationRunConfig) -> list[int]:
         """Grade the whole lineup on identical scenarios; returns run ids."""
+        ...
+
+    async def bot_detail(self, bot_id: str) -> dict[str, Any]:
+        """One bot's leaderboard row + positions + strategy descriptor."""
+        ...
+
+    async def pause_bot(self, bot_id: str) -> None:
+        """Mute one bot's entries (``KeyError`` unknown)."""
+        ...
+
+    async def resume_bot(self, bot_id: str) -> None:
+        """Un-mute one bot's entries (``KeyError`` unknown)."""
+        ...
+
+    async def kill_bot(self, bot_id: str) -> tuple[int, list[str]]:
+        """Halt one bot and flatten it; returns (exits, failure reasons)."""
+        ...
+
+    async def create_custom_bot(
+        self, label: str, description: str, rules: Mapping[str, Any]
+    ) -> str:
+        """Build, persist, and start a user bot; returns its id."""
+        ...
+
+    async def update_custom_bot(self, bot_id: str, rules: Mapping[str, Any]) -> None:
+        """Replace a custom bot's recipe and hot-swap its strategy."""
+        ...
+
+    async def delete_custom_bot(self, bot_id: str) -> None:
+        """Retire a custom bot (journals stay)."""
+        ...
+
+    def fill_store_for(self, bot_id: str) -> FillStore:
+        """One bot's fill journal view (``KeyError`` unknown)."""
+        ...
+
+    def decision_store_for(self, bot_id: str) -> DecisionStore:
+        """One bot's decision trail view (``KeyError`` unknown)."""
         ...
 
     async def persist_risk_state(self) -> None:
@@ -383,6 +423,11 @@ class CompetitorResponse(BaseModel):
     label: str
     description: str
     is_production: bool
+    kind: str
+    """"production" | "builtin" | "custom" — drives badges and which
+    actions (edit/delete) the UI may offer."""
+
+    paused: bool
     equity_quote: str | None
     initial_balance_quote: str
     return_fraction: str | None
@@ -395,11 +440,94 @@ class CompetitorResponse(BaseModel):
     breaker_tripped_reason: str | None
 
 
+def _competitor_response(row: Mapping[str, Any]) -> CompetitorResponse:
+    """Serialize one leaderboard row (Decimal amounts -> strings)."""
+    return CompetitorResponse(
+        bot_id=row["bot_id"],
+        label=row["label"],
+        description=row["description"],
+        is_production=row["is_production"],
+        kind=row["kind"],
+        paused=row["paused"],
+        equity_quote=_optional_str(row["equity_quote"]),
+        initial_balance_quote=str(row["initial_balance_quote"]),
+        return_fraction=_optional_str(row["return_fraction"]),
+        quote_balance=str(row["quote_balance"]),
+        realized_pnl_quote=str(row["realized_pnl_quote"]),
+        unrealized_pnl_quote=_optional_str(row["unrealized_pnl_quote"]),
+        open_positions=row["open_positions"],
+        entry_fills=row["entry_fills"],
+        exit_fills=row["exit_fills"],
+        breaker_tripped_reason=row["breaker_tripped_reason"],
+    )
+
+
 class CompetitionResponse(BaseModel):
     """The live leaderboard: every competitor, best equity first."""
 
     quote_currency: str
     competitors: list[CompetitorResponse]
+
+
+class BotPositionResponse(BaseModel):
+    """One open position on a bot's detail page, amounts as strings."""
+
+    symbol: str
+    quantity_base: str
+    average_entry_price_quote: str
+    mark_price_quote: str | None
+    unrealized_pnl_quote: str | None
+
+
+class BotDetailResponse(BaseModel):
+    """Everything the bot detail page needs in one fetch."""
+
+    summary: CompetitorResponse
+    positions: list[BotPositionResponse]
+    strategy: dict[str, Any]
+    """What the bot trades: ``{"kind": "production", "families": ...}`` |
+    ``{"kind": "builtin", "family", "params"}`` | ``{"kind": "custom",
+    "rules"}``. Parameters are plain JSON for display/editing only."""
+
+
+class CreateBotRequest(BaseModel):
+    """The bot builder's submission."""
+
+    name: str
+    description: str = ""
+    rules: dict[str, Any]
+    """``{"entry_mode": "any"|"all", "families": {family: {params}}}`` —
+    validated server-side against the real strategy config models."""
+
+
+class CreateBotResponse(BaseModel):
+    """Acknowledgement that a custom bot was created and started."""
+
+    bot_id: str
+    detail: str
+
+
+class UpdateBotRulesRequest(BaseModel):
+    """A custom bot's replacement recipe."""
+
+    rules: dict[str, Any]
+
+
+class RuleOptionResponse(BaseModel):
+    """One pickable rule (strategy family) for the bot builder."""
+
+    family: str
+    label: str
+    description: str
+    defaults: dict[str, Any]
+    """The family's complete default parameters, for the advanced editor."""
+
+
+class BotBuilderOptionsResponse(BaseModel):
+    """Everything the builder UI needs to render its choices."""
+
+    families: list[RuleOptionResponse]
+    entry_modes: list[str]
 
 
 class ComparisonStartResponse(BaseModel):
@@ -898,26 +1026,135 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
         rows = await state.competition_snapshot()
         return CompetitionResponse(
             quote_currency=state.config.quote_currency,
-            competitors=[
-                CompetitorResponse(
-                    bot_id=row["bot_id"],
-                    label=row["label"],
-                    description=row["description"],
-                    is_production=row["is_production"],
-                    equity_quote=_optional_str(row["equity_quote"]),
-                    initial_balance_quote=str(row["initial_balance_quote"]),
-                    return_fraction=_optional_str(row["return_fraction"]),
-                    quote_balance=str(row["quote_balance"]),
-                    realized_pnl_quote=str(row["realized_pnl_quote"]),
-                    unrealized_pnl_quote=_optional_str(row["unrealized_pnl_quote"]),
-                    open_positions=row["open_positions"],
-                    entry_fills=row["entry_fills"],
-                    exit_fills=row["exit_fills"],
-                    breaker_tripped_reason=row["breaker_tripped_reason"],
-                )
-                for row in rows
-            ],
+            competitors=[_competitor_response(row) for row in rows],
         )
+
+    @protected.get("/bots/options")
+    async def get_bot_builder_options() -> BotBuilderOptionsResponse:
+        """Render the bot builder's choices from the real strategy registry.
+
+        Declared before ``/bots/{bot_id}`` so the literal segment matches
+        as a path. Defaults come straight from the config models — the UI
+        never hardcodes a parameter that could drift.
+        """
+        labels = {spec.family: spec.label for spec in LINEUP if spec.family is not None}
+        families = []
+        for family, (config_model, _constructor) in STRATEGY_FAMILIES.items():
+            families.append(
+                RuleOptionResponse(
+                    family=family,
+                    label=labels.get(family, family.replace("_", " ").capitalize()),
+                    description=FAMILY_DESCRIPTIONS.get(family, ""),
+                    defaults=config_model().model_dump(mode="json"),
+                )
+            )
+        return BotBuilderOptionsResponse(families=families, entry_modes=list(ENTRY_MODES))
+
+    @protected.get("/bots/{bot_id}")
+    async def get_bot_detail(bot_id: str) -> BotDetailResponse:
+        """One bot's full picture: summary, positions, and what it trades."""
+        try:
+            detail = await state.bot_detail(bot_id)
+        except KeyError as error:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+        return BotDetailResponse(
+            summary=_competitor_response(detail),
+            positions=[
+                BotPositionResponse(
+                    symbol=position["symbol"],
+                    quantity_base=str(position["quantity_base"]),
+                    average_entry_price_quote=str(position["average_entry_price_quote"]),
+                    mark_price_quote=_optional_str(position["mark_price_quote"]),
+                    unrealized_pnl_quote=_optional_str(position["unrealized_pnl_quote"]),
+                )
+                for position in detail["positions"]
+            ],
+            strategy=detail["strategy"],
+        )
+
+    @protected.post("/bots")
+    async def create_bot(request: CreateBotRequest) -> CreateBotResponse:
+        """Create a custom bot from the builder's recipe and start it."""
+        try:
+            bot_id = await state.create_custom_bot(request.name, request.description, request.rules)
+        except ValueError as error:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)
+            ) from error
+        except RuntimeError as error:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+        return CreateBotResponse(
+            bot_id=bot_id, detail=f"{request.name.strip()} joined the competition"
+        )
+
+    @protected.put("/bots/{bot_id}/rules")
+    async def update_bot_rules(bot_id: str, request: UpdateBotRulesRequest) -> CommandResponse:
+        """Replace a custom bot's recipe; its position and history stay."""
+        try:
+            await state.update_custom_bot(bot_id, request.rules)
+        except KeyError as error:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)
+            ) from error
+        return CommandResponse(paused=False, detail=f"{bot_id} now trades the new rules")
+
+    @protected.post("/bots/{bot_id}/pause")
+    async def pause_bot(bot_id: str) -> CommandResponse:
+        """Mute one bot's entries; its protective stops keep running."""
+        try:
+            await state.pause_bot(bot_id)
+        except KeyError as error:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+        return CommandResponse(paused=True, detail=f"{bot_id} paused; resting orders stay live")
+
+    @protected.post("/bots/{bot_id}/resume")
+    async def resume_bot(bot_id: str) -> CommandResponse:
+        """Un-mute one bot's entries."""
+        try:
+            await state.resume_bot(bot_id)
+        except KeyError as error:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+        return CommandResponse(paused=False, detail=f"{bot_id} resumed")
+
+    @protected.post("/bots/{bot_id}/kill")
+    async def kill_bot(bot_id: str) -> CommandResponse:
+        """Halt one bot and flatten its positions at market."""
+        try:
+            exits_submitted, failures = await state.kill_bot(bot_id)
+        except KeyError as error:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+        if failures:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"{bot_id} halted with failures ({exits_submitted} exit order(s) "
+                    "submitted): " + "; ".join(failures)
+                ),
+            )
+        plural = "s" if exits_submitted != 1 else ""
+        detail = (
+            f"{bot_id} halted; {exits_submitted} exit order{plural} submitted, fills on next candle"
+            if exits_submitted
+            else f"{bot_id} halted; no position to flatten"
+        )
+        return CommandResponse(paused=True, detail=detail)
+
+    @protected.delete("/bots/{bot_id}")
+    async def delete_bot(bot_id: str) -> CommandResponse:
+        """Retire a custom bot; its trade history stays queryable."""
+        try:
+            await state.delete_custom_bot(bot_id)
+        except KeyError as error:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)
+            ) from error
+        except RuntimeError as error:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+        return CommandResponse(paused=False, detail=f"{bot_id} retired; its history stays")
 
     @protected.get("/coins/{symbol:path}/divergence")
     async def get_divergence(
@@ -1115,8 +1352,17 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
     async def get_decisions(
         limit: int = Query(50, ge=1, le=200),
         symbol: str | None = Query(None),
+        bot: str | None = Query(None),
     ) -> list[DecisionResponse]:
-        decisions = await state.decision_store.fetch_recent(resolve_symbol(symbol), limit)
+        store = state.decision_store
+        if bot is not None:
+            try:
+                store = state.decision_store_for(bot)
+            except KeyError as error:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND, detail=str(error)
+                ) from error
+        decisions = await store.fetch_recent(resolve_symbol(symbol), limit)
         return [
             DecisionResponse(
                 signal_id=decision.signal_id,
@@ -1497,11 +1743,22 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
         return PlainTextResponse("\n".join(lines) + "\n")
 
     @protected.get("/fills")
-    async def get_fills(symbol: str | None = Query(None)) -> list[FillResponse]:
-        # The journal view spans the whole account by default. Any symbol
-        # may narrow it — including ones no longer configured: fills are
+    async def get_fills(
+        symbol: str | None = Query(None), bot: str | None = Query(None)
+    ) -> list[FillResponse]:
+        # The journal view spans the production account by default; ``bot``
+        # selects a competition account's journal instead. Any symbol may
+        # narrow it — including ones no longer configured: fills are
         # history, and history must stay queryable after a coin is removed.
-        fills = await state.fill_store.fetch_all(symbol)
+        store = state.fill_store
+        if bot is not None:
+            try:
+                store = state.fill_store_for(bot)
+            except KeyError as error:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND, detail=str(error)
+                ) from error
+        fills = await store.fetch_all(symbol)
         return [
             FillResponse(
                 client_order_id=fill.client_order_id,

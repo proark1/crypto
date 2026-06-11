@@ -23,8 +23,10 @@ export function ImprovementsPanel(props: {
     }
   }
   return (
-    <section className="rounded-xl border border-zinc-800 bg-zinc-900 p-4">
-      <h3 className="text-sm font-bold text-zinc-100">automated improvements</h3>
+    <section className="rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900 p-4">
+      <h3 className="text-sm font-bold text-zinc-900 dark:text-zinc-100">
+        automated improvements
+      </h3>
       <p className="mt-0.5 text-xs text-zinc-500">
         The bot tunes itself: on a schedule it tests variants of its current settings and
         switches only when a challenger is statistically <em>validated</em> on untouched data
@@ -41,19 +43,19 @@ export function ImprovementsPanel(props: {
           {props.versions.map((version) => (
             <li
               key={version.id}
-              className="rounded-lg border border-zinc-800 bg-zinc-950/60 p-3 text-sm"
+              className="rounded-lg border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950/60 p-3 text-sm"
             >
               <div className="flex flex-wrap items-center gap-2">
-                <span className="font-semibold text-zinc-100">
+                <span className="font-semibold text-zinc-900 dark:text-zinc-100">
                   v{version.id} · {version.family.replace(/_/g, " ")}
                 </span>
                 {activeIds.has(version.id) && (
-                  <span className="rounded bg-emerald-900/60 px-2 py-0.5 text-xs text-emerald-300">
+                  <span className="rounded bg-emerald-100 dark:bg-emerald-900/60 px-2 py-0.5 text-xs text-emerald-700 dark:text-emerald-300">
                     active
                   </span>
                 )}
                 {version.source_sweep_id !== null && (
-                  <span className="rounded bg-zinc-800 px-2 py-0.5 text-xs text-zinc-400">
+                  <span className="rounded bg-zinc-100 dark:bg-zinc-800 px-2 py-0.5 text-xs text-zinc-600 dark:text-zinc-400">
                     sweep #{version.source_sweep_id}
                   </span>
                 )}
@@ -61,7 +63,7 @@ export function ImprovementsPanel(props: {
                   {formatTime(version.activated_at)}
                 </span>
               </div>
-              <div className="mt-1 font-mono text-xs text-zinc-400">
+              <div className="mt-1 font-mono text-xs text-zinc-600 dark:text-zinc-400">
                 {Object.entries(version.params)
                   .map(([key, value]) => `${key}=${String(value)}`)
                   .join(" · ")}
@@ -74,7 +76,7 @@ export function ImprovementsPanel(props: {
                   onClick={() => {
                     props.onRevert(version.id);
                   }}
-                  className="mt-2 rounded-lg border border-zinc-700 px-3 py-1 text-xs text-zinc-300 hover:bg-zinc-800"
+                  className="mt-2 rounded-lg border border-zinc-300 dark:border-zinc-700 px-3 py-1 text-xs text-zinc-700 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800"
                 >
                   revert to this version
                 </button>

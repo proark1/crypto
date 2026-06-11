@@ -151,6 +151,24 @@ coins_table = Table(
 ``TRADEBOT_SYMBOLS`` only seeds this table on first boot; afterwards coins
 are added and removed through the control API."""
 
+custom_bots_table = Table(
+    "custom_bots",
+    metadata,
+    Column("bot_id", Text, primary_key=True),
+    Column("label", Text, nullable=False),
+    Column("description", Text, nullable=False, server_default=""),
+    Column("rules", JSONB, nullable=False),
+    Column("risk_state_row_id", Integer, nullable=False, unique=True),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+)
+"""User-built competition bots (ARCHITECTURE.md §13.6). ``rules`` is the
+validated recipe (families + per-family parameters + entry mode);
+``risk_state_row_id`` is this bot's permanently reserved ``risk_state``
+row, allocated at creation and never reused — the built-in lineup owns
+rows 1-5, custom bots start at 100. Deleting a bot keeps its journals
+(fills/orders/decisions stay queryable under its bot_id) but frees the
+id for nothing: ids are forever."""
+
 strategy_settings_table = Table(
     "strategy_settings",
     metadata,

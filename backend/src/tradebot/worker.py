@@ -33,9 +33,14 @@ from tradebot.competition import (
     PRODUCTION_BOT_ID,
     CompetitorSpec,
     build_challenger_strategy,
+    build_rules_strategy,
     build_scenario_strategy,
+    describe_rules,
+    slugify_bot_label,
     spec_for,
+    validate_rules,
 )
+from tradebot.competition.lineup import ScopedSignalStrategy
 from tradebot.core.config import AppConfig, TradingMode, validate_symbol_quote
 from tradebot.core.events import CandleClosed, EventBus
 from tradebot.core.metrics import MetricsCollector
@@ -46,6 +51,7 @@ from tradebot.evaluation.improve import AutoImprover
 from tradebot.evaluation.runner import EvaluationManager, EvaluationRunConfig, EvaluationRunner
 from tradebot.evaluation.strategy import build_traded_strategy
 from tradebot.evaluation.sweep import (
+    STRATEGY_FAMILIES,
     SweepCandidate,
     SweepConfig,
     SweepManager,
@@ -59,6 +65,7 @@ from tradebot.news import CryptoPanicSource, EventCalendar, NewsFlags, NewsGate,
 from tradebot.persistence import (
     CandleStore,
     CoinStore,
+    CustomBotStore,
     Database,
     DecisionStore,
     EvaluationStore,
@@ -169,6 +176,10 @@ class CompetitorRuntime:
     order_store: OrderStore
     decision_store: DecisionStore
     risk_state_store: RiskStateStore
+    rules: dict[str, Any] | None = None
+    """A custom bot's validated recipe; ``None`` for built-in lineup entries
+    (which trade their family with the active promoted parameters)."""
+
     engines: dict[str, TradingEngine] = field(default_factory=dict)
     # Where each symbol's boot gap-replay starts for this account: the
     # earliest restored open order's decision time.
@@ -224,32 +235,24 @@ class Worker:
         # pair of eyes (engines and feeds are per-symbol).
         self.risk_manager = RiskManager(RiskConfig(), self.portfolio, self.symbol_filters)
         self.engines: dict[str, TradingEngine] = {}
+        self._database = database
+        self.custom_bot_store = CustomBotStore(database)
         # The strategy competition's challenger accounts (ARCHITECTURE.md
-        # §13): each trades one family solo from its own paper balance and
-        # journal scope. The production bot competes as itself.
+        # §13): built-ins trade one family solo, custom bots trade their
+        # user-built recipe, each from its own paper balance and journal
+        # scope. The production bot competes as itself. Custom bots load
+        # from Postgres in initialize().
         self.challengers: dict[str, CompetitorRuntime] = {}
         if config.competition_enabled:
             for spec in LINEUP:
                 if spec.bot_id == PRODUCTION_BOT_ID:
                     continue
-                challenger_portfolio = Portfolio(config.paper_initial_balance_quote)
-                self.challengers[spec.bot_id] = CompetitorRuntime(
-                    spec=spec,
-                    portfolio=challenger_portfolio,
-                    risk_manager=RiskManager(
-                        RiskConfig(), challenger_portfolio, self.symbol_filters
-                    ),
-                    fill_store=FillStore(database, bot_id=spec.bot_id),
-                    order_store=OrderStore(database, bot_id=spec.bot_id),
-                    decision_store=DecisionStore(database, bot_id=spec.bot_id),
-                    risk_state_store=RiskStateStore(database, row_id=spec.risk_state_row_id),
-                )
+                self.challengers[spec.bot_id] = self._new_runtime(spec)
         self._feeds: dict[str, LiveMarketDataFeed] = {}
         self._feed_tasks: dict[str, asyncio.Task[None]] = {}
         self._task_group: asyncio.TaskGroup | None = None
         self._stop_requested = asyncio.Event()
         self._exchange = exchange
-        self._database = database
         self.evaluations = EvaluationManager(
             EvaluationRunner(
                 self.candle_store,
@@ -301,6 +304,22 @@ class Worker:
         # Validated at boot, not first cycle: a bad timeframe must fail the
         # deploy, not the first improvement attempt half a day later.
         CandleInterval(config.auto_improve_timeframe)
+
+    def _new_runtime(
+        self, spec: CompetitorSpec, rules: dict[str, Any] | None = None
+    ) -> CompetitorRuntime:
+        """One challenger account: own portfolio, risk manager, scoped stores."""
+        portfolio = Portfolio(self.config.paper_initial_balance_quote)
+        return CompetitorRuntime(
+            spec=spec,
+            portfolio=portfolio,
+            risk_manager=RiskManager(RiskConfig(), portfolio, self.symbol_filters),
+            fill_store=FillStore(self._database, bot_id=spec.bot_id),
+            order_store=OrderStore(self._database, bot_id=spec.bot_id),
+            decision_store=DecisionStore(self._database, bot_id=spec.bot_id),
+            risk_state_store=RiskStateStore(self._database, row_id=spec.risk_state_row_id),
+            rules=rules,
+        )
 
     def _spawn_background(self, coroutine: Coroutine[Any, Any, None]) -> asyncio.Task[None]:
         """Run a coroutine under the worker's TaskGroup (shutdown cancels it)."""
@@ -365,16 +384,33 @@ class Worker:
                 marks[symbol] = candle.close_quote
         initial = self.config.paper_initial_balance_quote
         rows: list[dict[str, Any]] = []
-        for spec in LINEUP:
-            if spec.bot_id == PRODUCTION_BOT_ID:
-                portfolio, fill_store = self.portfolio, self.fill_store
-                breakers = self.risk_manager.breakers
-            elif spec.bot_id in self.challengers:
-                runtime = self.challengers[spec.bot_id]
-                portfolio, fill_store = runtime.portfolio, runtime.fill_store
-                breakers = runtime.risk_manager.breakers
-            else:
-                continue  # competition disabled: the incumbent trades alone
+        production_spec = spec_for(PRODUCTION_BOT_ID)
+        accounts: list[
+            tuple[
+                CompetitorSpec, Portfolio, FillStore, RiskManager, Mapping[str, TradingEngine], str
+            ]
+        ] = [
+            (
+                production_spec,
+                self.portfolio,
+                self.fill_store,
+                self.risk_manager,
+                self.engines,
+                "production",
+            )
+        ]
+        for runtime in self.challengers.values():
+            accounts.append(
+                (
+                    runtime.spec,
+                    runtime.portfolio,
+                    runtime.fill_store,
+                    runtime.risk_manager,
+                    runtime.engines,
+                    "custom" if runtime.rules is not None else "builtin",
+                )
+            )
+        for spec, portfolio, fill_store, risk_manager, engines, kind in accounts:
             positions = portfolio.positions
             unrealized = Decimal(0)
             all_marked = True
@@ -391,7 +427,11 @@ class Worker:
                     "bot_id": spec.bot_id,
                     "label": spec.label,
                     "description": spec.description,
-                    "is_production": spec.bot_id == PRODUCTION_BOT_ID,
+                    "is_production": kind == "production",
+                    "kind": kind,
+                    # Paused means muted: a bot whose every engine is paused
+                    # proposes nothing (protective stops still run).
+                    "paused": bool(engines) and all(engine.paused for engine in engines.values()),
                     "equity_quote": equity,
                     "initial_balance_quote": initial,
                     "return_fraction": (
@@ -403,11 +443,235 @@ class Worker:
                     "open_positions": len(positions),
                     "entry_fills": fill_counts.get("buy", 0),
                     "exit_fills": fill_counts.get("sell", 0),
-                    "breaker_tripped_reason": breakers.tripped_reason,
+                    "breaker_tripped_reason": risk_manager.breakers.tripped_reason,
                 }
             )
         rows.sort(key=lambda row: (row["equity_quote"] is None, -(row["equity_quote"] or 0)))
         return rows
+
+    def _runtime_for(self, bot_id: str) -> CompetitorRuntime:
+        """Return ``bot_id``'s challenger account; ``KeyError`` if unknown."""
+        runtime = self.challengers.get(bot_id)
+        if runtime is None:
+            raise KeyError(f"no competition bot {bot_id!r}")
+        return runtime
+
+    def _bot_engines(self, bot_id: str) -> Mapping[str, TradingEngine]:
+        """One bot's engines, production included; ``KeyError`` if unknown."""
+        if bot_id == PRODUCTION_BOT_ID:
+            return self.engines
+        return self._runtime_for(bot_id).engines
+
+    def fill_store_for(self, bot_id: str) -> FillStore:
+        """One bot's fill journal view; ``KeyError`` if unknown."""
+        if bot_id == PRODUCTION_BOT_ID:
+            return self.fill_store
+        return self._runtime_for(bot_id).fill_store
+
+    def decision_store_for(self, bot_id: str) -> DecisionStore:
+        """One bot's decision trail view; ``KeyError`` if unknown."""
+        if bot_id == PRODUCTION_BOT_ID:
+            return self.decision_store
+        return self._runtime_for(bot_id).decision_store
+
+    def _effective_family_params(self, family: str) -> dict[str, Any]:
+        """Return the complete parameter set ``family`` trades right now.
+
+        Active promoted overrides merged over the config model's defaults,
+        so the bot detail page shows exactly what will trade — never a
+        partial diff the reader has to mentally merge.
+        """
+        config_model, _ = STRATEGY_FAMILIES[family]
+        params: dict[str, Any] = config_model(**self.strategy_params.get(family, {})).model_dump(
+            mode="json"
+        )
+        return params
+
+    async def pause_bot(self, bot_id: str) -> None:
+        """Mute one bot's entries (its protective stops keep running)."""
+        for engine in self._bot_engines(bot_id).values():
+            engine.pause()
+        await self.persist_risk_state()
+        logger.info("bot paused: %s", bot_id)
+
+    async def resume_bot(self, bot_id: str) -> None:
+        """Un-mute one bot's entries."""
+        for engine in self._bot_engines(bot_id).values():
+            engine.resume()
+        await self.persist_risk_state()
+        logger.info("bot resumed: %s", bot_id)
+
+    async def kill_bot(self, bot_id: str) -> tuple[int, list[str]]:
+        """Halt one bot and flatten its positions at market.
+
+        Returns (exit orders submitted, failure reasons). Same semantics
+        as the account-wide kill switch, scoped to one account: every
+        engine is halted before any failure is reported.
+        """
+        exits_submitted = 0
+        failures: list[str] = []
+        for engine in self._bot_engines(bot_id).values():
+            try:
+                if await engine.kill():
+                    exits_submitted += 1
+            except RuntimeError as error:
+                failures.append(str(error))
+        await self.persist_risk_state()
+        logger.warning(
+            "bot killed: %s (%d exits submitted, %d failures)",
+            bot_id,
+            exits_submitted,
+            len(failures),
+        )
+        return exits_submitted, failures
+
+    async def create_custom_bot(
+        self, label: str, description: str, rules: Mapping[str, Any]
+    ) -> str:
+        """Build, persist, and start a user-defined bot; returns its id.
+
+        Raises ``ValueError`` for a bad recipe or a name collision and
+        ``RuntimeError`` when the competition is disabled. The strategy is
+        primed from stored candles before its engines attach, so a bot
+        created mid-stream starts with warm indicators instead of trading
+        blind for its first hour.
+        """
+        if not self.config.competition_enabled:
+            raise RuntimeError(
+                "the competition is disabled (TRADEBOT_COMPETITION_ENABLED=false); "
+                "custom bots need it on"
+            )
+        normalized = validate_rules(rules)
+        bot_id = slugify_bot_label(label)
+        if bot_id in self.challengers or any(spec.bot_id == bot_id for spec in LINEUP):
+            raise ValueError(f"a bot named {label.strip()!r} already exists")
+        final_description = description.strip() or describe_rules(normalized)
+        risk_row = await self.custom_bot_store.create(
+            bot_id, label.strip(), final_description, normalized, datetime.now(UTC)
+        )
+        spec = CompetitorSpec(
+            bot_id=bot_id,
+            label=label.strip(),
+            family=None,
+            risk_state_row_id=risk_row,
+            description=final_description,
+        )
+        runtime = self._new_runtime(spec, rules=normalized)
+        self.challengers[bot_id] = runtime
+        for symbol in self.symbols:
+            strategy = self._challenger_strategy(runtime)
+            stored = await self.candle_store.fetch_recent(
+                symbol, CandleInterval.M1, STRATEGY_PRIME_CANDLES
+            )
+            for candle in stored:
+                strategy.on_candle(candle, None)
+            self._activate_challenger_engine(runtime, symbol, strategy=strategy)
+        logger.info("custom bot created: %s (%s)", bot_id, final_description)
+        return bot_id
+
+    async def update_custom_bot(self, bot_id: str, rules: Mapping[str, Any]) -> None:
+        """Replace a custom bot's recipe and hot-swap its strategies.
+
+        Position, orders, and risk state are untouched — exactly like a
+        parameter promotion. ``ValueError`` for built-ins (their parameters
+        come from research promotions, not hand edits), ``KeyError`` for an
+        unknown bot.
+        """
+        runtime = self._runtime_for(bot_id)
+        if runtime.rules is None:
+            raise ValueError(
+                f"{bot_id} is a built-in bot; its parameters come from research "
+                "promotions and cannot be edited here"
+            )
+        normalized = validate_rules(rules)
+        await self.custom_bot_store.update_rules(bot_id, normalized)
+        runtime.rules = normalized
+        for symbol, engine in runtime.engines.items():
+            strategy = self._challenger_strategy(runtime)
+            stored = await self.candle_store.fetch_recent(
+                symbol, CandleInterval.M1, STRATEGY_PRIME_CANDLES
+            )
+            for candle in stored:
+                strategy.on_candle(candle, None)
+            engine.replace_strategy(strategy)
+        logger.info("custom bot rules updated: %s", bot_id)
+
+    async def delete_custom_bot(self, bot_id: str) -> None:
+        """Retire a custom bot; its journals stay queryable forever.
+
+        Refuses while the bot holds a position or a resting order — stop
+        the bot first (kill flattens at market on the next candle), then
+        delete. ``ValueError`` for built-ins, ``KeyError`` for unknown.
+        """
+        runtime = self._runtime_for(bot_id)
+        if runtime.rules is None:
+            raise ValueError(f"{bot_id} is a built-in lineup bot and cannot be deleted")
+        for symbol, engine in runtime.engines.items():
+            if runtime.portfolio.position(symbol) is not None:
+                raise RuntimeError(
+                    f"{bot_id} holds a position in {symbol}; stop the bot first "
+                    "(its exit fills on the next candle), then delete"
+                )
+            if engine.open_orders():
+                raise RuntimeError(
+                    f"{bot_id} has open orders in {symbol}; stop the bot first, then delete"
+                )
+        for engine in runtime.engines.values():
+            engine.detach_from(self.bus)
+        del self.challengers[bot_id]
+        await self.custom_bot_store.delete(bot_id)
+        logger.info("custom bot deleted: %s (journals kept)", bot_id)
+
+    async def bot_detail(self, bot_id: str) -> dict[str, Any]:
+        """Everything the bot detail page needs, in one shape.
+
+        The leaderboard row plus open positions (marked at the newest
+        stored closes) and a strategy descriptor saying exactly what the
+        bot trades. ``KeyError`` for an unknown bot.
+        """
+        rows = await self.competition_snapshot()
+        row = next((entry for entry in rows if entry["bot_id"] == bot_id), None)
+        if row is None:
+            raise KeyError(f"no competition bot {bot_id!r}")
+        if bot_id == PRODUCTION_BOT_ID:
+            portfolio = self.portfolio
+            strategy_info: dict[str, Any] = {
+                "kind": "production",
+                "regime_routed": self.regime_detector is not None,
+                "families": {
+                    family: self._effective_family_params(family)
+                    for family in sorted(PRODUCTION_FAMILIES)
+                },
+            }
+        else:
+            runtime = self._runtime_for(bot_id)
+            portfolio = runtime.portfolio
+            if runtime.rules is not None:
+                strategy_info = {"kind": "custom", "rules": runtime.rules}
+            else:
+                family = runtime.spec.family
+                assert family is not None  # built-ins always carry one
+                strategy_info = {
+                    "kind": "builtin",
+                    "family": family,
+                    "params": self._effective_family_params(family),
+                }
+        positions: list[dict[str, Any]] = []
+        for symbol, position in portfolio.positions.items():
+            candle = await self.candle_store.latest_candle(symbol, CandleInterval.M1)
+            mark = candle.close_quote if candle is not None else None
+            positions.append(
+                {
+                    "symbol": symbol,
+                    "quantity_base": position.quantity_base,
+                    "average_entry_price_quote": position.average_entry_price_quote,
+                    "mark_price_quote": mark,
+                    "unrealized_pnl_quote": (
+                        position.unrealized_pnl_quote(mark) if mark is not None else None
+                    ),
+                }
+            )
+        return {**row, "positions": positions, "strategy": strategy_info}
 
     async def apply_strategy_params(
         self,
@@ -486,7 +750,7 @@ class Worker:
             engine.replace_strategy(strategy)
         for runtime in self.challengers.values():
             for symbol, engine in runtime.engines.items():
-                strategy = build_challenger_strategy(runtime.spec, self.strategy_params)
+                strategy = self._challenger_strategy(runtime)
                 stored = await self.candle_store.fetch_recent(
                     symbol, CandleInterval.M1, STRATEGY_PRIME_CANDLES
                 )
@@ -505,6 +769,24 @@ class Worker:
         if self.regime_detector is not None:
             gates += (RegimeGate(self.regime_detector, self.sentiment),)
         return (*gates, NewsGate(self.news_flags, self.news_calendar))
+
+    def _challenger_entry_gates(self) -> tuple[EntryGate, ...]:
+        """Challenger gates: news/event veto only — no regime gate.
+
+        The regime gate routes families (trend entries in trends,
+        mean-reversion in ranges); that routing IS the production router's
+        strategy, and applying it to a solo bot would mute the bot for
+        every regime its family is "wrong" for — the competition would
+        compare gate schedules, not strategies. Hard news and event
+        windows still veto everyone: those are market facts, not strategy.
+        """
+        return (NewsGate(self.news_flags, self.news_calendar),)
+
+    def _challenger_strategy(self, runtime: CompetitorRuntime) -> Strategy:
+        """One fresh, bot-scoped strategy for a challenger account."""
+        if runtime.rules is not None:
+            return ScopedSignalStrategy(build_rules_strategy(runtime.rules), runtime.spec.bot_id)
+        return build_challenger_strategy(runtime.spec, self.strategy_params)
 
     def _scenario_evaluator_for(self, strategy_id: str) -> ScenarioEvaluator:
         """One evaluator grading the named lineup entry on fresh instances.
@@ -572,24 +854,7 @@ class Worker:
         )
         engine.attach_to(self.bus)
         for runtime in self.challengers.values():
-            # Same gates, same candles, own account. Always autonomous: a
-            # challenger exists to show what its strategy does unattended;
-            # co-pilot approval queues are the operator's bot's concern.
-            challenger_engine = TradingEngine(
-                build_challenger_strategy(runtime.spec, self.strategy_params),
-                runtime.risk_manager,
-                runtime.portfolio,
-                SimulatedExecutionAdapter(FillSimulatorConfig()),
-                symbol=symbol,
-                fill_store=runtime.fill_store,
-                decision_store=runtime.decision_store,
-                order_store=runtime.order_store,
-                autonomy_mode=AutonomyMode.AUTONOMOUS,
-                entry_gates=self._entry_gates(),
-                signal_id_scope=f"{runtime.spec.bot_id}/",
-            )
-            challenger_engine.attach_to(self.bus)
-            runtime.engines[symbol] = challenger_engine
+            self._activate_challenger_engine(runtime, symbol)
         feed = LiveMarketDataFeed(
             self._exchange,
             symbol,
@@ -601,6 +866,33 @@ class Worker:
         self._feeds[symbol] = feed
         if self._task_group is not None:
             self._feed_tasks[symbol] = self._task_group.create_task(feed.run())
+
+    def _activate_challenger_engine(
+        self, runtime: CompetitorRuntime, symbol: str, strategy: Strategy | None = None
+    ) -> None:
+        """Build and wire one challenger's engine for ``symbol``.
+
+        Always autonomous (a challenger exists to show what its strategy
+        does unattended; co-pilot approval queues are the operator's bot's
+        concern), and gated by news only — see
+        :meth:`_challenger_entry_gates` for why the regime gate does not
+        apply to solo bots.
+        """
+        engine = TradingEngine(
+            strategy if strategy is not None else self._challenger_strategy(runtime),
+            runtime.risk_manager,
+            runtime.portfolio,
+            SimulatedExecutionAdapter(FillSimulatorConfig()),
+            symbol=symbol,
+            fill_store=runtime.fill_store,
+            decision_store=runtime.decision_store,
+            order_store=runtime.order_store,
+            autonomy_mode=AutonomyMode.AUTONOMOUS,
+            entry_gates=self._challenger_entry_gates(),
+            signal_id_scope=f"{runtime.spec.bot_id}/",
+        )
+        engine.attach_to(self.bus)
+        runtime.engines[symbol] = engine
 
     async def initialize(self) -> int:
         """Create the schema, load the active coins, and replay the journal.
@@ -619,6 +911,21 @@ class Worker:
             )
         if await self.coin_store.seed_if_empty(self.config.symbol_list(), datetime.now(UTC)):
             logger.info("first boot: coins seeded from TRADEBOT_SYMBOLS")
+        # Custom bots join the lineup before any engine is built, so the
+        # activation loop below wires them exactly like built-in challengers.
+        if self.config.competition_enabled:
+            for row in await self.custom_bot_store.list_all():
+                spec = CompetitorSpec(
+                    bot_id=row["bot_id"],
+                    label=row["label"],
+                    family=None,
+                    risk_state_row_id=row["risk_state_row_id"],
+                    description=row["description"],
+                )
+                self.challengers[spec.bot_id] = self._new_runtime(spec, rules=dict(row["rules"]))
+            custom_count = sum(1 for r in self.challengers.values() if r.rules is not None)
+            if custom_count:
+                logger.info("loaded %d custom bot(s) into the competition", custom_count)
         symbols = await self.coin_store.list_symbols()
         try:
             markets = await self._exchange.load_markets()

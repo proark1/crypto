@@ -9,10 +9,44 @@ import {
   type Time,
   type UTCTimestamp,
 } from "lightweight-charts";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import type { CandleResponse } from "../api/types";
 import { toChartCandles } from "../lib/chart";
+
+/** Chart chrome per theme — lightweight-charts is canvas, so Tailwind's
+ * `dark:` classes cannot reach it; we mirror the zinc palette by hand. */
+function layoutOptions(dark: boolean) {
+  return {
+    layout: {
+      background: { color: dark ? "#18181b" : "#ffffff" },
+      textColor: dark ? "#a1a1aa" : "#52525b",
+    },
+    grid: {
+      vertLines: { color: dark ? "#27272a" : "#e4e4e7" },
+      horzLines: { color: dark ? "#27272a" : "#e4e4e7" },
+    },
+  };
+}
+
+/** Track the `.dark` class on <html> so the canvas follows the app theme
+ * without threading theme props through every screen that shows a chart. */
+function useDarkClass(): boolean {
+  const [dark, setDark] = useState(() => document.documentElement.classList.contains("dark"));
+  useEffect(() => {
+    const observer = new MutationObserver(() => {
+      setDark(document.documentElement.classList.contains("dark"));
+    });
+    observer.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["class"],
+    });
+    return () => {
+      observer.disconnect();
+    };
+  }, []);
+  return dark;
+}
 
 /**
  * Price candles with markers supplied by the caller — trade fills on the
@@ -29,6 +63,7 @@ export function CandleChart(props: {
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const markersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
+  const dark = useDarkClass();
 
   useEffect(() => {
     if (containerRef.current === null) {
@@ -37,11 +72,7 @@ export function CandleChart(props: {
     const chart = createChart(containerRef.current, {
       height: 320,
       autoSize: true,
-      layout: { background: { color: "#18181b" }, textColor: "#a1a1aa" },
-      grid: {
-        vertLines: { color: "#27272a" },
-        horzLines: { color: "#27272a" },
-      },
+      ...layoutOptions(document.documentElement.classList.contains("dark")),
       timeScale: { timeVisible: true, secondsVisible: false },
     });
     const series = chart.addSeries(CandlestickSeries, {
@@ -63,6 +94,10 @@ export function CandleChart(props: {
   }, []);
 
   useEffect(() => {
+    chartRef.current?.applyOptions(layoutOptions(dark));
+  }, [dark]);
+
+  useEffect(() => {
     seriesRef.current?.setData(toChartCandles(props.candles));
     markersRef.current?.setMarkers(props.markers);
   }, [props.candles, props.markers]);
@@ -70,7 +105,7 @@ export function CandleChart(props: {
   // The container always renders: the chart is created once against it, so
   // hiding it during the empty state would leave the chart never initialized.
   return (
-    <section className="relative overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900">
+    <section className="relative overflow-hidden rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
       <div ref={containerRef} className="h-80 w-full" />
       {props.candles.length === 0 && (
         <div className="absolute inset-0 flex items-center justify-center text-sm text-zinc-500">

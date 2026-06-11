@@ -5,8 +5,13 @@
  */
 
 import type {
+  BotCreateRequest,
+  BotCreateResponse,
+  BotDetailResponse,
+  BotOptionsResponse,
   CandleResponse,
   ChartInterval,
+  CustomBotRules,
   ComparisonGroupResponse,
   ComparisonStartRequest,
   ComparisonStartResponse,
@@ -58,7 +63,11 @@ export function storeToken(token: string): void {
 
 const BASE_URL: string = (import.meta.env.VITE_API_URL as string | undefined) ?? "";
 
-async function request<T>(path: string, method: "GET" | "POST", body?: unknown): Promise<T> {
+async function request<T>(
+  path: string,
+  method: "GET" | "POST" | "PUT" | "DELETE",
+  body?: unknown,
+): Promise<T> {
   const headers: Record<string, string> = { Authorization: `Bearer ${getStoredToken()}` };
   if (body !== undefined) {
     headers["Content-Type"] = "application/json";
@@ -83,13 +92,21 @@ async function request<T>(path: string, method: "GET" | "POST", body?: unknown):
   return (await response.json()) as T;
 }
 
-function withSymbol(path: string, symbol?: string): string {
-  // No symbol means the backend's default (its first configured pair).
-  return symbol === undefined ? path : `${path}?symbol=${encodeURIComponent(symbol)}`;
+/** Append the defined params as a query string; omitted params mean the
+ * backend's defaults (e.g. no symbol = its first configured pair). */
+function withQuery(path: string, params: Record<string, string | undefined>): string {
+  const search = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined) {
+      search.set(key, value);
+    }
+  }
+  const query = search.toString();
+  return query === "" ? path : `${path}?${query}`;
 }
 
 export function fetchStatus(symbol?: string): Promise<StatusResponse> {
-  return request<StatusResponse>(withSymbol("/status", symbol), "GET");
+  return request<StatusResponse>(withQuery("/status", { symbol }), "GET");
 }
 
 /** Live-vs-replay divergence (the paper-gate metric). Recomputed per call —
@@ -105,25 +122,21 @@ export function fetchWallet(): Promise<WalletResponse> {
   return request<WalletResponse>("/wallet", "GET");
 }
 
-export function fetchFills(): Promise<FillResponse[]> {
-  // Deliberately account-wide: the journal spans every coin.
-  return request<FillResponse[]>("/fills", "GET");
+/** The trade journal: account-wide by default (spans every coin), or one
+ * competing bot's own journal when its bot_id is given. */
+export function fetchFills(bot?: string): Promise<FillResponse[]> {
+  return request<FillResponse[]>(withQuery("/fills", { bot }), "GET");
 }
 
-export function fetchDecisions(symbol?: string): Promise<DecisionResponse[]> {
-  return request<DecisionResponse[]>(withSymbol("/decisions", symbol), "GET");
+export function fetchDecisions(symbol?: string, bot?: string): Promise<DecisionResponse[]> {
+  return request<DecisionResponse[]>(withQuery("/decisions", { symbol, bot }), "GET");
 }
 
 export function fetchCandles(
   symbol?: string,
   interval: ChartInterval = "1m",
 ): Promise<CandleResponse[]> {
-  const path = withSymbol("/candles", symbol);
-  const separator = path.includes("?") ? "&" : "?";
-  return request<CandleResponse[]>(
-    `${path}${separator}interval=${encodeURIComponent(interval)}`,
-    "GET",
-  );
+  return request<CandleResponse[]>(withQuery("/candles", { symbol, interval }), "GET");
 }
 
 export function postPause(): Promise<CommandResponse> {
@@ -180,6 +193,48 @@ export function startEvaluation(body: {
  * best equity first (null equity last) — render them in order. */
 export function fetchCompetition(): Promise<CompetitionResponse> {
   return request<CompetitionResponse>("/competition", "GET");
+}
+
+/** The rule cards the bot builder offers, with their default parameters. */
+export function fetchBotOptions(): Promise<BotOptionsResponse> {
+  return request<BotOptionsResponse>("/bots/options", "GET");
+}
+
+/** One competing bot in full: summary row, open positions, and how it
+ * trades. 404s for unknown bot ids — the caller decides how to recover. */
+export function fetchBot(botId: string): Promise<BotDetailResponse> {
+  return request<BotDetailResponse>(`/bots/${encodeURIComponent(botId)}`, "GET");
+}
+
+/** Create a custom bot from a rule recipe. 400 = invalid recipe or
+ * duplicate name, 409 = the competition is disabled — both in plain words. */
+export function createBot(body: BotCreateRequest): Promise<BotCreateResponse> {
+  return request<BotCreateResponse>("/bots", "POST", body);
+}
+
+export function updateBotRules(botId: string, rules: CustomBotRules): Promise<CommandResponse> {
+  return request<CommandResponse>(`/bots/${encodeURIComponent(botId)}/rules`, "PUT", { rules });
+}
+
+/** Pause one competing bot only; its protective stops keep running. */
+export function pauseBot(botId: string): Promise<CommandResponse> {
+  return request<CommandResponse>(`/bots/${encodeURIComponent(botId)}/pause`, "POST");
+}
+
+export function resumeBot(botId: string): Promise<CommandResponse> {
+  return request<CommandResponse>(`/bots/${encodeURIComponent(botId)}/resume`, "POST");
+}
+
+/** Stop & flatten one bot: halts it and sells its positions at market on
+ * the next candle. 409 with a plain-words detail on partial failure. */
+export function killBot(botId: string): Promise<CommandResponse> {
+  return request<CommandResponse>(`/bots/${encodeURIComponent(botId)}/kill`, "POST");
+}
+
+/** Delete a custom bot. 400 for built-ins, 409 while it still holds a
+ * position or orders ("stop the bot first"), 404 unknown. */
+export function deleteBot(botId: string): Promise<CommandResponse> {
+  return request<CommandResponse>(`/bots/${encodeURIComponent(botId)}`, "DELETE");
 }
 
 /** Start one evaluation run per strategy over identical scenario sets.

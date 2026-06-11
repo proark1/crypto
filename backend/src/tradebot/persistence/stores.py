@@ -30,6 +30,7 @@ from tradebot.persistence.database import (
     Database,
     candles_table,
     coins_table,
+    custom_bots_table,
     decisions_table,
     fills_table,
     orders_table,
@@ -674,3 +675,90 @@ class StrategySettingsStore:
         async with self._database.engine.connect() as connection:
             rows = (await connection.execute(statement)).mappings().all()
         return [dict(row) for row in rows]
+
+
+FIRST_CUSTOM_RISK_ROW = 100
+"""Where custom bots' ``risk_state`` rows start. The built-in lineup owns
+the low ids (1-5 today); the gap leaves room for future built-ins without
+ever colliding with a user's bot."""
+
+
+class CustomBotStore:
+    """User-built competition bots: the persisted recipes the worker runs.
+
+    Journals are NOT deleted with a bot — fills/orders/decisions stay
+    queryable under its bot_id forever, and a recreated bot with the same
+    name gets a fresh id so histories never merge.
+    """
+
+    def __init__(self, database: Database) -> None:
+        """Bind the store to ``database``."""
+        self._database = database
+
+    async def create(
+        self,
+        bot_id: str,
+        label: str,
+        description: str,
+        rules: Mapping[str, Any],
+        created_at: datetime,
+    ) -> int:
+        """Persist a new bot; returns its allocated ``risk_state`` row id.
+
+        Raises ``ValueError`` when the id is already taken — bot ids are
+        forever (journals are keyed by them), so collisions must be loud.
+        """
+        _require_aware(created_at)
+        async with self._database.engine.begin() as connection:
+            existing = (
+                await connection.execute(
+                    select(custom_bots_table.c.bot_id).where(custom_bots_table.c.bot_id == bot_id)
+                )
+            ).first()
+            if existing is not None:
+                raise ValueError(f"a bot named {bot_id!r} already exists")
+            current_max: int | None = (
+                await connection.execute(select(func.max(custom_bots_table.c.risk_state_row_id)))
+            ).scalar()
+            risk_row = max(FIRST_CUSTOM_RISK_ROW - 1, current_max or 0) + 1
+            await connection.execute(
+                custom_bots_table.insert(),
+                [
+                    {
+                        "bot_id": bot_id,
+                        "label": label,
+                        "description": description,
+                        "rules": dict(rules),
+                        "risk_state_row_id": risk_row,
+                        "created_at": created_at,
+                    }
+                ],
+            )
+        return risk_row
+
+    async def list_all(self) -> list[dict[str, Any]]:
+        """Return every bot in creation order (the lineup display order)."""
+        statement = select(custom_bots_table).order_by(custom_bots_table.c.created_at)
+        async with self._database.engine.connect() as connection:
+            rows = (await connection.execute(statement)).mappings().all()
+        return [dict(row) for row in rows]
+
+    async def update_rules(self, bot_id: str, rules: Mapping[str, Any]) -> None:
+        """Replace ``bot_id``'s recipe; raises ``KeyError`` if unknown."""
+        statement = (
+            custom_bots_table.update()
+            .where(custom_bots_table.c.bot_id == bot_id)
+            .values(rules=dict(rules))
+        )
+        async with self._database.engine.begin() as connection:
+            result = await connection.execute(statement)
+        if result.rowcount == 0:
+            raise KeyError(f"no custom bot {bot_id!r}")
+
+    async def delete(self, bot_id: str) -> None:
+        """Remove the bot's recipe (its journals stay); ``KeyError`` if unknown."""
+        statement = custom_bots_table.delete().where(custom_bots_table.c.bot_id == bot_id)
+        async with self._database.engine.begin() as connection:
+            result = await connection.execute(statement)
+        if result.rowcount == 0:
+            raise KeyError(f"no custom bot {bot_id!r}")

@@ -15,7 +15,10 @@ export function IntervalSwitcher(props: {
   onSelect: (interval: ChartInterval) => void;
 }) {
   return (
-    <nav aria-label="chart interval" className="flex gap-1 rounded-lg bg-zinc-900 p-1">
+    <nav
+      aria-label="chart interval"
+      className="flex gap-1 rounded-lg bg-zinc-200/60 p-1 dark:bg-zinc-900"
+    >
       {INTERVALS.map((interval) => (
         <button
           key={interval.value}
@@ -27,8 +30,8 @@ export function IntervalSwitcher(props: {
           }}
           className={`rounded-md px-2.5 py-1 text-xs font-semibold ${
             props.selected === interval.value
-              ? "bg-zinc-700 text-zinc-100"
-              : "text-zinc-400 hover:text-zinc-200"
+              ? "bg-zinc-200 dark:bg-zinc-700 text-zinc-900 dark:text-zinc-100"
+              : "text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200"
           }`}
         >
           {interval.label}

@@ -111,17 +111,18 @@ export function profitFactorTone(value: unknown): Tone {
 }
 
 export const TONE_TEXT_CLASS: Record<Tone, string> = {
-  good: "text-emerald-400",
-  bad: "text-red-400",
-  warn: "text-amber-400",
-  neutral: "text-zinc-100",
+  good: "text-emerald-600 dark:text-emerald-400",
+  bad: "text-red-600 dark:text-red-400",
+  warn: "text-amber-600 dark:text-amber-400",
+  neutral: "text-zinc-900 dark:text-zinc-100",
 };
 
 export const TONE_PANEL_CLASS: Record<Tone, string> = {
-  good: "border-emerald-500/40 bg-emerald-500/10 text-emerald-200",
-  bad: "border-red-500/40 bg-red-500/10 text-red-200",
-  warn: "border-amber-500/40 bg-amber-500/10 text-amber-200",
-  neutral: "border-zinc-700 bg-zinc-800/60 text-zinc-200",
+  good: "border-emerald-500/40 bg-emerald-500/10 text-emerald-900 dark:text-emerald-200",
+  bad: "border-red-500/40 bg-red-500/10 text-red-900 dark:text-red-200",
+  warn: "border-amber-500/40 bg-amber-500/10 text-amber-900 dark:text-amber-200",
+  neutral:
+    "border-zinc-300 dark:border-zinc-700 bg-zinc-100 dark:bg-zinc-800/60 text-zinc-800 dark:text-zinc-200",
 };
 
 /** What each scenario verdict means, in the §12.2 bands, with its tone. */
@@ -140,8 +141,8 @@ export const VERDICT_LEGEND: Record<string, { tone: Tone; meaning: string }> = {
 };
 
 export const VERDICT_CHIP_CLASS: Record<Tone, string> = {
-  good: "bg-emerald-900/50 text-emerald-300",
-  bad: "bg-red-900/50 text-red-300",
-  warn: "bg-amber-900/50 text-amber-300",
-  neutral: "bg-zinc-800 text-zinc-300",
+  good: "bg-emerald-100 dark:bg-emerald-900/50 text-emerald-700 dark:text-emerald-300",
+  bad: "bg-red-100 dark:bg-red-900/50 text-red-700 dark:text-red-300",
+  warn: "bg-amber-100 dark:bg-amber-900/50 text-amber-700 dark:text-amber-300",
+  neutral: "bg-zinc-100 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300",
 };

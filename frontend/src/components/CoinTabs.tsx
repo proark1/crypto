@@ -27,8 +27,8 @@ export function CoinTabs(props: {
             }}
             className={`rounded-lg px-3 py-1.5 text-sm font-semibold transition-colors ${
               active
-                ? "bg-emerald-600 text-white"
-                : "bg-zinc-900 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
+                ? "border border-emerald-600 bg-emerald-600 text-white"
+                : "border border-zinc-200 bg-white text-zinc-600 hover:bg-zinc-100 hover:text-zinc-900 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-200"
             }`}
           >
             {symbol}
