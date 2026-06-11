@@ -163,6 +163,9 @@ class Worker:
         self.decision_store = DecisionStore(database)
         self.order_store = OrderStore(database)
         self.risk_state_store = RiskStateStore(database)
+        # Where each symbol's boot gap-replay starts: the earliest restored
+        # open order's decision time, set during replay_journal.
+        self._gap_replay_from: dict[str, datetime] = {}
         self._saved_risk_state: tuple[BreakerState, tuple[str, ...]] | None = None
         self.coin_store = CoinStore(database)
         self.evaluation_store = EvaluationStore(database)
@@ -482,6 +485,7 @@ class Worker:
             )
         await self._restore_risk_state()
         replayed = await self.replay_journal()
+        await self._replay_missed_candles()
         await self._rearm_protective_stops()
         # Subscribed after restore on purpose: the persister must never
         # write boot-time defaults over the state it was about to load.
@@ -639,6 +643,50 @@ class Worker:
             self._saved_risk_state = previous
             logger.exception("failed to persist risk state; will retry next candle")
 
+    async def _replay_missed_candles(self) -> None:
+        """Run downtime candles through restored orders before streaming.
+
+        A restored order's fate was decided by the candles that happened
+        while the process was down; evaluating it only against future live
+        candles would fill it at the wrong time and price. For each symbol
+        with restored orders, the gap is backfilled into Postgres first,
+        then every candle from the earliest restored order's decision time
+        onward is replayed through the adapter (strategy untouched).
+        Re-replaying candles an order already survived is idempotent: the
+        simulator is deterministic, and an order that did not fill on a
+        candle live will not fill on it now. A failed backfill degrades to
+        the old behavior — the order meets the live stream — loudly.
+        """
+        for symbol, replay_from in sorted(self._gap_replay_from.items()):
+            engine = self.engines.get(symbol)
+            feed = self._feeds.get(symbol)
+            if engine is None or feed is None:
+                continue  # replay_journal already warned about the orphan
+            try:
+                await feed.backfill()
+            except Exception:
+                logger.warning(
+                    "gap backfill failed for %s; restored orders will meet the "
+                    "live stream instead of the downtime candles",
+                    symbol,
+                    exc_info=True,
+                )
+                continue
+            candles = await self.candle_store.fetch_range(
+                symbol, CandleInterval.M1, replay_from, datetime.now(UTC)
+            )
+            fills_before = len(engine.fills)
+            for candle in candles:
+                await engine.replay_gap_candle(candle)
+            logger.info(
+                "gap replay for %s: %d candles from %s, %d fills",
+                symbol,
+                len(candles),
+                replay_from.isoformat(),
+                len(engine.fills) - fills_before,
+            )
+        self._gap_replay_from.clear()
+
     async def _rearm_protective_stops(self) -> None:
         """Rebuild each replayed position's protection after a restart.
 
@@ -763,6 +811,10 @@ class Worker:
                 continue
             engine.restore_order(open_order)
             restored += 1
+            symbol = open_order.order.symbol
+            created_at = open_order.order.created_at
+            if symbol not in self._gap_replay_from or created_at < self._gap_replay_from[symbol]:
+                self._gap_replay_from[symbol] = created_at
         if restored:
             logger.info("restored %d open orders into their adapters", restored)
         return len(fills)

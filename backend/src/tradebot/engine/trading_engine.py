@@ -417,6 +417,24 @@ class TradingEngine:
             stop_order.stop_price_quote,
         )
 
+    async def replay_gap_candle(self, candle: Candle) -> None:
+        """Evaluate one missed candle against open orders only (boot recovery).
+
+        Orders that were resting while the process was down must meet the
+        candles that actually happened, not fill later at the post-restart
+        price. Only the adapter sees the candle: the strategy must not emit
+        signals for a market that has already moved on, and the stop level
+        stays where the venue last knew it — nothing would have ratcheted a
+        resting order while the bot was down. Fills run the full handler
+        chain (journal, stop arming, portfolio, breaker streaks), exactly
+        as they would have live.
+        """
+        if self._symbol is not None and candle.symbol != self._symbol:
+            raise ValueError(f"engine is bound to {self._symbol}, got {candle.symbol}")
+        self._last_candle = candle
+        await self._adapter.process_candle(candle)
+        await self._journal_trigger_transitions()
+
     def restore_order(self, open_order: OpenOrder) -> None:
         """Re-arm one persisted open order after a restart (recovery only).
 

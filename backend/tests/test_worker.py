@@ -743,3 +743,60 @@ class TestVenueFilterMapping:
         assert filters.min_notional_quote == Decimal("5")
         # The risk manager reads the same live dict the worker fills.
         assert worker.risk_manager._filters_by_symbol is worker.symbol_filters
+
+
+class TestGapReplay:
+    async def test_restored_order_fills_on_the_downtime_candles(self, database: Database) -> None:
+        """An order pending through an outage meets the candles it missed,
+        not the post-restart market."""
+        order_store = OrderStore(database)
+        await order_store.record_submitted(
+            Order(
+                client_order_id="ord-gap",
+                signal_id="sig-gap",
+                symbol="BTC/USDT",
+                side=Side.BUY,
+                order_type=OrderType.MARKET,
+                quantity_base=Decimal("1"),
+                protective_exit=ProtectiveExitPlan(
+                    stop_price_quote=Decimal("95"), limit_price_quote=Decimal("94.5")
+                ),
+                created_at=BASE_TIME,
+            )
+        )
+        # The downtime candles, already repaired into Postgres (the scripted
+        # exchange's backfill is a no-op, so seeding the store stands in for
+        # a successful repair).
+        from tradebot.persistence import CandleStore
+
+        gap_candles = [
+            Candle(
+                symbol="BTC/USDT",
+                interval=CandleInterval.M1,
+                open_time=BASE_TIME + timedelta(minutes=i),
+                close_time=BASE_TIME + timedelta(minutes=i + 1),
+                open_quote=Decimal(str(100 + i)),
+                high_quote=Decimal(str(100.5 + i)),
+                low_quote=Decimal(str(99.5 + i)),
+                close_quote=Decimal(str(100 + i)),
+                volume_base=Decimal("10"),
+            )
+            for i in range(1, 4)
+        ]
+        await CandleStore(database).insert_batch(gap_candles)
+
+        worker = Worker(make_config(), database, ScriptedExchange([]))
+        await worker.initialize()
+
+        (fill,) = await worker.fill_store.fetch_all("BTC/USDT")
+        # Filled on the first downtime candle's open (plus 5bps slippage),
+        # not at some later live price.
+        assert fill.filled_at == BASE_TIME + timedelta(minutes=1)
+        assert fill.price_quote == Decimal("101") * (1 + Decimal("0.0005"))
+        position = worker.portfolio.position("BTC/USDT")
+        assert position is not None and position.quantity_base == Decimal("1")
+        # The entry's protective stop was armed during the replay and is the
+        # one restorable order left.
+        (stop,) = worker.engines["BTC/USDT"].open_orders()
+        assert stop.client_order_id == "stop-ord-gap"
+        assert await order_store.fetch_open("BTC/USDT") != []
