@@ -2,6 +2,7 @@ import { useState } from "react";
 
 import type { ScenarioReplayResponse } from "../api/types";
 import { toReplayMarkers } from "../lib/chart";
+import { GLOSSARY, InfoTooltip, type GlossaryTerm } from "../ui";
 import { CandleChart } from "./CandleChart";
 
 /**
@@ -126,13 +127,17 @@ export function ScenarioReplay(props: { replay: ScenarioReplayResponse; onBack: 
             )}
           </div>
           <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-1 text-sm sm:grid-cols-4">
-            <GradeItem label="R multiple" value={replay.scenario.r_multiple} />
+            <GradeItem
+              label="R multiple"
+              value={replay.scenario.r_multiple}
+              term={GLOSSARY.r}
+            />
             <GradeItem label="PnL (quote)" value={replay.pnl_quote} />
             <GradeItem label="entry" value={replay.entry_price_quote} />
             <GradeItem label="exit" value={replay.exit_price_quote} />
-            <GradeItem label="MFE (R)" value={replay.mfe_r} />
-            <GradeItem label="MAE (R)" value={replay.mae_r} />
-            <GradeItem label="oracle (R)" value={replay.oracle_r} />
+            <GradeItem label="MFE (R)" value={replay.mfe_r} term={GLOSSARY.mfe} />
+            <GradeItem label="MAE (R)" value={replay.mae_r} term={GLOSSARY.mae} />
+            <GradeItem label="oracle (R)" value={replay.oracle_r} term={GLOSSARY.oracle} />
             <GradeItem
               label="stop hit"
               value={replay.stop_hit === null ? null : replay.stop_hit ? "yes" : "no"}
@@ -149,10 +154,13 @@ export function ScenarioReplay(props: { replay: ScenarioReplayResponse; onBack: 
   );
 }
 
-function GradeItem(props: { label: string; value: string | null }) {
+function GradeItem(props: { label: string; value: string | null; term?: GlossaryTerm }) {
   return (
     <>
-      <dt className="text-zinc-500">{props.label}</dt>
+      <dt className="flex items-center gap-1 text-zinc-500">
+        {props.label}
+        {props.term !== undefined && <InfoTooltip text={props.term.definition} />}
+      </dt>
       <dd className="text-zinc-800 dark:text-zinc-200">{props.value ?? "—"}</dd>
     </>
   );
