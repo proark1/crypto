@@ -29,7 +29,7 @@ This document is the target design. Implementation status as of June 2026
 | Breakout strategy family (§5.2, review item 9) | **Research-only** — Donchian-channel entries (close clears the prior N-candle ceiling), turtle-style channel exits, shared ATR stop convention and managed-stop knobs; registered for sweeps/evaluation so research can pit it against the incumbents on identical scenarios, but deliberately unrouted in production: which regime activates it (and at whose expense) is a human decision the sweep evidence should inform, and the worker refuses to promote it until that route exists |
 | Mean-reversion strategy family (§5.2 routing) | **Done** — RSI oversold-recovery entries, midline exits, same ATR stop convention as trend; optional trend-filter EMA (skip falling knives) as a sweepable knob; regime-routed per coin, both families' indicators always warm, exits pass from either family in any regime |
 | Momentum strategy family (§13) | **Research + competition** — MACD histogram-crossover entries (12/26/9 defaults, zero-line filter on by default), histogram-flip exits, shared ATR stop convention; built from the TA-Lib-verified incremental EMA; sweepable and evaluated like every family, traded solo by its competition account, unrouted in production until a human routes it |
-| Strategy competition: five paper bots, leaderboard, research comparison (§13) | **Done** — production regime router plus four solo-family challengers (trend, mean-reversion, breakout, momentum) trade the same coins, candles, and gates from isolated journal-backed paper accounts (bot-scoped fills/orders/decisions/risk rows, per-bot signal-id namespacing, full restart replay per account); GET /competition serves the equity-ranked leaderboard; POST /evaluations/compare grades the whole lineup on byte-identical scenario sets (one frozen window + seed, grouped runs) for the research screen's side-by-side table |
+| Strategy competition: paper-bot lineup + custom bot builder, per-bot controls, leaderboard, research comparison (§13) | **Done** — production regime router plus four solo-family challengers (trend, mean-reversion, breakout, momentum) trade the same coins, candles, and gates from isolated journal-backed paper accounts (bot-scoped fills/orders/decisions/risk rows, per-bot signal-id namespacing, full restart replay per account); GET /competition serves the equity-ranked leaderboard; POST /evaluations/compare grades the whole lineup on byte-identical scenario sets (one frozen window + seed, grouped runs) for the research screen's side-by-side table; solo bots trade ungated by the regime router's family schedule (news/event vetoes still apply to all); per-bot pause/resume/kill + detail API; user-built custom bots (rule recipes, any/all entry voting via CompositeStrategy, validated + persisted + hot-editable + restart-replayed) |
 | Observability: dead-man's switch, metrics, DB backups (§4.9, §7) | **Done** — heartbeat ping gated on feed freshness; /metrics (feed lag, equity, breakers, bus counters) behind the bearer token; live-vs-backtest divergence measurable per coin (the §10 paper-gate metric: live paper fills matched against a same-candle replay of the production strategy shape; zero is the one-code-path expectation, non-zero is documented gating or a parity bug); scheduled gzipped-JSONL backups to S3-compatible storage with exact-Decimal restore (production restore drill pending, see checklist) |
 | Live trading (§8 Phase 3) | **Missing** — blockers enumerated in LIVE_TRADING_CHECKLIST.md |
 
@@ -737,8 +737,15 @@ The only variable is the strategy. Everything else is identical:
 - **Same candles** — one market-data feed per symbol fans out to every
   account's engine over the bus; the competition multiplies accounts,
   never exchange connections or rate-limit spend.
-- **Same gates** — regime gate, sentiment tighteners, and news vetoes
-  apply to every account identically (§5.2).
+- **Same market facts, own strategy** — hard news and event-window
+  vetoes apply to every account identically (§5.3): those are market
+  facts, not strategy. The regime gate does **not** apply to solo bots:
+  it routes families (trend entries in trends, mean-reversion in
+  ranges), and that routing IS the production router's strategy — gating
+  a solo bot by it would mute the bot for every regime its family is
+  "wrong" for, and the leaderboard would compare gate schedules instead
+  of strategies. The production bot keeps its full gate chain: that is
+  the shape being defended.
 - **Same risk rules** — each account gets its own `RiskManager` over its
   own portfolio (same `RiskConfig`), so breakers judge each account's own
   equity; one bot's drawdown never mutes another's entries — or hides
@@ -767,9 +774,14 @@ unprefixed — its id streams predate the competition.
 Challengers are always autonomous (co-pilot approvals are the operator's
 bot's concern), never notify, and **never get routed into production by
 winning** — promotion of a family into the production router remains a
-human architecture decision informed by this evidence. Operator commands
-stay whole-bot: pause/resume/kill act on every account, and a coin
-cannot be removed while any account holds a position or order in it.
+human architecture decision informed by this evidence. Account-wide
+operator commands stay whole-bot: pause/resume/kill act on every
+account, and a coin cannot be removed while any account holds a
+position or order in it. Each bot is additionally controllable on its
+own — `POST /bots/{id}/pause|resume|kill` mutes, un-mutes, or halts and
+flattens one account (protective stops keep running while paused), and
+`GET /bots/{id}` serves the detail view (leaderboard row, marked
+positions, and the exact effective parameters it trades).
 `TRADEBOT_COMPETITION_ENABLED=false` falls back to the incumbent alone.
 
 ### 13.4 The leaderboard
@@ -782,7 +794,36 @@ state. The dashboard renders it as the strategy battle card. Unknown
 marks make an honest `null` equity that ranks last — never a guessed
 number.
 
-### 13.5 Research comparison (same question, graded scenarios)
+### 13.5 Custom bots (build your own competitor)
+
+Users can enter their own bots into the competition. A bot is a
+**recipe**: one or more strategy families with parameter overrides,
+combined as ``any`` (the first family to propose a buy wins — a wider
+net) or ``all`` (every family must agree on the same candle — a
+confluence filter, via ``strategies/composite.py``; exits always pass
+from whichever family asks, so a position is never trapped behind a
+vote). Recipes are validated against the real config models — a typo'd
+family or parameter fails the create call, never trades defaults
+silently — and persisted in ``custom_bots`` with a permanently reserved
+``risk_state`` row (built-ins own rows 1-5; custom bots start at 100;
+ids are never reused).
+
+A created bot joins live immediately with primed indicators (stored
+candles fed through the fresh strategy before its engines attach) and
+is a full account: journal-scoped fills/orders/decisions, own risk
+manager and breakers, complete restart replay. Recipes are editable
+(``PUT /bots/{id}/rules`` hot-swaps the strategy, position and history
+untouched — the same mechanics as a parameter promotion) and bots are
+deletable once flat; their journals stay queryable forever, and a
+recreated bot with the same name would collide loudly rather than merge
+histories. Built-ins are not editable or deletable: their parameters
+come from research promotions (§12.7), and the lineup's stability is
+what makes the leaderboard's history meaningful. The builder UI reads
+its choices from ``GET /bots/options`` — families, plain-words
+descriptions, and complete defaults straight from the strategy
+registry, so the frontend never hardcodes a parameter that could drift.
+
+### 13.6 Research comparison (same question, graded scenarios)
 
 The live leaderboard needs weeks to mean anything; the research
 comparison answers the same question in minutes on history.
