@@ -34,6 +34,23 @@ export function truncateAmount(amount: string, maxDecimals = 2): string {
 }
 
 /**
+ * Group the integer part of an exact amount string with thousands
+ * separators for readability (1234567.89 → "1,234,567.89"). Pure string
+ * work on the Decimal-exact value — no parsing, no float math — so it is
+ * safe on money. Trailing precision is trimmed first via `truncateAmount`.
+ */
+export function formatMoney(amount: string, maxDecimals = 2): string {
+  const trimmed = truncateAmount(amount, maxDecimals);
+  const negative = trimmed.startsWith("-");
+  const unsigned = negative ? trimmed.slice(1) : trimmed;
+  const dot = unsigned.indexOf(".");
+  const whole = dot === -1 ? unsigned : unsigned.slice(0, dot);
+  const fraction = dot === -1 ? "" : unsigned.slice(dot);
+  const grouped = whole.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  return `${negative ? "-" : ""}${grouped}${fraction}`;
+}
+
+/**
  * Render a backend fraction (e.g. "0.0123") as a signed percentage
  * ("+1.23%"). Fractions are ratios, not money, so parsing them for
  * display is allowed — money strings never come through here.

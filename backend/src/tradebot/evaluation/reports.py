@@ -1,9 +1,12 @@
 """Aggregate run reports (ARCHITECTURE.md section 12.3).
 
 Expectancy and profit factor lead; win rate follows — a 40%-right bot
-earning +2R per win beats an 80%-right bot losing slowly. All Decimals are
-stringified: the summary lives in a JSONB column and feeds a frontend that
-never does float money math.
+earning +2R per win beats an 80%-right bot losing slowly. The report also
+carries an illustrative money result (``money_result``): the R-multiple
+stream replayed as a fixed stake so a non-technical reader can rank
+strategies by ending money, not only by R. All Decimals are stringified:
+the summary lives in a JSONB column and feeds a frontend that never does
+float money math.
 """
 
 from __future__ import annotations
@@ -16,18 +19,42 @@ from tradebot.core.models import ACCOUNTING_RESOLUTION
 from tradebot.evaluation.models import Scenario, ScenarioClass, ScenarioResult, Verdict
 
 _DISPLAY_RESOLUTION = Decimal("0.0001")
+_MONEY_RESOLUTION = Decimal("0.01")
+
+EVALUATION_START_BALANCE_QUOTE = Decimal("10000")
+"""Illustrative starting equity (quote currency) for the run's money result.
+
+The evaluation grades decisions in R-multiples (ratios, not money); this
+fixed stake turns that ratio stream into a "what would 10,000 have become"
+figure. It is identical for every strategy in a comparison, so the gap
+between two columns' ending balances stays the strategies' own."""
+
+EVALUATION_RISK_PER_TRADE_FRACTION = Decimal("0.01")
+"""Fraction of current equity risked per graded trade in the money result.
+
+Matches the live risk manager default (``risk/manager.py``), so one R of
+expectancy reads as ~1% of equity. The curve is fixed-fractional and
+compounding: ending equity is the product of ``(1 + fraction * R)`` over the
+graded trades, which is order-independent — fitting scenarios that are
+independently sampled moments rather than one sequential path."""
 
 
 def _display(value: Decimal) -> str:
     return str(value.quantize(_DISPLAY_RESOLUTION, rounding=ROUND_HALF_EVEN))
 
 
+def _money(value: Decimal) -> str:
+    return str(value.quantize(_MONEY_RESOLUTION, rounding=ROUND_HALF_EVEN))
+
+
 def build_summary(records: list[tuple[Scenario, ScenarioResult]]) -> dict[str, Any]:
     """Build the persisted run report from graded scenarios."""
+    r_values = [result.r_multiple for _, result in records if result.r_multiple is not None]
     summary: dict[str, Any] = {
         "scenario_count": len(records),
         "verdicts": _verdict_counts(records),
-        **trade_metrics([result for _, result in records]),
+        **r_metrics(r_values),
+        **money_result(r_values),
         "hold_metrics": _hold_metrics(records),
         "by_trend": _breakdown(records, lambda s: s.conditions.trend.value),
         "by_volatility": _breakdown(records, lambda s: s.conditions.volatility.value),
@@ -36,6 +63,28 @@ def build_summary(records: list[tuple[Scenario, ScenarioResult]]) -> dict[str, A
         "by_event": _event_breakdown(records),
     }
     return summary
+
+
+def money_result(r_values: list[Decimal]) -> dict[str, Any]:
+    """Replay the R-multiple stream as an illustrative money result.
+
+    Starts from ``EVALUATION_START_BALANCE_QUOTE`` and risks a fixed fraction
+    of current equity per trade, compounding (§12.3). Returns the starting and
+    ending equity, net PnL (all quote currency, money-stringified), and the
+    return as a dimensionless fraction — so the report can be read in money,
+    not only in R. With no graded trades the stake is returned unchanged.
+    """
+    start = EVALUATION_START_BALANCE_QUOTE
+    equity = start
+    for r in r_values:
+        equity *= Decimal(1) + EVALUATION_RISK_PER_TRADE_FRACTION * r
+    net = equity - start
+    return {
+        "starting_balance_quote": _money(start),
+        "final_balance_quote": _money(equity),
+        "net_pnl_quote": _money(net),
+        "return_fraction": _display(net / start),
+    }
 
 
 def _verdict_counts(records: list[tuple[Scenario, ScenarioResult]]) -> dict[str, int]:

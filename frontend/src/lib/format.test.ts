@@ -2,11 +2,28 @@ import { describe, expect, it } from "vitest";
 
 import {
   formatFractionPercent,
+  formatMoney,
   humanizeParamName,
   signClass,
   trimAmount,
   truncateAmount,
 } from "./format";
+
+describe("formatMoney", () => {
+  it("groups the integer part with thousands separators", () => {
+    expect(formatMoney("10000.00")).toBe("10,000");
+    expect(formatMoney("1234567.89")).toBe("1,234,567.89");
+  });
+
+  it("keeps the sign and trims trailing precision", () => {
+    expect(formatMoney("-199.00")).toBe("-199");
+    expect(formatMoney("10049.50")).toBe("10,049.5");
+  });
+
+  it("never does float math — sub-cent values keep a significant digit", () => {
+    expect(formatMoney("0.0001234")).toBe("0.0001");
+  });
+});
 
 describe("trimAmount", () => {
   it("removes trailing zeros without rounding", () => {

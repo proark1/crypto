@@ -1,7 +1,7 @@
 import { useState } from "react";
 
 import type { ComparisonGroupResponse, EvaluationRunResponse } from "../api/types";
-import { formatTime } from "../lib/format";
+import { formatFractionPercent, formatMoney, formatTime, signClass } from "../lib/format";
 
 /** Plain-words names for the competing bot ids; unknown ids fall back to
  * their underscores-stripped form so a new challenger still renders. */
@@ -42,6 +42,41 @@ function asPercent(value: unknown): string {
   // Ratios (win rate as a fraction), never money: parsing is display-only.
   const parsed = asNumber(value);
   return parsed === null ? "—" : `${(parsed * 100).toFixed(1)}%`;
+}
+
+/** Render a money field (exact Decimal string) grouped for the eye; non-strings
+ * (a run still in flight has no balance yet) fall back to a dash. */
+function asMoney(value: unknown): string {
+  return typeof value === "string" && value.trim() !== "" ? formatMoney(value) : "—";
+}
+
+/** Standard competition ranking of values, highest first (1 = best). Ties
+ * share a rank; nulls (runs still in flight) rank nowhere. */
+function rankDescending(values: (number | null)[]): (number | null)[] {
+  const ordered = [...new Set(values.filter((value): value is number => value !== null))].sort(
+    (a, b) => b - a,
+  );
+  return values.map((value) => (value === null ? null : ordered.indexOf(value) + 1));
+}
+
+/** "1st", "2nd", "3rd", … with a medal for the podium so the winner reads at
+ * a glance. */
+const MEDALS: Record<number, string> = { 1: "🥇 ", 2: "🥈 ", 3: "🥉 " };
+
+function ordinal(rank: number): string {
+  const tens = rank % 100;
+  const ones = rank % 10;
+  const suffix =
+    tens >= 11 && tens <= 13
+      ? "th"
+      : ones === 1
+        ? "st"
+        : ones === 2
+          ? "nd"
+          : ones === 3
+            ? "rd"
+            : "th";
+  return `${MEDALS[rank] ?? ""}${String(rank)}${suffix}`;
 }
 
 interface MetricRow {
@@ -96,6 +131,11 @@ function statusCell(run: EvaluationRunResponse): string {
  */
 function ComparisonTable(props: { group: ComparisonGroupResponse }) {
   const runs = props.group.runs;
+  // Every strategy started from the identical stake, so the ending balance
+  // ranks them directly; a run still in flight has no balance and ranks
+  // nowhere.
+  const finalBalances = runs.map((run) => asNumber(metricValue(run, "final_balance_quote")));
+  const ranks = rankDescending(finalBalances);
   return (
     <div className="overflow-x-auto">
       <table className="w-full text-left text-sm">
@@ -113,6 +153,78 @@ function ComparisonTable(props: { group: ComparisonGroupResponse }) {
           </tr>
         </thead>
         <tbody>
+          <tr className="border-t border-zinc-200/70 dark:border-zinc-800/60">
+            <td
+              className="py-1 pr-3 text-xs uppercase tracking-wide text-zinc-500"
+              title="rank by ending balance — every strategy started from the same stake"
+            >
+              rank
+            </td>
+            {runs.map((run, index) => {
+              const rank = ranks[index];
+              return (
+                <td
+                  key={run.id}
+                  className={`py-1 pr-3 text-sm font-semibold ${
+                    rank === 1
+                      ? "text-emerald-700 dark:text-emerald-300"
+                      : "text-zinc-600 dark:text-zinc-400"
+                  }`}
+                >
+                  {rank === null || rank === undefined ? "—" : ordinal(rank)}
+                </td>
+              );
+            })}
+          </tr>
+          <tr className="border-t border-zinc-200/70 dark:border-zinc-800/60">
+            <td
+              className="py-1 pr-3 text-xs uppercase tracking-wide text-zinc-500"
+              title="what a 10,000 stake would be after these trades (1% risk per trade)"
+            >
+              final balance
+            </td>
+            {runs.map((run, index) => (
+              <td
+                key={run.id}
+                className={`py-1 pr-3 font-semibold ${
+                  ranks[index] === 1 ? "text-emerald-700 dark:text-emerald-300" : ""
+                }`}
+              >
+                {asMoney(metricValue(run, "final_balance_quote"))}
+                {ranks[index] === 1 &&
+                  finalBalances.filter((value) => value !== null).length > 1 && (
+                    <span className="ml-1 text-xs" title="most money of the completed runs">
+                      ★
+                    </span>
+                  )}
+              </td>
+            ))}
+          </tr>
+          <tr className="border-t border-zinc-200/70 dark:border-zinc-800/60">
+            <td
+              className="py-1 pr-3 text-xs uppercase tracking-wide text-zinc-500"
+              title="profit or loss on the 10,000 stake, with return %"
+            >
+              net P/L
+            </td>
+            {runs.map((run) => {
+              const net = metricValue(run, "net_pnl_quote");
+              const pct = metricValue(run, "return_fraction");
+              return (
+                <td
+                  key={run.id}
+                  className={`py-1 pr-3 ${signClass(typeof net === "string" ? net : null)}`}
+                >
+                  {asMoney(net)}
+                  {typeof pct === "string" && (
+                    <span className="ml-1 text-xs opacity-80">
+                      ({formatFractionPercent(pct)})
+                    </span>
+                  )}
+                </td>
+              );
+            })}
+          </tr>
           <tr className="border-t border-zinc-200/70 dark:border-zinc-800/60 text-zinc-600 dark:text-zinc-400">
             <td className="py-1 pr-3 text-xs uppercase tracking-wide text-zinc-500">status</td>
             {runs.map((run) => (
@@ -198,6 +310,11 @@ export function ComparisonPanel(props: {
           so the differences are the strategies&apos; own
         </span>
       </div>
+      <p className="mt-1 text-xs text-zinc-500">
+        each strategy starts from the same <span className="font-semibold">10,000</span> stake
+        (1% risked per trade) — the table leads with where that stake ends and ranks the columns
+        by it, so the best is the one with the most money
+      </p>
 
       {props.groups.length > 0 && selected !== undefined && (
         <div className="mt-3 grid gap-4 lg:grid-cols-[14rem_1fr]">
