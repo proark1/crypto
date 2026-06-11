@@ -23,7 +23,7 @@ from typing import Any, Protocol
 
 from tradebot.evaluation.models import LearningFinding, RunStatus
 from tradebot.evaluation.runner import EvaluationRunConfig
-from tradebot.evaluation.sweep import SweepCandidate, SweepConfig
+from tradebot.evaluation.sweep import DEFAULT_SCENARIO_COUNT, SweepCandidate, SweepConfig
 from tradebot.strategies import MeanReversionConfig, TrendFollowingConfig
 
 logger = logging.getLogger(__name__)
@@ -31,12 +31,9 @@ logger = logging.getLogger(__name__)
 PROMOTION_VERDICT = "validated"
 """The only sweep verdict that may change the traded configuration."""
 
-IMPROVEMENT_SCENARIO_COUNT = 400
-"""Scenarios per candidate per period in automated research. The strategy
-trades in only a few percent of scenarios, so a small count starves every
-sweep below MIN_SWEEP_TRADES and the loop can never validate anything —
-exactly the "insufficient evidence on every sweep" failure observed in
-production."""
+IMPROVEMENT_SCENARIO_COUNT = DEFAULT_SCENARIO_COUNT
+"""Scenarios per candidate per period in automated research — the shared
+unstarved default (see ``sweep.DEFAULT_SCENARIO_COUNT``)."""
 
 STALE_RUN_CYCLES = 2
 """A completed evaluation older than this many improvement intervals no

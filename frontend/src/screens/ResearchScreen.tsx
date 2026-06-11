@@ -246,7 +246,7 @@ export function ResearchScreen() {
   const [runs, setRuns] = useState<EvaluationRunResponse[]>([]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [days, setDays] = useState("90");
-  const [count, setCount] = useState("200");
+  const [count, setCount] = useState("400");
   const [timeframe, setTimeframe] = useState("1h");
   const [notice, setNotice] = useState<string | null>(null);
   const [scenarios, setScenarios] = useState<ScenarioSummaryResponse[]>([]);

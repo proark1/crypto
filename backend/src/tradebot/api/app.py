@@ -30,7 +30,12 @@ from tradebot.engine import TradingEngine
 from tradebot.evaluation.models import LearningFinding
 from tradebot.evaluation.replay import load_replay
 from tradebot.evaluation.runner import EvaluationRunConfig
-from tradebot.evaluation.sweep import DEFAULT_SWEEP_CANDIDATES, SweepCandidate, SweepConfig
+from tradebot.evaluation.sweep import (
+    DEFAULT_SCENARIO_COUNT,
+    DEFAULT_SWEEP_CANDIDATES,
+    SweepCandidate,
+    SweepConfig,
+)
 from tradebot.news import NewsFlags
 from tradebot.persistence import (
     CHART_BUCKET_UNITS,
@@ -252,7 +257,7 @@ class EvaluationStartRequest(BaseModel):
     symbols: list[str] | None = None
     timeframes: list[str] = ["1h"]
     history_days: int = 365
-    scenario_count: int = 200
+    scenario_count: int = DEFAULT_SCENARIO_COUNT
     lookback_candles: int = 200
     horizon_candles: int = 60
     seed: int = 7
@@ -378,7 +383,7 @@ class SweepStartRequest(BaseModel):
     symbol: str | None = None
     timeframe: str = "1h"
     history_days: int = 180
-    scenario_count: int = 100
+    scenario_count: int = DEFAULT_SCENARIO_COUNT
     lookback_candles: int = 200
     horizon_candles: int = 60
     seed: int = 7
