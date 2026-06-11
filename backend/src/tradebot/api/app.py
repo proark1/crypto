@@ -26,6 +26,7 @@ from pydantic import BaseModel
 from tradebot.backtest.parity import DivergenceReport
 from tradebot.competition import ENTRY_MODES, FAMILY_DESCRIPTIONS, LINEUP
 from tradebot.core.config import AppConfig
+from tradebot.core.logging import log_event
 from tradebot.core.metrics import MetricsCollector, format_metric
 from tradebot.core.models import Candle, CandleInterval, utc_now
 from tradebot.engine import TradingEngine
@@ -797,11 +798,13 @@ class AuthLockout:
             self._failures.popleft()
         if len(self._failures) > self._max_failures:
             self._locked_until = now + self._cooldown
-            logger.warning(
-                "control-plane auth locked until %s: %d failed tokens within %s",
-                self._locked_until.isoformat(),
-                len(self._failures),
-                self._window,
+            log_event(
+                logger,
+                logging.WARNING,
+                "auth_locked",
+                locked_until=self._locked_until.isoformat(),
+                failures=len(self._failures),
+                window=str(self._window),
             )
 
     def locked_until(self, now: datetime) -> datetime | None:

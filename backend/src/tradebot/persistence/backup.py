@@ -27,6 +27,7 @@ import httpx
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select
 
+from tradebot.core.logging import log_event
 from tradebot.persistence.database import Database, metadata
 
 logger = logging.getLogger(__name__)
@@ -208,5 +209,11 @@ async def run_backup(database: Database, uploader: S3Uploader, prefix: str) -> s
     archive = await dump_tables(database)
     key = f"{prefix}/{moment.strftime('%Y%m%dT%H%M%SZ')}.jsonl.gz"
     await uploader.upload(key, archive, moment)
-    logger.info("backup uploaded: %s (%d bytes compressed)", key, len(archive))
+    log_event(
+        logger,
+        logging.INFO,
+        "backup_uploaded",
+        key=key,
+        compressed_bytes=len(archive),
+    )
     return key

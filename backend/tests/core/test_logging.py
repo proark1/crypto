@@ -82,6 +82,17 @@ class TestLogEvent:
         assert record.signal_id == "s"  # type: ignore[attr-defined]
         assert not hasattr(record, "client_order_id")
 
+    def test_exc_info_attaches_the_active_exception(self, caplog: pytest.LogCaptureFixture) -> None:
+        logger = logging.getLogger("tradebot.test.exc")
+        with caplog.at_level(logging.WARNING, logger="tradebot.test.exc"):
+            try:
+                raise ValueError("boom")
+            except ValueError:
+                log_event(logger, logging.WARNING, "backfill_failed", exc_info=True)
+        (record,) = caplog.records
+        assert record.exc_info is not None
+        assert "ValueError: boom" in JsonLogFormatter().format(record)
+
 
 class TestConfigureLogging:
     # configure_logging replaces the root handlers; save and restore pytest's

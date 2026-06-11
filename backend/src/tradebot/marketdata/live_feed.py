@@ -24,6 +24,7 @@ from decimal import Decimal
 from typing import Protocol
 
 from tradebot.core.events import CandleClosed, EventBus
+from tradebot.core.logging import log_event
 from tradebot.core.models import Candle, CandleInterval
 from tradebot.marketdata.validation import validate_candle
 from tradebot.persistence import CandleStore
@@ -92,7 +93,13 @@ class OhlcvCandleTracker:
         """Absorb a snapshot; return newly closed candles in time order."""
         for row in rows:
             if not _is_well_formed(row):
-                logger.warning("dropping malformed OHLCV row for %s: %r", self._symbol, row)
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "malformed_ohlcv_row_dropped",
+                    symbol=self._symbol,
+                    row=repr(row),
+                )
                 continue
             timestamp_ms = int(row[0])
             if self._last_emitted_ms is not None and timestamp_ms <= self._last_emitted_ms:
@@ -259,11 +266,13 @@ class LiveMarketDataFeed:
             inserted += len(candles)
             since_ms = utc_ms(candles[-1].open_time + self._interval.duration)
         if inserted:
-            logger.info(
-                "deepened %s history by %d candles back to the %d-day horizon",
-                self._symbol,
-                inserted,
-                self._history_days,
+            log_event(
+                logger,
+                logging.INFO,
+                "history_deepened",
+                symbol=self._symbol,
+                candles=inserted,
+                history_days=self._history_days,
             )
         return inserted
 
@@ -276,9 +285,21 @@ class LiveMarketDataFeed:
         try:
             repaired = await self.backfill()
             if repaired:
-                logger.info("startup backfill repaired %d candles for %s", repaired, self._symbol)
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "startup_backfill_repaired",
+                    symbol=self._symbol,
+                    candles=repaired,
+                )
         except Exception:
-            logger.warning("startup backfill failed; stream will repair later", exc_info=True)
+            log_event(
+                logger,
+                logging.WARNING,
+                "startup_backfill_failed",
+                symbol=self._symbol,
+                exc_info=True,
+            )
         failures = 0
         while not self._stopping:
             try:
@@ -288,19 +309,33 @@ class LiveMarketDataFeed:
             except Exception:
                 failures += 1
                 delay = self._delays[min(failures, len(self._delays)) - 1]
-                logger.warning(
-                    "market data stream error for %s; reconnecting in %.1fs",
-                    self._symbol,
-                    delay,
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "stream_error_reconnecting",
+                    symbol=self._symbol,
+                    reconnect_in_seconds=delay,
                     exc_info=True,
                 )
                 await asyncio.sleep(delay)
                 try:
                     repaired = await self.backfill()
                     if repaired:
-                        logger.info("backfilled %d candles for %s", repaired, self._symbol)
+                        log_event(
+                            logger,
+                            logging.INFO,
+                            "reconnect_backfill_repaired",
+                            symbol=self._symbol,
+                            candles=repaired,
+                        )
                 except Exception:
-                    logger.warning("backfill after disconnect failed", exc_info=True)
+                    log_event(
+                        logger,
+                        logging.WARNING,
+                        "reconnect_backfill_failed",
+                        symbol=self._symbol,
+                        exc_info=True,
+                    )
                 continue
             failures = 0
             closed = self._tracker.update(rows)
@@ -310,11 +345,13 @@ class LiveMarketDataFeed:
             for candle in closed:
                 issues = validate_candle(candle)
                 if issues:
-                    logger.error(
-                        "quarantined malformed candle %s %s: %s",
-                        candle.symbol,
-                        candle.open_time.isoformat(),
-                        "; ".join(issues),
+                    log_event(
+                        logger,
+                        logging.ERROR,
+                        "candle_quarantined",
+                        symbol=candle.symbol,
+                        open_time=candle.open_time.isoformat(),
+                        reasons="; ".join(issues),
                     )
                     continue
                 publishable.append(candle)

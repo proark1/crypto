@@ -76,12 +76,16 @@ def configure_logging(level: str = "INFO", fmt: str = "json") -> None:
     root.setLevel(level)
 
 
-def log_event(logger: logging.Logger, level: int, event: str, /, **fields: Any) -> None:
+def log_event(
+    logger: logging.Logger, level: int, event: str, /, *, exc_info: bool = False, **fields: Any
+) -> None:
     """Emit a structured event: ``message`` is ``event``, fields ride alongside.
 
     ``None`` fields are dropped so an absent correlation id does not clutter
-    the line. Field names must avoid stdlib ``LogRecord`` attributes (``name``,
-    ``module``, ``args``, ...); the documented convention names are all safe.
+    the line. ``exc_info=True`` attaches the active exception (the formatter
+    renders it under ``exc_info``). Field names must avoid stdlib ``LogRecord``
+    attributes (``name``, ``module``, ``args``, ...); the documented convention
+    names are all safe.
     """
     extra = {"event": event, **{key: value for key, value in fields.items() if value is not None}}
-    logger.log(level, event, extra=extra)
+    logger.log(level, event, exc_info=exc_info, extra=extra)

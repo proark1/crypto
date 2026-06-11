@@ -31,6 +31,8 @@ from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from sqlalchemy.schema import CreateColumn
 
+from tradebot.core.logging import log_event
+
 logger = logging.getLogger(__name__)
 
 metadata = MetaData()
@@ -319,7 +321,13 @@ def _add_missing_columns(connection: Connection, schema_metadata: MetaData = met
                 )
             ddl = CreateColumn(column).compile(dialect=connection.dialect)
             connection.execute(text(f'ALTER TABLE "{table.name}" ADD COLUMN IF NOT EXISTS {ddl}'))
-            logger.warning("schema sync: added column %s.%s", table.name, column.name)
+            log_event(
+                logger,
+                logging.WARNING,
+                "schema_column_added",
+                table=table.name,
+                column=column.name,
+            )
 
 
 _SYNC_SCHEME_PREFIXES = (
