@@ -63,6 +63,28 @@ class SimulatedExecutionAdapter:
 
     async def submit(self, order: Order) -> None:
         """Accept an order for simulation; validates shape and id uniqueness."""
+        self._accept(order)
+
+    def restore_order(self, order: Order, *, triggered: bool = False) -> None:
+        """Re-accept a persisted open order after a restart.
+
+        Same validation as :meth:`submit`, plus the stop-trigger latch:
+        a stop-limit whose stop had already crossed must come back as an
+        active limit order, not a re-armed stop.
+        """
+        if triggered and order.order_type != OrderType.STOP_LIMIT:
+            raise ValueError(
+                f"only stop_limit orders carry a trigger latch, got {order.order_type}"
+            )
+        self._accept(order)
+        if triggered:
+            self._triggered.add(order.client_order_id)
+
+    def triggered_order_ids(self) -> frozenset[str]:
+        """Ids of resting stop-limits whose trigger has latched."""
+        return frozenset(self._triggered)
+
+    def _accept(self, order: Order) -> None:
         if order.client_order_id in self._pending_market or order.client_order_id in self._resting:
             raise ValueError(f"duplicate client_order_id {order.client_order_id!r}")
         if order.order_type == OrderType.MARKET:

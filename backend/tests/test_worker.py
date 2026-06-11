@@ -12,9 +12,9 @@ import pytest
 
 from tradebot.core.config import AppConfig, TradingMode
 from tradebot.core.events import CandleClosed
-from tradebot.core.models import Candle, CandleInterval, Fill, Side
+from tradebot.core.models import Candle, CandleInterval, Fill, Order, OrderType, Side
 from tradebot.marketdata.live_feed import OhlcvRow
-from tradebot.persistence import Database, FillStore
+from tradebot.persistence import Database, FillStore, OrderStore
 from tradebot.persistence.database import metadata
 from tradebot.worker import Worker
 
@@ -198,6 +198,36 @@ class TestWorker:
         assert position is not None
         assert position.quantity_base == Decimal("2")
         assert worker.portfolio.quote_balance == Decimal("9799.8")
+
+    async def test_restart_restores_open_orders_into_their_engines(
+        self, database: Database
+    ) -> None:
+        """Submitted-but-unfilled orders must survive a deploy restart."""
+
+        def make_open_order(order_id: str, symbol: str) -> Order:
+            return Order(
+                client_order_id=order_id,
+                signal_id=f"sig-{order_id}",
+                symbol=symbol,
+                side=Side.BUY,
+                order_type=OrderType.MARKET,
+                quantity_base=Decimal("1"),
+                created_at=BASE_TIME,
+            )
+
+        store = OrderStore(database)
+        await store.record_submitted(make_open_order("ord-btc", "BTC/USDT"))
+        # An orphan: its coin is not traded, so no engine can host it.
+        await store.record_submitted(make_open_order("ord-doge", "DOGE/USDT"))
+
+        worker = Worker(make_config(), database, ScriptedExchange([]))
+        await worker.initialize()
+
+        (restored,) = worker.engines["BTC/USDT"].open_orders()
+        assert restored.client_order_id == "ord-btc"
+        # The orphan is warned about and left journaled open, not dropped.
+        journaled = {o.order.client_order_id for o in await store.fetch_open()}
+        assert journaled == {"ord-btc", "ord-doge"}
 
     async def test_removal_survives_restart_despite_env_seed(self, database: Database) -> None:
         """The env var seeds once; a removed coin must stay removed."""

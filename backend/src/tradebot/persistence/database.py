@@ -59,6 +59,31 @@ fills_table = Table(
 """Append-only: fills are facts. A surrogate id because one order can fill
 in several parts with identical timestamps."""
 
+orders_table = Table(
+    "orders",
+    metadata,
+    Column("client_order_id", Text, primary_key=True),
+    Column("signal_id", Text, nullable=False),
+    Column("symbol", Text, nullable=False, index=True),
+    Column("side", Text, nullable=False),
+    Column("order_type", Text, nullable=False),
+    Column("quantity_base", Numeric, nullable=False),
+    Column("limit_price_quote", Numeric, nullable=True),
+    Column("stop_price_quote", Numeric, nullable=True),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("status", Text, nullable=False),
+    Column("triggered", Boolean, nullable=False),
+    Column("status_at", DateTime(timezone=True), nullable=False),
+)
+"""Every order intent the engine ever submitted, with its latest known state
+(open / filled / cancelled) — the recovery source for in-flight orders, so a
+restart can re-arm the paper adapter instead of silently dropping them.
+Keyed by ``client_order_id``: ids are deterministic per intent, so the same
+intent resubmitted after a cancel reopens its row rather than duplicating it.
+``triggered`` latches a stop-limit whose stop has crossed (the order behaves
+as a plain limit from then on, exactly like a real exchange), so a restart
+cannot un-trigger a stop."""
+
 decisions_table = Table(
     "decisions",
     metadata,

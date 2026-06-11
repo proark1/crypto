@@ -17,13 +17,14 @@ from sqlalchemy import Numeric, func, select
 from sqlalchemy.dialects.postgresql import ARRAY, aggregate_order_by
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from tradebot.core.models import Candle, CandleInterval, Decision, Fill
+from tradebot.core.models import Candle, CandleInterval, Decision, Fill, Order, OrderStatus
 from tradebot.persistence.database import (
     Database,
     candles_table,
     coins_table,
     decisions_table,
     fills_table,
+    orders_table,
     strategy_settings_table,
 )
 
@@ -282,6 +283,113 @@ class FillStore:
             rows = (await connection.execute(statement)).mappings().all()
         # The surrogate ``id`` column is ignored by validation (not a model field).
         return [Fill.model_validate(dict(row)) for row in rows]
+
+
+class OpenOrder(BaseModel):
+    """One restorable order: the intent plus its stop-trigger latch."""
+
+    model_config = ConfigDict(frozen=True)
+
+    order: Order
+    triggered: bool
+
+
+class OrderStore:
+    """Latest known state of every order intent — restart recovery for orders.
+
+    The fill journal alone cannot restore a paper adapter: an order that was
+    submitted but had not filled when the process died exists nowhere else.
+    This store records every submission and its terminal transition so
+    :meth:`fetch_open` can re-arm the adapter on boot.
+    """
+
+    def __init__(self, database: Database) -> None:
+        """Bind the store to ``database``."""
+        self._database = database
+
+    async def record_submitted(self, order: Order) -> None:
+        """Journal ``order`` as open, before the adapter accepts it.
+
+        Upsert by ``client_order_id``: ids are deterministic per intent, so
+        resubmitting a previously cancelled intent (e.g. the kill switch run
+        twice on the same candle) legitimately reopens its row. An intent
+        that ever filled is kept out of restoration by :meth:`fetch_open`'s
+        fill-journal guard, not by refusing the write here.
+        """
+        row = order.model_dump()
+        row["status"] = OrderStatus.OPEN.value
+        row["triggered"] = False
+        row["status_at"] = order.created_at
+        statement = pg_insert(orders_table).on_conflict_do_update(
+            index_elements=["client_order_id"],
+            set_={
+                "status": OrderStatus.OPEN.value,
+                "triggered": False,
+                "status_at": order.created_at,
+            },
+        )
+        async with self._database.engine.begin() as connection:
+            await connection.execute(statement, [row])
+
+    async def mark_filled(self, client_order_id: str, at: datetime) -> None:
+        """Record the order's terminal fill (whole-order fills only today)."""
+        await self._set_status(client_order_id, OrderStatus.FILLED, at)
+
+    async def mark_cancelled(self, client_order_id: str, at: datetime) -> None:
+        """Record the order's cancellation."""
+        await self._set_status(client_order_id, OrderStatus.CANCELLED, at)
+
+    async def mark_triggered(self, client_order_id: str) -> None:
+        """Latch a stop-limit's trigger; the order stays open.
+
+        Persisted so a restart restores the order as an active limit instead
+        of re-arming the stop — un-triggering across restarts would diverge
+        from how a real exchange treats a triggered stop.
+        """
+        statement = (
+            orders_table.update()
+            .where(orders_table.c.client_order_id == client_order_id)
+            .values(triggered=True)
+        )
+        async with self._database.engine.begin() as connection:
+            await connection.execute(statement)
+
+    async def _set_status(self, client_order_id: str, status: OrderStatus, at: datetime) -> None:
+        _require_aware(at)
+        statement = (
+            orders_table.update()
+            .where(orders_table.c.client_order_id == client_order_id)
+            .values(status=status.value, status_at=at)
+        )
+        async with self._database.engine.begin() as connection:
+            await connection.execute(statement)
+
+    async def fetch_open(self, symbol: str | None = None) -> list[OpenOrder]:
+        """Return open orders (optionally for one symbol), oldest first.
+
+        Guarded against a crash between the fill-journal write and the
+        status update: any order with a journaled fill is excluded even if
+        its row still says open, because restoring it would double-fill —
+        the fill journal outranks this table wherever they disagree.
+        """
+        has_fill = (
+            select(fills_table.c.id)
+            .where(fills_table.c.client_order_id == orders_table.c.client_order_id)
+            .exists()
+        )
+        statement = (
+            select(orders_table)
+            .where(orders_table.c.status == OrderStatus.OPEN.value, ~has_fill)
+            .order_by(orders_table.c.created_at, orders_table.c.client_order_id)
+        )
+        if symbol is not None:
+            statement = statement.where(orders_table.c.symbol == symbol)
+        async with self._database.engine.connect() as connection:
+            rows = (await connection.execute(statement)).mappings().all()
+        return [
+            OpenOrder(order=Order.model_validate(dict(row)), triggered=row["triggered"])
+            for row in rows
+        ]
 
 
 class DecisionStore:

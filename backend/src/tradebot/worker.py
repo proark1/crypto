@@ -51,6 +51,7 @@ from tradebot.persistence import (
     DecisionStore,
     EvaluationStore,
     FillStore,
+    OrderStore,
     StrategySettingsStore,
 )
 from tradebot.portfolio import Portfolio
@@ -115,6 +116,7 @@ class Worker:
         self.candle_store = CandleStore(database)
         self.fill_store = FillStore(database)
         self.decision_store = DecisionStore(database)
+        self.order_store = OrderStore(database)
         self.coin_store = CoinStore(database)
         self.evaluation_store = EvaluationStore(database)
         self.strategy_settings_store = StrategySettingsStore(database)
@@ -330,6 +332,7 @@ class Worker:
             symbol=symbol,
             fill_store=self.fill_store,
             decision_store=self.decision_store,
+            order_store=self.order_store,
             autonomy_mode=self.config.autonomy_mode,
             proposal_queue=ProposalQueue(
                 ttl=timedelta(seconds=self.config.proposal_ttl_seconds),
@@ -477,12 +480,32 @@ class Worker:
         Paper-mode reconciliation: the journal is the source of truth across
         restarts (live mode will reconcile against the exchange instead).
         Replayed history is then rebased out of the loss-streak tracker —
-        an old losing streak must not start a new cooldown at boot.
+        an old losing streak must not start a new cooldown at boot. Finally,
+        orders that were open when the process died are re-armed in their
+        engines' adapters, so a restart never silently drops an in-flight
+        order.
         """
         fills = await self.fill_store.fetch_all()
         for fill in fills:
             self.portfolio.apply_fill(fill)
         self.risk_manager.rebase_realized_pnl()
+        restored = 0
+        for open_order in await self.order_store.fetch_open():
+            engine = self.engines.get(open_order.order.symbol)
+            if engine is None:
+                # A coin removed while an order rested (or a journal from an
+                # older coin set): nothing can fill it, so leave the row
+                # alone and say so instead of guessing.
+                logger.warning(
+                    "open order %s for %s has no active engine; left unrestored",
+                    open_order.order.client_order_id,
+                    open_order.order.symbol,
+                )
+                continue
+            engine.restore_order(open_order)
+            restored += 1
+        if restored:
+            logger.info("restored %d open orders into their adapters", restored)
         return len(fills)
 
     async def run(self) -> None:

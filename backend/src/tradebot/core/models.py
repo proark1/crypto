@@ -176,6 +176,21 @@ class Order(BaseModel):
     created_at: UtcDatetime = Field(default_factory=utc_now)
 
 
+class OrderStatus(enum.StrEnum):
+    """Lifecycle of a journaled order intent (paper-mode order journal).
+
+    ``OPEN`` covers both pending market orders and resting limit/stop-limit
+    orders; ``FILLED`` and ``CANCELLED`` are terminal. There is no partial
+    state today because the simulator fills whole orders only — when partial
+    fills arrive, remaining quantity becomes a property of the fill journal,
+    not a new status.
+    """
+
+    OPEN = "open"
+    FILLED = "filled"
+    CANCELLED = "cancelled"
+
+
 class Fill(BaseModel):
     """An execution (possibly partial) of an order reported by an adapter.
 

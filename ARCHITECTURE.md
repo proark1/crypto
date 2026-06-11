@@ -16,7 +16,7 @@ This document is the target design. Implementation status as of June 2026
 | Backtester: runner, pessimistic fill simulator, golden test (§5) | **Done** — walk-forward splitting feeds the parameter sweeps (§12.5) |
 | Risk manager: sizing, per-trade limits, circuit breakers (§4.3) | **Done** — daily-loss + drawdown trips (human reset), loss-streak cooldown, daily entry cap, account-wide exposure cap (open positions treated as one fully correlated block; per-coin caps alone understate crypto risk) |
 | Execution: simulated adapter (backtest + paper) (§4.4) | **Done for paper** — live adapter, exchange-native stops, partial-fill handling are Phase 3 (see LIVE_TRADING_CHECKLIST.md) |
-| Portfolio + persistence: positions, PnL, Postgres journal (§4.5) | **Done** — journal-replay restart recovery; nightly backups missing |
+| Portfolio + persistence: positions, PnL, Postgres journal (§4.5) | **Done** — journal-replay restart recovery (fills rebuild positions; the order journal re-arms submitted-but-unfilled orders, stop-trigger latches included); nightly backups missing |
 | Trading engine + worker (§4.2, §7.1) | **Done** — single symbol, paper mode only by hard guard |
 | Control API: status, pause/resume, kill, data endpoints (§6.4) | **Done** — bearer auth, public /health, CORS; SSE/WS push missing (dashboard polls) |
 | Co-pilot mode: proposal queue, approve/reject, TTL + drift guards (§6.3) | **Done** — entries only; exits never wait for approval |
@@ -150,7 +150,13 @@ operational pain with zero benefit.
 - **All accounting in one configured quote currency (default USDT):** v1 trades only
   pairs quoted in it, so equity, PnL, and risk limits are all directly comparable
   with no FX conversion ambiguity. Multi-quote support is a later, deliberate feature.
-- Persisted in Postgres so the bot resumes cleanly after a restart.
+- Persisted in Postgres so the bot resumes cleanly after a restart. Two journals
+  carry recovery: the append-only **fill journal** rebuilds positions and balances,
+  and the **order journal** records every submitted intent with its latest state
+  (open / filled / cancelled, plus the stop-trigger latch) so orders that were
+  in flight when the process died are re-armed in the adapter instead of silently
+  vanishing. Where the two disagree (crash between writes), the fill journal
+  outranks the order row — an order with a journaled fill is never restored.
 - Emits PnL and exposure metrics consumed by the risk manager and the UI.
 
 ### 4.6 Backtester & Research Loop

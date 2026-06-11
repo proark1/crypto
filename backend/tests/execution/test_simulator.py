@@ -244,6 +244,56 @@ class TestStopLimitOrders:
             await adapter.submit(make_order(Side.SELL, OrderType.STOP_LIMIT, limit_price="94"))
 
 
+class TestRestore:
+    """Restart recovery: persisted open orders re-armed into a fresh adapter."""
+
+    async def test_restored_market_order_fills_like_a_submitted_one(self) -> None:
+        adapter, collector = make_adapter()
+        adapter.restore_order(make_order())
+        await adapter.process_candle(make_candle())
+
+        (fill,) = collector.fills
+        assert fill.price_quote == Decimal("100")  # next open, zero-cost config
+
+    async def test_restored_trigger_latch_fills_without_recrossing_stop(self) -> None:
+        """A triggered stop must come back as a live limit, not a re-armed stop.
+
+        The candle after the restore never crosses the 95 stop; restoring
+        untriggered would wrongly leave the order resting.
+        """
+        adapter, collector = make_adapter()
+        adapter.restore_order(
+            make_order(Side.SELL, OrderType.STOP_LIMIT, stop_price="95", limit_price="94"),
+            triggered=True,
+        )
+        await adapter.process_candle(
+            make_candle(open_quote="96", high_quote="97", low_quote="95.5", close_quote="96.5")
+        )
+
+        (fill,) = collector.fills
+        assert fill.price_quote == Decimal("94")
+
+    async def test_restore_validates_shape_and_id_uniqueness(self) -> None:
+        adapter, _ = make_adapter()
+        await adapter.submit(make_order())
+        with pytest.raises(ValueError, match="duplicate client_order_id"):
+            adapter.restore_order(make_order())
+        with pytest.raises(ValueError, match="trigger latch"):
+            adapter.restore_order(make_order(client_order_id="order-2"), triggered=True)
+
+    async def test_trigger_latch_is_observable_for_journaling(self) -> None:
+        adapter, _ = make_adapter()
+        await adapter.submit(
+            make_order(Side.SELL, OrderType.STOP_LIMIT, stop_price="95", limit_price="94")
+        )
+        assert adapter.triggered_order_ids() == frozenset()
+        # Crosses the stop but gaps through the limit: triggered, unfilled.
+        await adapter.process_candle(
+            make_candle(open_quote="90", high_quote="92", low_quote="88", close_quote="89")
+        )
+        assert adapter.triggered_order_ids() == frozenset({"order-1"})
+
+
 class TestOrderManagement:
     async def test_duplicate_client_order_id_is_rejected(self) -> None:
         adapter, _ = make_adapter()

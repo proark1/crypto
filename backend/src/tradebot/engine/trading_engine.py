@@ -25,13 +25,15 @@ from tradebot.core.models import (
     Decision,
     DecisionOutcome,
     Fill,
+    Order,
     Proposal,
     ProposalStatus,
     Side,
     Signal,
+    utc_now,
 )
 from tradebot.execution.simulator import SimulatedExecutionAdapter
-from tradebot.persistence import DecisionStore, FillStore
+from tradebot.persistence import DecisionStore, FillStore, OpenOrder, OrderStore
 from tradebot.portfolio import Portfolio
 from tradebot.risk import CircuitBreakers, RiskManager
 from tradebot.signals import EntryGate
@@ -59,6 +61,7 @@ class TradingEngine:
         interval: CandleInterval = CandleInterval.M1,
         fill_store: FillStore | None = None,
         decision_store: DecisionStore | None = None,
+        order_store: OrderStore | None = None,
         autonomy_mode: AutonomyMode = AutonomyMode.AUTONOMOUS,
         proposal_queue: ProposalQueue | None = None,
         entry_gates: tuple[EntryGate, ...] = (),
@@ -79,6 +82,10 @@ class TradingEngine:
         self._interval = interval
         self._fill_store = fill_store
         self._decision_store = decision_store
+        self._order_store = order_store
+        # Stop-trigger latches already journaled, so each transition is
+        # written once; restored triggered orders seed this set.
+        self._journaled_triggered: set[str] = set()
         self._autonomy_mode = autonomy_mode
         self._proposal_queue = proposal_queue
         self._entry_gates = entry_gates
@@ -97,6 +104,10 @@ class TradingEngine:
     def strategy_name(self) -> str:
         """The active signal generator's identifier, for status surfaces."""
         return self._strategy.name
+
+    def open_orders(self) -> tuple[Order, ...]:
+        """Orders currently held by the adapter (pending and resting)."""
+        return self._adapter.open_orders()
 
     def replace_strategy(self, strategy: Strategy) -> None:
         """Swap the signal generator in place (automated promotion, §12.7).
@@ -157,7 +168,12 @@ class TradingEngine:
             # One failed cancel (e.g. an order racing its own fill on a live
             # venue) must not stop the kill switch from cancelling the rest.
             try:
+                # Journal-first, like fills: a cancelled order whose row
+                # still says open would resurrect on the next restart.
+                if self._order_store is not None:
+                    await self._order_store.mark_cancelled(order.client_order_id, utc_now())
                 await self._adapter.cancel(order.client_order_id)
+                self._journaled_triggered.discard(order.client_order_id)
                 logger.warning("kill switch cancelled open order %s", order.client_order_id)
             except Exception:
                 logger.exception("kill switch failed to cancel order %s", order.client_order_id)
@@ -186,7 +202,7 @@ class TradingEngine:
         if exit_order is None:  # pragma: no cover - exits always pass; defensive
             logger.error("kill switch exit was vetoed; halted unflattened")
             return False
-        await self._adapter.submit(exit_order)
+        await self._submit(exit_order)
         logger.warning(
             "kill switch submitted exit %s for %s", exit_order.client_order_id, self._symbol
         )
@@ -229,6 +245,7 @@ class TradingEngine:
             raise ValueError(f"engine is bound to {self._symbol}, got {candle.symbol}")
         self._last_candle = candle
         await self._adapter.process_candle(candle)
+        await self._journal_trigger_transitions()
         # Post-fill equity mark: the breakers must judge the same books the
         # strategy is about to see.
         self._risk_manager.on_candle(candle)
@@ -299,8 +316,51 @@ class TradingEngine:
             order.symbol,
             order.signal_id,
         )
-        await self._adapter.submit(order)
+        await self._submit(order)
         await self._record_decision(signal, DecisionOutcome.SUBMITTED)
+
+    async def _submit(self, order: Order) -> None:
+        """Journal the order intent as open, then hand it to the adapter.
+
+        Journal-first, same ordering as fills: an order the adapter holds
+        but the journal does not would vanish on restart, which is exactly
+        the gap this store closes. A journal write failure therefore aborts
+        the submission.
+        """
+        if self._order_store is not None:
+            await self._order_store.record_submitted(order)
+        await self._adapter.submit(order)
+
+    def restore_order(self, open_order: OpenOrder) -> None:
+        """Re-arm one persisted open order after a restart (recovery only).
+
+        The order was journaled when first submitted, so it goes straight
+        to the adapter without re-journaling; a restored trigger latch is
+        adopted as already journaled.
+        """
+        self._adapter.restore_order(open_order.order, triggered=open_order.triggered)
+        if open_order.triggered:
+            self._journaled_triggered.add(open_order.order.client_order_id)
+        logger.info(
+            "restored open order %s: %s %s %s",
+            open_order.order.client_order_id,
+            open_order.order.side,
+            open_order.order.order_type,
+            open_order.order.symbol,
+        )
+
+    async def _journal_trigger_transitions(self) -> None:
+        """Persist stop-limit trigger latches the adapter flipped this candle.
+
+        Sorted for deterministic write order; the set comparison keeps this
+        O(open stop-limits), which is hot-path safe because the set is tiny
+        and almost always unchanged.
+        """
+        if self._order_store is None:
+            return
+        for order_id in sorted(self._adapter.triggered_order_ids() - self._journaled_triggered):
+            await self._order_store.mark_triggered(order_id)
+            self._journaled_triggered.add(order_id)
 
     def pending_proposals(self) -> tuple[Proposal, ...]:
         """Return co-pilot proposals awaiting an answer (empty if autonomous)."""
@@ -362,7 +422,7 @@ class TradingEngine:
         if order is None:
             await self._record_decision(proposal.signal, DecisionOutcome.VETOED)
             return "approved, but risk checks vetoed at approval time"
-        await self._adapter.submit(order)
+        await self._submit(order)
         await self._record_decision(proposal.signal, DecisionOutcome.APPROVED)
         logger.info("proposal %s approved; order %s submitted", signal_id, order.client_order_id)
         return "approved; order submitted, fills on next candle"
@@ -417,6 +477,12 @@ class TradingEngine:
         # is silent divergence.
         if self._fill_store is not None:
             await self._fill_store.append(fill)
+        if self._order_store is not None:
+            # After the fill journal on purpose: if this write is lost, the
+            # fill-journal guard in fetch_open still keeps the order out of
+            # restoration — the fill record outranks the order row.
+            await self._order_store.mark_filled(fill.client_order_id, fill.filled_at)
+        self._journaled_triggered.discard(fill.client_order_id)
         self._portfolio.apply_fill(fill)
         self._risk_manager.on_fill(fill)
         self._fills.append(fill)
