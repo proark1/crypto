@@ -202,3 +202,15 @@ export interface EvaluationRunResponse {
   config: Record<string, unknown>;
   summary: Record<string, unknown> | null;
 }
+
+/** One ready-to-run evaluation shape, fitted server-side to the coin's
+ * stored history — submitted verbatim to startEvaluation on click. */
+export interface SuggestedEvaluationResponse {
+  symbol: string;
+  timeframe: string;
+  history_days: number;
+  expected_candles: number;
+  scenario_count: number;
+  title: string;
+  rationale: string;
+}

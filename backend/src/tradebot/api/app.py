@@ -32,6 +32,7 @@ from tradebot.evaluation.improve import build_improvement_candidates
 from tradebot.evaluation.models import LearningFinding, RunStatus
 from tradebot.evaluation.replay import load_replay
 from tradebot.evaluation.runner import EvaluationRunConfig
+from tradebot.evaluation.suggestions import build_suggestions
 from tradebot.evaluation.sweep import (
     DEFAULT_SCENARIO_COUNT,
     SweepCandidate,
@@ -308,6 +309,22 @@ class EvaluationStartResponse(BaseModel):
 
     run_id: int
     detail: str
+
+
+class SuggestedEvaluationResponse(BaseModel):
+    """One ready-to-run evaluation shape, fitted to a coin's stored history.
+
+    Mirrors ``EvaluationStartRequest``'s knobs so the frontend can submit a
+    suggestion verbatim — one click, no fields to fill in.
+    """
+
+    symbol: str
+    timeframe: str
+    history_days: int
+    expected_candles: int
+    scenario_count: int
+    title: str
+    rationale: str
 
 
 class EvaluationRunResponse(BaseModel):
@@ -1043,6 +1060,18 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
     @protected.get("/evaluations")
     async def list_evaluations() -> list[EvaluationRunResponse]:
         return [_run_response(run) for run in await state.evaluation_store.list_runs()]
+
+    @protected.get("/evaluations/suggestions")
+    async def list_evaluation_suggestions() -> list[SuggestedEvaluationResponse]:
+        """Three fitted run shapes per coin, each the biggest sample its rung allows.
+
+        Declared before ``/evaluations/{run_id}`` so the literal segment is
+        matched as a path, not parsed as a run id.
+        """
+        suggestions = await build_suggestions(state.candle_store, active_symbols())
+        return [
+            SuggestedEvaluationResponse(**suggestion.model_dump()) for suggestion in suggestions
+        ]
 
     @protected.get("/evaluations/{run_id}")
     async def get_evaluation(run_id: int) -> EvaluationRunResponse:
