@@ -49,6 +49,16 @@ import {
 const POLL_INTERVAL_MS = 3000;
 const TIMEFRAMES = ["1m", "5m", "15m", "1h", "4h", "1d"];
 
+/** The research workspace splits into three jobs so the page is not one long
+ * scroll: run and read evaluations, compare strategies head to head, and tune
+ * the production strategy (sweeps and the version history they promote). */
+type ResearchTab = "evaluate" | "compare" | "tune";
+const RESEARCH_TABS: { id: ResearchTab; label: string }[] = [
+  { id: "evaluate", label: "Evaluate" },
+  { id: "compare", label: "Compare" },
+  { id: "tune", label: "Tune" },
+];
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null
     ? (value as Record<string, unknown>)
@@ -332,6 +342,7 @@ export function ResearchScreen() {
   // track the last successful refresh so the UI can show it has gone stale.
   const [lastUpdated, setLastUpdated] = useState<number | null>(null);
   const [pollStale, setPollStale] = useState(false);
+  const [researchTab, setResearchTab] = useState<ResearchTab>("evaluate");
 
   const suggestionsLoaded = useRef(false);
 
@@ -491,209 +502,239 @@ export function ResearchScreen() {
           . If this persists, check the connection on the overview screen.
         </Alert>
       )}
-      {suggestions.length > 0 && (
-        <section className="rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900 p-4">
-          <h3 className="text-xs uppercase tracking-wide text-zinc-500">
-            suggested evaluations — fitted to each coin&apos;s stored history
-          </h3>
-          <div className="mt-2 grid gap-3 sm:grid-cols-3">
-            {suggestions.map((suggestion) => (
-              <div
-                key={`${suggestion.symbol}-${suggestion.timeframe}`}
-                className="flex flex-col justify-between rounded-lg border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950/60 p-3"
-              >
-                <div>
-                  <div className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
-                    {suggestion.title} · {suggestion.symbol}
-                  </div>
-                  <div className="mt-0.5 text-xs text-zinc-500">
-                    {suggestion.timeframe} · {suggestion.history_days} days · ~
-                    {suggestion.expected_candles.toLocaleString()} candles
-                  </div>
-                  <p className="mt-1 text-xs text-zinc-600 dark:text-zinc-400">
-                    {suggestion.rationale}
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    runSuggestion(suggestion);
-                  }}
-                  className="mt-3 self-start rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-500"
-                >
-                  run
-                </button>
-              </div>
-            ))}
-          </div>
-        </section>
-      )}
-      <form
-        className="flex flex-wrap items-end gap-3 rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900 p-4"
-        onSubmit={(event) => {
-          event.preventDefault();
-          void (async () => {
-            try {
-              const started = await startEvaluation({
-                timeframes: [timeframe],
-                history_days: Number(days) || 365,
-                scenario_count: Number(count) || 1600,
-              });
-              setNotice(started.detail);
-              setSelectedId(started.run_id);
-              await refresh();
-            } catch (caught) {
-              setNotice(caught instanceof Error ? caught.message : "failed to start run");
-            }
-          })();
-        }}
-      >
-        <p className="w-full text-xs text-zinc-500">
-          custom evaluation — replays past moments and grades every decision the bot would have
-          made; the suggestions above are usually the better start
-        </p>
-        <label className="text-xs text-zinc-600 dark:text-zinc-400">
-          history (days)
-          <input
-            value={days}
-            onChange={(event) => {
-              setDays(event.target.value);
+      <nav className="flex gap-1 rounded-lg bg-zinc-200/60 p-1 dark:bg-zinc-900">
+        {RESEARCH_TABS.map((researchNavTab) => (
+          <button
+            key={researchNavTab.id}
+            type="button"
+            onClick={() => {
+              setResearchTab(researchNavTab.id);
             }}
-            className="mt-1 block w-24 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-950 px-2 py-1.5 text-sm text-zinc-900 dark:text-zinc-100"
-          />
-          <span className="mt-0.5 block text-[11px] text-zinc-400 dark:text-zinc-600">
-            more days = more market moods covered
-          </span>
-        </label>
-        <label className="text-xs text-zinc-600 dark:text-zinc-400">
-          scenarios per coin
-          <input
-            value={count}
-            onChange={(event) => {
-              setCount(event.target.value);
-            }}
-            className="mt-1 block w-28 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-950 px-2 py-1.5 text-sm text-zinc-900 dark:text-zinc-100"
-          />
-          <span className="mt-0.5 block text-[11px] text-zinc-400 dark:text-zinc-600">
-            more scenarios = more trades = trustworthy stats
-          </span>
-        </label>
-        <label className="text-xs text-zinc-600 dark:text-zinc-400">
-          timeframe
-          <select
-            value={timeframe}
-            onChange={(event) => {
-              setTimeframe(event.target.value);
-            }}
-            className="mt-1 block rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-950 px-2 py-1.5 text-sm text-zinc-900 dark:text-zinc-100"
+            className={`rounded-md px-3 py-1.5 text-sm font-semibold ${
+              researchTab === researchNavTab.id
+                ? "bg-white text-zinc-900 shadow-sm dark:bg-zinc-700 dark:text-zinc-100"
+                : "text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-200"
+            }`}
           >
-            {TIMEFRAMES.map((value) => (
-              <option key={value}>{value}</option>
-            ))}
-          </select>
-          <span className="mt-0.5 block text-[11px] text-zinc-400 dark:text-zinc-600">
-            candle size the bot decides on
-          </span>
-        </label>
-        <button
-          type="submit"
-          className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-500"
-        >
-          start evaluation
-        </button>
-        {notice && <span className="text-sm text-zinc-600 dark:text-zinc-400">{notice}</span>}
-      </form>
-
-      <div className="grid gap-4 lg:grid-cols-[16rem_1fr]">
-        <section className="rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900 p-3">
-          {runs.length === 0 && <div className="text-sm text-zinc-500">no runs yet</div>}
-          <ul className="space-y-1">
-            {runs.map((run) => (
-              <li key={run.id}>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSelectedId(run.id);
-                  }}
-                  className={`w-full rounded-lg px-2 py-1.5 text-left text-sm ${
-                    selected?.id === run.id
-                      ? "bg-zinc-100 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100"
-                      : "text-zinc-600 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800/60"
-                  }`}
-                >
-                  run #{run.id} · {run.status}
-                  <span className="block text-xs text-zinc-500">
-                    {run.symbols.join(", ")} · {run.timeframes.join(", ")} · {run.progress_done}
-                    /{run.progress_total}
-                  </span>
-                </button>
-                {run.status === "running" && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      void cancelEvaluation(run.id).then(refresh, refresh);
-                    }}
-                    className="mt-0.5 px-2 text-xs text-red-600 dark:text-red-400 hover:text-red-500 dark:hover:text-red-300"
+            {researchNavTab.label}
+          </button>
+        ))}
+      </nav>
+      {researchTab === "evaluate" && (
+        <>
+          {suggestions.length > 0 && (
+            <section className="rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900 p-4">
+              <h3 className="text-xs uppercase tracking-wide text-zinc-500">
+                suggested evaluations — fitted to each coin&apos;s stored history
+              </h3>
+              <div className="mt-2 grid gap-3 sm:grid-cols-3">
+                {suggestions.map((suggestion) => (
+                  <div
+                    key={`${suggestion.symbol}-${suggestion.timeframe}`}
+                    className="flex flex-col justify-between rounded-lg border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950/60 p-3"
                   >
-                    cancel
-                  </button>
-                )}
-              </li>
-            ))}
-          </ul>
-        </section>
-        <section className="rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900 p-4">
-          {replay ? (
-            <ScenarioReplay
-              replay={replay}
-              onBack={() => {
-                setReplay(null);
-              }}
-            />
-          ) : selected ? (
-            <div className="space-y-4">
-              <RunReport run={selected} />
-              <FindingsPanel
-                findings={findings}
-                onAccept={decideFinding(acceptFinding)}
-                onReject={decideFinding(rejectFinding)}
-                onReplayEvidence={openReplay}
-              />
-              <ScenarioTable scenarios={scenarios} onReplay={openReplay} />
-            </div>
-          ) : (
-            <div className="text-sm text-zinc-500">start a run to see its report here</div>
+                    <div>
+                      <div className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+                        {suggestion.title} · {suggestion.symbol}
+                      </div>
+                      <div className="mt-0.5 text-xs text-zinc-500">
+                        {suggestion.timeframe} · {suggestion.history_days} days · ~
+                        {suggestion.expected_candles.toLocaleString()} candles
+                      </div>
+                      <p className="mt-1 text-xs text-zinc-600 dark:text-zinc-400">
+                        {suggestion.rationale}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        runSuggestion(suggestion);
+                      }}
+                      className="mt-3 self-start rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-500"
+                    >
+                      run
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </section>
           )}
-        </section>
-      </div>
+          <form
+            className="flex flex-wrap items-end gap-3 rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900 p-4"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void (async () => {
+                try {
+                  const started = await startEvaluation({
+                    timeframes: [timeframe],
+                    history_days: Number(days) || 365,
+                    scenario_count: Number(count) || 1600,
+                  });
+                  setNotice(started.detail);
+                  setSelectedId(started.run_id);
+                  await refresh();
+                } catch (caught) {
+                  setNotice(caught instanceof Error ? caught.message : "failed to start run");
+                }
+              })();
+            }}
+          >
+            <p className="w-full text-xs text-zinc-500">
+              custom evaluation — replays past moments and grades every decision the bot would
+              have made; the suggestions above are usually the better start
+            </p>
+            <label className="text-xs text-zinc-600 dark:text-zinc-400">
+              history (days)
+              <input
+                value={days}
+                onChange={(event) => {
+                  setDays(event.target.value);
+                }}
+                className="mt-1 block w-24 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-950 px-2 py-1.5 text-sm text-zinc-900 dark:text-zinc-100"
+              />
+              <span className="mt-0.5 block text-[11px] text-zinc-400 dark:text-zinc-600">
+                more days = more market moods covered
+              </span>
+            </label>
+            <label className="text-xs text-zinc-600 dark:text-zinc-400">
+              scenarios per coin
+              <input
+                value={count}
+                onChange={(event) => {
+                  setCount(event.target.value);
+                }}
+                className="mt-1 block w-28 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-950 px-2 py-1.5 text-sm text-zinc-900 dark:text-zinc-100"
+              />
+              <span className="mt-0.5 block text-[11px] text-zinc-400 dark:text-zinc-600">
+                more scenarios = more trades = trustworthy stats
+              </span>
+            </label>
+            <label className="text-xs text-zinc-600 dark:text-zinc-400">
+              timeframe
+              <select
+                value={timeframe}
+                onChange={(event) => {
+                  setTimeframe(event.target.value);
+                }}
+                className="mt-1 block rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-950 px-2 py-1.5 text-sm text-zinc-900 dark:text-zinc-100"
+              >
+                {TIMEFRAMES.map((value) => (
+                  <option key={value}>{value}</option>
+                ))}
+              </select>
+              <span className="mt-0.5 block text-[11px] text-zinc-400 dark:text-zinc-600">
+                candle size the bot decides on
+              </span>
+            </label>
+            <button
+              type="submit"
+              className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-500"
+            >
+              start evaluation
+            </button>
+            {notice && (
+              <span className="text-sm text-zinc-600 dark:text-zinc-400">{notice}</span>
+            )}
+          </form>
 
-      <ComparisonPanel
-        groups={comparisons}
-        onStart={handleStartComparison}
-        startDisabled={comparisonPending || comparisonRunning}
-      />
+          <div className="grid gap-4 lg:grid-cols-[16rem_1fr]">
+            <section className="rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900 p-3">
+              {runs.length === 0 && <div className="text-sm text-zinc-500">no runs yet</div>}
+              <ul className="space-y-1">
+                {runs.map((run) => (
+                  <li key={run.id}>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedId(run.id);
+                      }}
+                      className={`w-full rounded-lg px-2 py-1.5 text-left text-sm ${
+                        selected?.id === run.id
+                          ? "bg-zinc-100 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100"
+                          : "text-zinc-600 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800/60"
+                      }`}
+                    >
+                      run #{run.id} · {run.status}
+                      <span className="block text-xs text-zinc-500">
+                        {run.symbols.join(", ")} · {run.timeframes.join(", ")} ·{" "}
+                        {run.progress_done}/{run.progress_total}
+                      </span>
+                    </button>
+                    {run.status === "running" && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void cancelEvaluation(run.id).then(refresh, refresh);
+                        }}
+                        className="mt-0.5 px-2 text-xs text-red-600 dark:text-red-400 hover:text-red-500 dark:hover:text-red-300"
+                      >
+                        cancel
+                      </button>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </section>
+            <section className="rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900 p-4">
+              {replay ? (
+                <ScenarioReplay
+                  replay={replay}
+                  onBack={() => {
+                    setReplay(null);
+                  }}
+                />
+              ) : selected ? (
+                <div className="space-y-4">
+                  <RunReport run={selected} />
+                  <FindingsPanel
+                    findings={findings}
+                    onAccept={decideFinding(acceptFinding)}
+                    onReject={decideFinding(rejectFinding)}
+                    onReplayEvidence={openReplay}
+                  />
+                  <ScenarioTable scenarios={scenarios} onReplay={openReplay} />
+                </div>
+              ) : (
+                <div className="text-sm text-zinc-500">start a run to see its report here</div>
+              )}
+            </section>
+          </div>
+        </>
+      )}
 
-      <ImprovementsPanel
-        versions={versions}
-        onRevert={(versionId) => {
-          revertStrategyVersion(versionId).then(
-            (result) => {
-              setNotice(result.detail);
-              void refresh();
-            },
-            (caught: unknown) => {
-              setNotice(caught instanceof Error ? caught.message : "failed to revert");
-            },
-          );
-        }}
-      />
-      <SweepPanel
-        sweeps={sweeps}
-        onStart={handleStartSweep}
-        onCancel={(sweepId) => {
-          void cancelSweep(sweepId).then(refresh, refresh);
-        }}
-      />
+      {researchTab === "compare" && (
+        <ComparisonPanel
+          groups={comparisons}
+          onStart={handleStartComparison}
+          startDisabled={comparisonPending || comparisonRunning}
+        />
+      )}
+
+      {researchTab === "tune" && (
+        <>
+          <ImprovementsPanel
+            versions={versions}
+            onRevert={(versionId) => {
+              revertStrategyVersion(versionId).then(
+                (result) => {
+                  setNotice(result.detail);
+                  void refresh();
+                },
+                (caught: unknown) => {
+                  setNotice(caught instanceof Error ? caught.message : "failed to revert");
+                },
+              );
+            }}
+          />
+          <SweepPanel
+            sweeps={sweeps}
+            onStart={handleStartSweep}
+            onCancel={(sweepId) => {
+              void cancelSweep(sweepId).then(refresh, refresh);
+            }}
+          />
+        </>
+      )}
     </div>
   );
 }

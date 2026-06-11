@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import type { EvaluationRunResponse } from "../api/types";
@@ -95,5 +95,20 @@ describe("ResearchScreen", () => {
     await waitFor(() => {
       expect(screen.getByText("not refreshing")).toBeDefined();
     });
+  });
+
+  it("splits the workspace into Evaluate / Compare / Tune sub-tabs", async () => {
+    render(<ResearchScreen />);
+    await waitFor(() => {
+      expect(screen.getByText("not refreshing")).toBeDefined();
+    });
+    // The Evaluate tab is the default and shows the custom-evaluation form.
+    expect(screen.getByRole("button", { name: "start evaluation" })).toBeDefined();
+    // Switching to Compare hides the evaluation form.
+    fireEvent.click(screen.getByRole("button", { name: "Compare" }));
+    expect(screen.queryByRole("button", { name: "start evaluation" })).toBeNull();
+    // And back again brings it into view.
+    fireEvent.click(screen.getByRole("button", { name: "Evaluate" }));
+    expect(screen.getByRole("button", { name: "start evaluation" })).toBeDefined();
   });
 });
