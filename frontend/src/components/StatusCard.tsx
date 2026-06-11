@@ -1,85 +1,85 @@
 import type { StatusResponse } from "../api/types";
 import { formatTime, signClass, trimAmount, truncateAmount } from "../lib/format";
+import { Badge, Card, StatTile } from "../ui";
 import { StatusAlerts } from "./StatusAlerts";
 
-function Metric(props: { label: string; value: string; hint?: string; valueClass?: string }) {
+/** The provenance/state badges beside the symbol. The mode is always shown
+ * (paper vs live is the most consequential fact); the rest appear only when
+ * they apply. */
+function StatusBadges(props: { status: StatusResponse }) {
+  const { status } = props;
+  const regimeLabel = status.regime.label;
   return (
-    <div>
-      <div className="text-xs uppercase tracking-wide text-zinc-500">{props.label}</div>
-      <div
-        className={`text-lg font-semibold ${props.valueClass ?? "text-zinc-900 dark:text-zinc-100"}`}
+    <>
+      <Badge
+        tone={status.mode === "live" ? "red" : "amber"}
+        title={
+          status.mode === "live"
+            ? "trading real money"
+            : "practice mode — simulated money, real prices"
+        }
       >
-        {props.value}
-      </div>
-      {props.hint !== undefined && <div className="text-xs text-zinc-500">{props.hint}</div>}
-    </div>
+        {status.mode}
+      </Badge>
+      {status.paused && (
+        <Badge tone="red" title="not opening new positions">
+          paused
+        </Badge>
+      )}
+      {status.regime.enabled && regimeLabel !== null && (
+        <Badge
+          tone={regimeLabel === "risk_off" || regimeLabel === "warming_up" ? "red" : "sky"}
+          title={status.regime.reasons.join("; ")}
+        >
+          regime: {regimeLabel.replace("_", " ")}
+        </Badge>
+      )}
+      {!status.data_health.healthy && (
+        <Badge tone="red" title={status.data_health.reason ?? "market data is degraded"}>
+          data degraded
+        </Badge>
+      )}
+    </>
   );
 }
 
+/**
+ * The selected coin's live trading state, in three tiers: the header (symbol,
+ * state badges, feed freshness) and any blocking alerts come first so a
+ * problem is seen before the numbers; then the account headline metrics; then
+ * the open position, or a plain "flat" line. Display formatting only.
+ */
 export function StatusCard(props: { status: StatusResponse }) {
   const { status } = props;
   const quote = status.quote_currency;
   return (
-    <section className="rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900 p-5">
+    <Card padding="lg">
       <div className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-1">
         <h2 className="text-xl font-bold text-zinc-900 dark:text-zinc-100">{status.symbol}</h2>
-        <span
-          title={
-            status.mode === "live"
-              ? "trading real money"
-              : "practice mode — simulated money, real prices"
-          }
-          className="rounded bg-amber-500/20 px-2 py-0.5 text-xs font-bold uppercase text-amber-600 dark:text-amber-400"
-        >
-          {status.mode}
-        </span>
-        {status.paused && (
-          <span className="rounded bg-red-500/20 px-2 py-0.5 text-xs font-bold uppercase text-red-600 dark:text-red-400">
-            paused
-          </span>
-        )}
-        {status.regime.enabled && status.regime.label !== null && (
-          <span
-            className={`rounded px-2 py-0.5 text-xs font-bold uppercase ${
-              status.regime.label === "risk_off" || status.regime.label === "warming_up"
-                ? "bg-red-500/20 text-red-600 dark:text-red-400"
-                : "bg-sky-500/20 text-sky-600 dark:text-sky-400"
-            }`}
-            title={status.regime.reasons.join("; ")}
-          >
-            regime: {status.regime.label.replace("_", " ")}
-          </span>
-        )}
-        {!status.data_health.healthy && (
-          <span
-            title={status.data_health.reason ?? "market data is degraded"}
-            className="rounded bg-red-500/20 px-2 py-0.5 text-xs font-bold uppercase text-red-600 dark:text-red-400"
-          >
-            data degraded
-          </span>
-        )}
+        <StatusBadges status={status} />
         <span className="w-full text-sm text-zinc-500 sm:ml-auto sm:w-auto sm:text-right">
           {status.exchange_id} · last candle {formatTime(status.last_candle_close_time)}
         </span>
       </div>
+      <StatusAlerts status={status} className="mb-4" />
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-        <Metric
+        <StatTile
           label={`equity (${quote})`}
           value={status.equity_quote === null ? "unknown" : truncateAmount(status.equity_quote)}
           hint="cash plus open positions, priced now"
         />
-        <Metric
+        <StatTile
           label={`balance (${quote})`}
           value={truncateAmount(status.quote_balance)}
           hint="cash not in any position"
         />
-        <Metric
-          label={`realized pnl (${quote})`}
+        <StatTile
+          label={`realized P/L (${quote})`}
           value={truncateAmount(status.realized_pnl_quote)}
           valueClass={signClass(status.realized_pnl_quote)}
           hint="profit or loss from closed trades"
         />
-        <Metric
+        <StatTile
           label="mark price"
           value={
             status.mark_price_quote === null ? "—" : truncateAmount(status.mark_price_quote)
@@ -87,24 +87,23 @@ export function StatusCard(props: { status: StatusResponse }) {
           hint="latest price of the coin"
         />
       </div>
-      <StatusAlerts status={status} className="mt-4" />
-      <div className="mt-4 border-t border-zinc-200 dark:border-zinc-800 pt-4">
+      <div className="mt-4 border-t border-zinc-200 pt-4 dark:border-zinc-800">
         {status.position === null ? (
           <div className="text-sm text-zinc-500">flat — no open position</div>
         ) : (
           <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-            <Metric
+            <StatTile
               label="position"
               value={trimAmount(status.position.quantity_base)}
               hint="how much of the coin the bot holds"
             />
-            <Metric
+            <StatTile
               label="avg entry"
               value={truncateAmount(status.position.average_entry_price_quote)}
               hint="average price it was bought at"
             />
-            <Metric
-              label={`unrealized pnl (${quote})`}
+            <StatTile
+              label={`unrealized P/L (${quote})`}
               value={
                 status.position.unrealized_pnl_quote === null
                   ? "unknown"
@@ -113,7 +112,7 @@ export function StatusCard(props: { status: StatusResponse }) {
               valueClass={signClass(status.position.unrealized_pnl_quote)}
               hint="paper profit — not locked in until sold"
             />
-            <Metric
+            <StatTile
               label="protective stop"
               value={
                 status.protective_stop_quote === null
@@ -123,13 +122,13 @@ export function StatusCard(props: { status: StatusResponse }) {
               valueClass={
                 status.protective_stop_quote === null
                   ? "text-red-600 dark:text-red-400"
-                  : "text-zinc-900 dark:text-zinc-100"
+                  : undefined
               }
               hint="auto-sell level guarding the position"
             />
           </div>
         )}
       </div>
-    </section>
+    </Card>
   );
 }
