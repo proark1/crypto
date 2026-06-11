@@ -700,3 +700,103 @@ class TestPromotionConfirmation:
         # equal equity, so the gate must allow.
         worker.strategy_params["trend_following"] = dict(params)
         assert await worker._confirm_promotion("trend_following", params, "BTC/USDT") is None
+
+
+class TestVenueFilterMapping:
+    def test_ccxt_market_translates_int_and_fraction_precision(self) -> None:
+        from tradebot.worker import filters_from_market
+
+        filters = filters_from_market(
+            {
+                "precision": {"amount": 3, "price": 0.01},
+                "limits": {"amount": {"min": 0.001}, "cost": {"min": 5.0}},
+            }
+        )
+        assert filters.quantity_step_base == Decimal("0.001")  # 3 decimals
+        assert filters.price_tick_quote == Decimal("0.01")  # fraction = tick
+        assert filters.min_quantity_base == Decimal("0.001")
+        assert filters.min_notional_quote == Decimal("5.0")
+
+    def test_sparse_or_malformed_catalogs_degrade_to_unconstrained(self) -> None:
+        from tradebot.worker import filters_from_market
+
+        for market in ({}, {"precision": None, "limits": None}, {"precision": {"price": "junk"}}):
+            filters = filters_from_market(market)
+            assert filters.quantity_step_base == 0
+            assert filters.price_tick_quote == 0
+            assert filters.entry_block_reason(Decimal("1"), Decimal("1")) is None
+
+    async def test_initialize_fills_filters_from_the_catalog(self, database: Database) -> None:
+        class CatalogExchange(ScriptedExchange):
+            async def load_markets(self) -> dict[str, object]:
+                return {
+                    "BTC/USDT": {
+                        "precision": {"amount": 0.0001, "price": 0.01},
+                        "limits": {"amount": {"min": 0.0001}, "cost": {"min": 5}},
+                    }
+                }
+
+        worker = Worker(make_config(), database, CatalogExchange([]))
+        await worker.initialize()
+
+        filters = worker.symbol_filters["BTC/USDT"]
+        assert filters.min_notional_quote == Decimal("5")
+        # The risk manager reads the same live dict the worker fills.
+        assert worker.risk_manager._filters_by_symbol is worker.symbol_filters
+
+
+class TestGapReplay:
+    async def test_restored_order_fills_on_the_downtime_candles(self, database: Database) -> None:
+        """An order pending through an outage meets the candles it missed,
+        not the post-restart market."""
+        order_store = OrderStore(database)
+        await order_store.record_submitted(
+            Order(
+                client_order_id="ord-gap",
+                signal_id="sig-gap",
+                symbol="BTC/USDT",
+                side=Side.BUY,
+                order_type=OrderType.MARKET,
+                quantity_base=Decimal("1"),
+                protective_exit=ProtectiveExitPlan(
+                    stop_price_quote=Decimal("95"), limit_price_quote=Decimal("94.5")
+                ),
+                created_at=BASE_TIME,
+            )
+        )
+        # The downtime candles, already repaired into Postgres (the scripted
+        # exchange's backfill is a no-op, so seeding the store stands in for
+        # a successful repair).
+        from tradebot.persistence import CandleStore
+
+        gap_candles = [
+            Candle(
+                symbol="BTC/USDT",
+                interval=CandleInterval.M1,
+                open_time=BASE_TIME + timedelta(minutes=i),
+                close_time=BASE_TIME + timedelta(minutes=i + 1),
+                open_quote=Decimal(str(100 + i)),
+                high_quote=Decimal(str(100.5 + i)),
+                low_quote=Decimal(str(99.5 + i)),
+                close_quote=Decimal(str(100 + i)),
+                volume_base=Decimal("10"),
+            )
+            for i in range(1, 4)
+        ]
+        await CandleStore(database).insert_batch(gap_candles)
+
+        worker = Worker(make_config(), database, ScriptedExchange([]))
+        await worker.initialize()
+
+        (fill,) = await worker.fill_store.fetch_all("BTC/USDT")
+        # Filled on the first downtime candle's open (plus 5bps slippage),
+        # not at some later live price.
+        assert fill.filled_at == BASE_TIME + timedelta(minutes=1)
+        assert fill.price_quote == Decimal("101") * (1 + Decimal("0.0005"))
+        position = worker.portfolio.position("BTC/USDT")
+        assert position is not None and position.quantity_base == Decimal("1")
+        # The entry's protective stop was armed during the replay and is the
+        # one restorable order left.
+        (stop,) = worker.engines["BTC/USDT"].open_orders()
+        assert stop.client_order_id == "stop-ord-gap"
+        assert await order_store.fetch_open("BTC/USDT") != []
