@@ -43,7 +43,7 @@ from tradebot.competition import (
 from tradebot.competition.lineup import ScopedSignalStrategy
 from tradebot.core.config import AppConfig, TradingMode, validate_symbol_quote
 from tradebot.core.events import CandleClosed, EventBus
-from tradebot.core.logging import configure_logging
+from tradebot.core.logging import configure_logging, log_event
 from tradebot.core.metrics import MetricsCollector
 from tradebot.core.models import AutonomyMode, CandleInterval, Fill, SymbolFilters
 from tradebot.engine import TradingEngine
@@ -507,14 +507,14 @@ class Worker:
         for engine in self._bot_engines(bot_id).values():
             engine.pause()
         await self.persist_risk_state()
-        logger.info("bot paused: %s", bot_id)
+        log_event(logger, logging.INFO, "bot_paused", bot_id=bot_id)
 
     async def resume_bot(self, bot_id: str) -> None:
         """Un-mute one bot's entries."""
         for engine in self._bot_engines(bot_id).values():
             engine.resume()
         await self.persist_risk_state()
-        logger.info("bot resumed: %s", bot_id)
+        log_event(logger, logging.INFO, "bot_resumed", bot_id=bot_id)
 
     async def kill_bot(self, bot_id: str) -> tuple[int, list[str]]:
         """Halt one bot and flatten its positions at market.
@@ -532,11 +532,13 @@ class Worker:
             except RuntimeError as error:
                 failures.append(str(error))
         await self.persist_risk_state()
-        logger.warning(
-            "bot killed: %s (%d exits submitted, %d failures)",
-            bot_id,
-            exits_submitted,
-            len(failures),
+        log_event(
+            logger,
+            logging.WARNING,
+            "bot_killed",
+            bot_id=bot_id,
+            exits_submitted=exits_submitted,
+            failure_count=len(failures),
         )
         return exits_submitted, failures
 
@@ -581,7 +583,13 @@ class Worker:
             for candle in stored:
                 strategy.on_candle(candle, None)
             self._activate_challenger_engine(runtime, symbol, strategy=strategy)
-        logger.info("custom bot created: %s (%s)", bot_id, final_description)
+        log_event(
+            logger,
+            logging.INFO,
+            "custom_bot_created",
+            bot_id=bot_id,
+            description=final_description,
+        )
         return bot_id
 
     async def update_custom_bot(self, bot_id: str, rules: Mapping[str, Any]) -> None:
@@ -609,7 +617,7 @@ class Worker:
             for candle in stored:
                 strategy.on_candle(candle, None)
             engine.replace_strategy(strategy)
-        logger.info("custom bot rules updated: %s", bot_id)
+        log_event(logger, logging.INFO, "custom_bot_rules_updated", bot_id=bot_id)
 
     async def delete_custom_bot(self, bot_id: str) -> None:
         """Retire a custom bot; its journals stay queryable forever.
@@ -635,7 +643,7 @@ class Worker:
             engine.detach_from(self.bus)
         del self.challengers[bot_id]
         await self.custom_bot_store.delete(bot_id)
-        logger.info("custom bot deleted: %s (journals kept)", bot_id)
+        log_event(logger, logging.INFO, "custom_bot_deleted", bot_id=bot_id)
 
     async def bot_detail(self, bot_id: str) -> dict[str, Any]:
         """Everything the bot detail page needs, in one shape.
@@ -717,12 +725,14 @@ class Worker:
         )
         self.strategy_params[family] = dict(params)
         await self._rebuild_strategies()
-        logger.info(
-            "strategy settings v%d active: %s %s (sweep %s)",
-            version,
-            family,
-            dict(params),
-            source_sweep_id,
+        log_event(
+            logger,
+            logging.INFO,
+            "strategy_settings_active",
+            version=version,
+            strategy_name=family,
+            params=dict(params),
+            source_sweep_id=source_sweep_id,
         )
         return version
 
@@ -930,12 +940,14 @@ class Worker:
         # captures its strategy from this dict.
         self.strategy_params = await self.strategy_settings_store.active()
         if self.strategy_params:
-            logger.info(
-                "loaded promoted strategy settings for: %s",
-                ", ".join(sorted(self.strategy_params)),
+            log_event(
+                logger,
+                logging.INFO,
+                "promoted_strategy_settings_loaded",
+                families=", ".join(sorted(self.strategy_params)),
             )
         if await self.coin_store.seed_if_empty(self.config.symbol_list(), datetime.now(UTC)):
-            logger.info("first boot: coins seeded from TRADEBOT_SYMBOLS")
+            log_event(logger, logging.INFO, "coins_seeded")
         # Custom bots join the lineup before any engine is built, so the
         # activation loop below wires them exactly like built-in challengers.
         if self.config.competition_enabled:
@@ -950,14 +962,14 @@ class Worker:
                 self.challengers[spec.bot_id] = self._new_runtime(spec, rules=dict(row["rules"]))
             custom_count = sum(1 for r in self.challengers.values() if r.rules is not None)
             if custom_count:
-                logger.info("loaded %d custom bot(s) into the competition", custom_count)
+                log_event(logger, logging.INFO, "custom_bots_loaded", custom_count=custom_count)
         symbols = await self.coin_store.list_symbols()
         try:
             markets = await self._exchange.load_markets()
         except Exception:
             # Venue rules tighten realism; their absence must not stop the
             # bot. Unfiltered sizing is exactly the pre-catalog behavior.
-            logger.warning("market catalog unavailable; trading without venue filters")
+            log_event(logger, logging.WARNING, "market_catalog_unavailable")
             markets = {}
         for symbol in symbols:
             market = markets.get(symbol)
@@ -968,11 +980,12 @@ class Worker:
         # forever on stale data.
         if self.regime_detector is not None and self.regime_detector.symbol not in symbols:
             reference = self.regime_detector.symbol
-            logger.warning(
-                "regime gate disabled: reference symbol %s is not among the traded "
-                "coins (%s); entries run ungated",
-                reference,
-                ", ".join(symbols),
+            log_event(
+                logger,
+                logging.WARNING,
+                "regime_gate_disabled",
+                reference=reference,
+                symbols=", ".join(symbols),
             )
             self.regime_disabled_reason = (
                 f"reference market {reference} is not among the traded coins; entries run ungated"
@@ -990,15 +1003,18 @@ class Worker:
             try:
                 repaired = await self._feeds[self.regime_detector.symbol].backfill()
                 if repaired:
-                    logger.info(
-                        "priming backfill fetched %d reference candles for %s",
-                        repaired,
-                        self.regime_detector.symbol,
+                    log_event(
+                        logger,
+                        logging.INFO,
+                        "priming_backfill_fetched",
+                        count=repaired,
+                        symbol=self.regime_detector.symbol,
                     )
             except Exception:
-                logger.warning(
-                    "reference-market backfill failed; the regime gate warms up "
-                    "from the live stream instead",
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "reference_market_backfill_failed",
                     exc_info=True,
                 )
             # Prime from stored history so the gate does not spend its first
@@ -1010,10 +1026,12 @@ class Worker:
             )
             self.regime_detector.prime(stored)
             self.regime_detector.attach_to(self.bus)
-            logger.info(
-                "regime gate enabled: %s is %s",
-                self.regime_detector.symbol,
-                self.regime_detector.regime.label,
+            log_event(
+                logger,
+                logging.INFO,
+                "regime_gate_enabled",
+                symbol=self.regime_detector.symbol,
+                regime_label=self.regime_detector.regime.label,
             )
         await self._restore_risk_state()
         replayed = await self.replay_journal()
@@ -1041,7 +1059,7 @@ class Worker:
             self.symbol_filters[symbol] = filters_from_market(market)
         await self.coin_store.add(symbol, datetime.now(UTC))
         self._activate(symbol)
-        logger.info("coin added at runtime: %s", symbol)
+        log_event(logger, logging.INFO, "coin_added", symbol=symbol)
 
     async def remove_coin(self, symbol: str) -> None:
         """Stop trading ``symbol``; its candles, fills, and decisions stay.
@@ -1102,7 +1120,7 @@ class Worker:
             challenger_engine = runtime.engines.pop(symbol, None)
             if challenger_engine is not None:
                 challenger_engine.detach_from(self.bus)
-        logger.info("coin removed at runtime: %s", symbol)
+        log_event(logger, logging.INFO, "coin_removed", symbol=symbol)
 
     async def _confirm_promotion(
         self, family: str, params: Mapping[str, Any], symbol: str
@@ -1162,10 +1180,10 @@ class Worker:
             for symbol in paused_symbols:
                 engine = self.engines.get(symbol)
                 if engine is None:
-                    logger.warning("paused symbol %s is no longer traded; flag dropped", symbol)
+                    log_event(logger, logging.WARNING, "paused_symbol_dropped", symbol=symbol)
                     continue
                 engine.pause()
-                logger.warning("restored paused state for %s (operator resume required)", symbol)
+                log_event(logger, logging.WARNING, "paused_state_restored", symbol=symbol)
             self._saved_risk_state = (state, paused_symbols)
         for runtime in self.challengers.values():
             loaded = await runtime.risk_state_store.load()
@@ -1176,17 +1194,21 @@ class Worker:
             for symbol in paused_symbols:
                 engine = runtime.engines.get(symbol)
                 if engine is None:
-                    logger.warning(
-                        "paused symbol %s of %s is no longer traded; flag dropped",
-                        symbol,
-                        runtime.spec.bot_id,
+                    log_event(
+                        logger,
+                        logging.WARNING,
+                        "paused_symbol_dropped",
+                        symbol=symbol,
+                        bot_id=runtime.spec.bot_id,
                     )
                     continue
                 engine.pause()
-                logger.warning(
-                    "restored paused state for %s of %s (operator resume required)",
-                    symbol,
-                    runtime.spec.bot_id,
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "paused_state_restored",
+                    symbol=symbol,
+                    bot_id=runtime.spec.bot_id,
                 )
             runtime.saved_risk_state = (state, paused_symbols)
 
@@ -1219,7 +1241,7 @@ class Worker:
                 await self.risk_state_store.save(snapshot, paused, datetime.now(UTC))
             except Exception:
                 self._saved_risk_state = previous
-                logger.exception("failed to persist risk state; will retry next candle")
+                log_event(logger, logging.ERROR, "risk_state_persist_failed", exc_info=True)
         for runtime in self.challengers.values():
             snapshot = runtime.risk_manager.breakers.snapshot()
             paused = tuple(symbol for symbol, engine in runtime.engines.items() if engine.paused)
@@ -1232,9 +1254,12 @@ class Worker:
                 await runtime.risk_state_store.save(snapshot, paused, datetime.now(UTC))
             except Exception:
                 runtime.saved_risk_state = previous
-                logger.exception(
-                    "failed to persist %s risk state; will retry next candle",
-                    runtime.spec.bot_id,
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "risk_state_persist_failed",
+                    exc_info=True,
+                    bot_id=runtime.spec.bot_id,
                 )
 
     async def divergence_report(
@@ -1331,11 +1356,12 @@ class Worker:
             try:
                 await feed.backfill()
             except Exception:
-                logger.warning(
-                    "gap backfill failed for %s; restored orders will meet the "
-                    "live stream instead of the downtime candles",
-                    symbol,
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "gap_backfill_failed",
                     exc_info=True,
+                    symbol=symbol,
                 )
                 continue
             for bot_id, engine, replay_from in pending[symbol]:
@@ -1345,13 +1371,15 @@ class Worker:
                 fills_before = len(engine.fills)
                 for candle in candles:
                     await engine.replay_gap_candle(candle)
-                logger.info(
-                    "gap replay for %s of %s: %d candles from %s, %d fills",
-                    symbol,
-                    bot_id,
-                    len(candles),
-                    replay_from.isoformat(),
-                    len(engine.fills) - fills_before,
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "gap_replay",
+                    symbol=symbol,
+                    bot_id=bot_id,
+                    count=len(candles),
+                    replay_from=replay_from.isoformat(),
+                    fills=len(engine.fills) - fills_before,
                 )
         self._gap_replay_from.clear()
         for runtime in self.challengers.values():
@@ -1395,10 +1423,12 @@ class Worker:
         for symbol, position in portfolio.positions.items():
             engine = engines.get(symbol)
             if engine is None:
-                logger.warning(
-                    "open position in %s of %s has no active engine; protection unverifiable",
-                    symbol,
-                    bot_id,
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "position_engine_missing",
+                    symbol=symbol,
+                    bot_id=bot_id,
                 )
                 continue
             entry = await order_store.latest_filled_entry_with_plan(symbol)
@@ -1423,8 +1453,12 @@ class Worker:
                     # The crash window: the entry fill was journaled but its
                     # stop never reached the books.
                     await engine.submit_protective_stop(entry, position.quantity_base)
-                logger.info(
-                    "protective stop re-armed for %s at %s (from journaled plan)", symbol, level
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "protective_stop_rearmed",
+                    symbol=symbol,
+                    level=level,
                 )
                 continue
             # Plan-less position: approximate the level from current ATR and
@@ -1439,16 +1473,24 @@ class Worker:
                     float(candle.high_quote), float(candle.low_quote), float(candle.close_quote)
                 )
             if atr_value is None:
-                logger.warning(
-                    "cannot re-arm protective stop for %s: no stored candles to size it; "
-                    "the position trades unprotected until the strategy exits",
-                    symbol,
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "protective_stop_rearm_failed",
+                    symbol=symbol,
+                    reason="no stored candles to size it",
                 )
                 continue
             entry_price = position.average_entry_price_quote
             stop_price = entry_price - Decimal(str(trend.atr_stop_multiple * atr_value))
             if stop_price <= 0:
-                logger.warning("cannot re-arm protective stop for %s: degenerate level", symbol)
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "protective_stop_rearm_failed",
+                    symbol=symbol,
+                    reason="degenerate level",
+                )
                 continue
             engine.arm_managed_stop(
                 ManagedStop(
@@ -1462,11 +1504,12 @@ class Worker:
                     ),
                 )
             )
-            logger.warning(
-                "protective stop for %s approximated at %s (no journaled plan; "
-                "market-exit backstop enforces it)",
-                symbol,
-                stop_price,
+            log_event(
+                logger,
+                logging.WARNING,
+                "protective_stop_approximated",
+                symbol=symbol,
+                stop_price=stop_price,
             )
 
     async def replay_journal(self) -> int:
@@ -1491,10 +1534,12 @@ class Worker:
                 # A coin removed while an order rested (or a journal from an
                 # older coin set): nothing can fill it, so leave the row
                 # alone and say so instead of guessing.
-                logger.warning(
-                    "open order %s for %s has no active engine; left unrestored",
-                    open_order.order.client_order_id,
-                    open_order.order.symbol,
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "open_order_unrestored",
+                    client_order_id=open_order.order.client_order_id,
+                    symbol=open_order.order.symbol,
                 )
                 continue
             engine.restore_order(open_order)
@@ -1511,11 +1556,13 @@ class Worker:
             for open_order in await runtime.order_store.fetch_open():
                 engine = runtime.engines.get(open_order.order.symbol)
                 if engine is None:
-                    logger.warning(
-                        "open order %s for %s of %s has no active engine; left unrestored",
-                        open_order.order.client_order_id,
-                        open_order.order.symbol,
-                        runtime.spec.bot_id,
+                    log_event(
+                        logger,
+                        logging.WARNING,
+                        "open_order_unrestored",
+                        client_order_id=open_order.order.client_order_id,
+                        symbol=open_order.order.symbol,
+                        bot_id=runtime.spec.bot_id,
                     )
                     continue
                 engine.restore_order(open_order)
@@ -1526,7 +1573,7 @@ class Worker:
                 if replay_from is None or created_at < replay_from:
                     runtime.gap_replay_from[symbol] = created_at
         if restored:
-            logger.info("restored %d open orders into their adapters", restored)
+            log_event(logger, logging.INFO, "open_orders_restored", count=restored)
         return len(fills)
 
     async def run(self) -> None:
@@ -1559,13 +1606,15 @@ class Worker:
                 )
                 or "flat"
             )
-            logger.info(
-                "worker starting: %s on %s (paper), %d fills replayed, positions=%s, balance=%s",
-                ", ".join(self.symbols),
-                self.config.exchange_id,
-                replayed,
-                positions,
-                self.portfolio.quote_balance,
+            log_event(
+                logger,
+                logging.INFO,
+                "worker_starting",
+                symbols=", ".join(self.symbols),
+                exchange_id=self.config.exchange_id,
+                fills_replayed=replayed,
+                positions=positions,
+                balance=self.portfolio.quote_balance,
             )
             notifier_client = await self._start_notifier_if_configured()
             heartbeat_task, heartbeat_client = self._start_heartbeat_if_configured()
@@ -1603,7 +1652,7 @@ class Worker:
                 except Exception:
                     # A task that already crashed re-raises here; the rest
                     # of shutdown (other tasks, client close) must still run.
-                    logger.exception("background task failed during shutdown")
+                    log_event(logger, logging.ERROR, "shutdown_task_failed", exc_info=True)
             for client in (
                 notifier_client,
                 heartbeat_client,
@@ -1613,7 +1662,7 @@ class Worker:
             ):
                 if client is not None:
                     await client.aclose()
-        logger.info("worker stopped cleanly")
+        log_event(logger, logging.INFO, "worker_stopped")
 
     async def _start_notifier_if_configured(self) -> httpx.AsyncClient | None:
         """Attach Telegram alerts when both token and chat id are set."""
@@ -1622,7 +1671,7 @@ class Worker:
         if not token or not chat_id:
             # Truthiness, not None-ness: empty-string env vars must disable
             # alerts gracefully rather than crash the worker at startup.
-            logger.info("telegram alerts disabled: token or chat id not set")
+            log_event(logger, logging.INFO, "telegram_alerts_disabled")
             return None
         from tradebot.notify import TelegramNotifier
 
@@ -1648,7 +1697,7 @@ class Worker:
         if not url:
             # Truthiness: an empty-string env var disables the heartbeat
             # gracefully, same convention as the other optional services.
-            logger.info("dead-man's switch disabled: no TRADEBOT_HEARTBEAT_URL")
+            log_event(logger, logging.INFO, "heartbeat_disabled")
             return None, None
         from tradebot.notify import HeartbeatPinger
 
@@ -1669,7 +1718,7 @@ class Worker:
             except asyncio.CancelledError:
                 pass
             except Exception:
-                logger.exception("dead-man's switch heartbeat task crashed")
+                log_event(logger, logging.ERROR, "heartbeat_task_crashed", exc_info=True)
 
         task.add_done_callback(log_heartbeat_outcome)
         return task, client
@@ -1687,7 +1736,7 @@ class Worker:
         if not token:
             # Truthiness: an empty-string env var disables polling
             # gracefully, same convention as the other optional services.
-            logger.info("news polling disabled: no TRADEBOT_CRYPTOPANIC_TOKEN")
+            log_event(logger, logging.INFO, "news_polling_disabled")
             return None, None
         client = httpx.AsyncClient(timeout=15)
         monitor = NewsMonitor(
@@ -1709,10 +1758,15 @@ class Worker:
             except asyncio.CancelledError:
                 pass
             except Exception:
-                logger.exception("news monitor crashed; event awareness lost")
+                log_event(logger, logging.ERROR, "news_monitor_crashed", exc_info=True)
 
         task.add_done_callback(log_news_outcome)
-        logger.info("news polling enabled (every %ds)", self.config.news_poll_seconds)
+        log_event(
+            logger,
+            logging.INFO,
+            "news_polling_enabled",
+            interval_seconds=self.config.news_poll_seconds,
+        )
         return task, client
 
     def _start_sentiment_if_configured(
@@ -1724,7 +1778,7 @@ class Worker:
         the readings would tighten a gate that does not exist.
         """
         if self.sentiment is None or self.regime_detector is None:
-            logger.info("sentiment polling disabled: regime gate off or sentiment off")
+            log_event(logger, logging.INFO, "sentiment_polling_disabled")
             return None, None
         client = httpx.AsyncClient(timeout=15)
         monitor = SentimentMonitor(
@@ -1740,10 +1794,15 @@ class Worker:
             except asyncio.CancelledError:
                 pass
             except Exception:  # pragma: no cover - poll_once catches its own
-                logger.exception("sentiment monitor crashed; advisory inputs lost")
+                log_event(logger, logging.ERROR, "sentiment_monitor_crashed", exc_info=True)
 
         task.add_done_callback(log_sentiment_outcome)
-        logger.info("sentiment polling enabled (every %dm)", self.config.sentiment_poll_minutes)
+        log_event(
+            logger,
+            logging.INFO,
+            "sentiment_polling_enabled",
+            interval_minutes=self.config.sentiment_poll_minutes,
+        )
         return task, client
 
     def _start_backups_if_configured(
@@ -1757,7 +1816,7 @@ class Worker:
         """
         config = self.config
         if not (config.backup_s3_endpoint and config.backup_s3_bucket):
-            logger.info("scheduled backups disabled: no TRADEBOT_BACKUP_S3_* settings")
+            log_event(logger, logging.INFO, "scheduled_backups_disabled")
             return None, None
         from tradebot.persistence.backup import S3Config, S3Uploader, run_backup
 
@@ -1783,7 +1842,7 @@ class Worker:
                 except Exception:
                     # A failed backup is loud and retried — never fatal:
                     # losing tonight's backup must not stop trading.
-                    logger.exception("scheduled backup failed; retrying next interval")
+                    log_event(logger, logging.ERROR, "scheduled_backup_failed", exc_info=True)
                 await asyncio.sleep(config.backup_interval_hours * 3600)
 
         task = asyncio.create_task(backup_loop())
@@ -1794,14 +1853,16 @@ class Worker:
             except asyncio.CancelledError:
                 pass
             except Exception:  # pragma: no cover - loop catches its own errors
-                logger.exception("backup loop crashed")
+                log_event(logger, logging.ERROR, "backup_loop_crashed", exc_info=True)
 
         task.add_done_callback(log_backup_outcome)
-        logger.info(
-            "scheduled backups enabled: every %dh to %s/%s",
-            config.backup_interval_hours,
-            config.backup_s3_endpoint,
-            config.backup_s3_bucket,
+        log_event(
+            logger,
+            logging.INFO,
+            "scheduled_backups_enabled",
+            interval_hours=config.backup_interval_hours,
+            endpoint=config.backup_s3_endpoint,
+            bucket=config.backup_s3_bucket,
         )
         return task, client
 
@@ -1813,7 +1874,7 @@ class Worker:
         parameters — never the mode, never the risk limits.
         """
         if not self.config.auto_improve_enabled:
-            logger.info("automated improvement disabled (TRADEBOT_AUTO_IMPROVE_ENABLED=false)")
+            log_event(logger, logging.INFO, "automated_improvement_disabled")
             return None
         improver = AutoImprover(
             sweeps=self.sweeps,
@@ -1838,15 +1899,18 @@ class Worker:
             except asyncio.CancelledError:
                 pass
             except Exception:
-                logger.exception("automated improvement loop crashed")
+                log_event(
+                    logger, logging.ERROR, "automated_improvement_loop_crashed", exc_info=True
+                )
 
         task.add_done_callback(log_improver_outcome)
-        logger.info(
-            "automated improvement enabled: every %dh, %dd of %s candles, "
-            "promotions only on validated sweep verdicts",
-            self.config.auto_improve_interval_hours,
-            self.config.auto_improve_history_days,
-            self.config.auto_improve_timeframe,
+        log_event(
+            logger,
+            logging.INFO,
+            "automated_improvement_enabled",
+            interval_hours=self.config.auto_improve_interval_hours,
+            history_days=self.config.auto_improve_history_days,
+            timeframe=self.config.auto_improve_timeframe,
         )
         return task
 
@@ -1866,10 +1930,10 @@ class Worker:
         if not self.config.api_token:
             # Truthiness: an empty-string env var must disable the control
             # plane gracefully, not crash create_app at startup.
-            logger.info("control API disabled (no TRADEBOT_API_TOKEN); serving /health only")
+            log_event(logger, logging.INFO, "control_api_disabled")
             app = create_health_only_app()
         else:
-            logger.info("control API enabled")
+            log_event(logger, logging.INFO, "control_api_enabled")
             app = create_app(self, self.config.api_token)
 
         class NoSignalCaptureServer(uvicorn.Server):
@@ -1897,10 +1961,10 @@ class Worker:
             except asyncio.CancelledError:
                 pass
             except Exception:
-                logger.exception("control API server crashed or failed to start")
+                log_event(logger, logging.ERROR, "control_api_server_crashed", exc_info=True)
 
         task.add_done_callback(log_api_outcome)
-        logger.info("HTTP server listening on port %d", self.config.api_port)
+        log_event(logger, logging.INFO, "http_server_listening", port=self.config.api_port)
         return task
 
     def stop(self) -> None:
@@ -1948,7 +2012,7 @@ async def run_from_env() -> None:
             try:
                 await worker.run()
             except asyncio.CancelledError:
-                logger.info("worker cancelled by shutdown signal")
+                log_event(logger, logging.INFO, "worker_cancelled")
     finally:
         await exchange.close()
 
