@@ -201,6 +201,63 @@ export interface EvaluationRunResponse {
   progress_total: number;
   config: Record<string, unknown>;
   summary: Record<string, unknown> | null;
+  /** Bot id whose strategy was evaluated (e.g. "production", "breakout"). */
+  strategy: string;
+  /** Set when the run was part of a strategy-comparison batch, else null. */
+  comparison_group: number | null;
+}
+
+/** One paper bot in the strategy competition: the production regime router
+ * or one of the single-strategy challengers, each with its own account. */
+export interface CompetitorResponse {
+  bot_id: string;
+  label: string;
+  description: string;
+  is_production: boolean;
+  equity_quote: string | null;
+  initial_balance_quote: string;
+  /** Return on the starting balance as a fraction (e.g. "0.0123" = +1.23%),
+   * not a percent and not money — safe to parse for display only. */
+  return_fraction: string | null;
+  quote_balance: string;
+  realized_pnl_quote: string;
+  unrealized_pnl_quote: string | null;
+  open_positions: number;
+  entry_fills: number;
+  exit_fills: number;
+  breaker_tripped_reason: string | null;
+}
+
+export interface CompetitionResponse {
+  quote_currency: string;
+  /** Already ranked by the backend: best equity first, unknown equity last. */
+  competitors: CompetitorResponse[];
+}
+
+/** Body for POST /evaluations/compare — every field optional; omitting all
+ * of them runs the backend's default scenario set for every strategy. */
+export interface ComparisonStartRequest {
+  symbols?: string[];
+  timeframes?: string[];
+  history_days?: number;
+  scenario_count?: number;
+  lookback_candles?: number;
+  horizon_candles?: number;
+  seed?: number;
+}
+
+export interface ComparisonStartResponse {
+  group_id: number;
+  run_ids: number[];
+  detail: string;
+}
+
+/** One comparison batch: the same scenarios graded once per strategy. */
+export interface ComparisonGroupResponse {
+  group_id: number;
+  created_at: string;
+  /** Runs in lineup order (production first, then the challengers). */
+  runs: EvaluationRunResponse[];
 }
 
 /** One ready-to-run evaluation shape, fitted server-side to the coin's

@@ -607,3 +607,84 @@ class TestSchemaSync:
                 await connection.run_sync(
                     lambda sync_connection: _add_missing_columns(sync_connection, hostile)
                 )
+
+
+class TestBotScoping:
+    """The strategy competition's journal isolation: one table, many accounts."""
+
+    async def test_fills_are_isolated_per_bot(self, database: Database) -> None:
+        production = FillStore(database)
+        challenger = FillStore(database, bot_id="momentum")
+        await production.append(make_fill("ord-prod"))
+        await challenger.append(make_fill("ord-momentum/x"))
+
+        assert [f.client_order_id for f in await production.fetch_all()] == ["ord-prod"]
+        assert [f.client_order_id for f in await challenger.fetch_all()] == ["ord-momentum/x"]
+
+    async def test_count_by_side_counts_only_this_bot(self, database: Database) -> None:
+        production = FillStore(database)
+        challenger = FillStore(database, bot_id="momentum")
+        await production.append(make_fill("ord-1"))
+        await production.append(make_fill("ord-2"))
+        await challenger.append(make_fill("ord-momentum/1"))
+
+        assert await production.count_by_side() == {"buy": 2}
+        assert await challenger.count_by_side() == {"buy": 1}
+        assert await FillStore(database, bot_id="breakout").count_by_side() == {}
+
+    async def test_open_orders_restore_to_their_own_bot(self, database: Database) -> None:
+        production = OrderStore(database)
+        challenger = OrderStore(database, bot_id="momentum")
+        await production.record_submitted(make_order("ord-prod", order_type=OrderType.LIMIT))
+        await challenger.record_submitted(make_order("ord-momentum/x", order_type=OrderType.LIMIT))
+
+        (restored,) = await production.fetch_open()
+        assert restored.order.client_order_id == "ord-prod"
+        (restored,) = await challenger.fetch_open()
+        assert restored.order.client_order_id == "ord-momentum/x"
+
+    async def test_recovery_entry_lookup_stays_inside_the_bot(self, database: Database) -> None:
+        """A challenger's stop must never be rebuilt from the incumbent's plan."""
+        from tradebot.core.models import ProtectiveExitPlan
+
+        challenger = OrderStore(database, bot_id="momentum")
+        entry = make_order("ord-prod-entry", order_type=OrderType.LIMIT).model_copy(
+            update={
+                "side": Side.BUY,
+                "protective_exit": ProtectiveExitPlan(
+                    stop_price_quote=Decimal("90"),
+                    limit_price_quote=Decimal("89.5"),
+                    breakeven_at_r=1.0,
+                    trail_distance_quote=None,
+                ),
+            }
+        )
+        await OrderStore(database).record_submitted(entry)
+        await OrderStore(database).mark_filled("ord-prod-entry", BASE_TIME)
+
+        assert await challenger.latest_filled_entry_with_plan("BTC/USDT") is None
+
+    async def test_decisions_are_isolated_per_bot(self, database: Database) -> None:
+        production = DecisionStore(database)
+        challenger = DecisionStore(database, bot_id="momentum")
+        await production.append(make_decision("sig-prod", DecisionOutcome.SUBMITTED))
+        await challenger.append(make_decision("sig-challenger", DecisionOutcome.VETOED))
+
+        (decision,) = await production.fetch_recent("BTC/USDT")
+        assert decision.signal_id == "sig-prod"
+        (decision,) = await challenger.fetch_recent("BTC/USDT")
+        assert decision.signal_id == "sig-challenger"
+
+    async def test_risk_state_rows_are_isolated_per_bot(self, database: Database) -> None:
+        from tradebot.persistence import RiskStateStore
+        from tradebot.risk import BreakerState
+
+        production = RiskStateStore(database)
+        challenger = RiskStateStore(database, row_id=5)
+        await production.save(BreakerState(entries_today=3), ["BTC/USDT"], BASE_TIME)
+        await challenger.save(BreakerState(entries_today=7), [], BASE_TIME)
+
+        loaded = await production.load()
+        assert loaded is not None and loaded[0].entries_today == 3
+        loaded = await challenger.load()
+        assert loaded is not None and loaded[0].entries_today == 7

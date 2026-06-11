@@ -56,7 +56,10 @@ async def database() -> AsyncIterator[Database]:
 
 
 def make_config(
-    symbols: str = "BTC/USDT", api_port: int = 8901, regime_gate_enabled: bool = False
+    symbols: str = "BTC/USDT",
+    api_port: int = 8901,
+    regime_gate_enabled: bool = False,
+    competition_enabled: bool = True,
 ) -> AppConfig:
     # Distinct ports per test: each worker.run() binds an HTTP server, and
     # a just-closed listener can linger long enough to collide.
@@ -70,6 +73,7 @@ def make_config(
         paper_initial_balance_quote=Decimal("10000"),
         api_port=api_port,
         regime_gate_enabled=regime_gate_enabled,
+        competition_enabled=competition_enabled,
         # Never poll real sentiment APIs from tests; the gate is exercised
         # through the regime and news paths, which are fully scripted.
         sentiment_enabled=False,
@@ -630,7 +634,7 @@ class TestStrategyPromotion:
         await worker.initialize()
 
         with pytest.raises(ValueError, match="unknown strategy family"):
-            await worker.apply_strategy_params("momentum", {})
+            await worker.apply_strategy_params("martingale", {})
         with pytest.raises(ValueError, match="unknown trend_following parameters"):
             await worker.apply_strategy_params("trend_following", {"fast_ema_perod": 1})
         with pytest.raises(KeyError, match="no strategy settings version"):
@@ -853,3 +857,89 @@ class TestResearchOnlyFamilies:
         await worker.initialize()
         with pytest.raises(ValueError, match="research-only"):
             await worker.apply_strategy_params("breakout", {"channel_period": 20})
+
+
+class TestCompetition:
+    async def test_challengers_trade_isolated_accounts_on_the_same_candles(
+        self, database: Database
+    ) -> None:
+        exchange = ScriptedExchange(CLOSES)
+        worker = Worker(make_config(api_port=8920), database, exchange)
+        exchange.worker = worker
+
+        await worker.run()
+
+        assert set(worker.challengers) == {
+            "trend_following",
+            "mean_reversion",
+            "breakout",
+            "momentum",
+        }
+        # The trend challenger saw the same crossover production (bare trend
+        # with the gate off) traded — from its own account, in its own journal.
+        challenger_fills = await FillStore(database, bot_id="trend_following").fetch_all("BTC/USDT")
+        assert [fill.side for fill in challenger_fills] == [Side.BUY, Side.SELL]
+        production_fills = await worker.fill_store.fetch_all("BTC/USDT")
+        assert [fill.side for fill in production_fills] == [Side.BUY, Side.SELL]
+        # Same family, same candles — but namespaced ids: nothing collides
+        # in the shared journal tables.
+        challenger_ids = {fill.client_order_id for fill in challenger_fills}
+        assert challenger_ids.isdisjoint(fill.client_order_id for fill in production_fills)
+        assert all(order_id.startswith("ord-trend_following/") for order_id in challenger_ids)
+        # Each account's books close on their own equity identity.
+        for runtime in worker.challengers.values():
+            portfolio = runtime.portfolio
+            assert portfolio.position("BTC/USDT") is None or runtime.spec.bot_id != (
+                "trend_following"
+            )
+        trend_portfolio = worker.challengers["trend_following"].portfolio
+        assert (
+            trend_portfolio.equity_quote({})
+            == Decimal("10000") + trend_portfolio.realized_pnl_quote()
+        )
+
+    async def test_restart_replays_every_account_from_its_own_journal(
+        self, database: Database
+    ) -> None:
+        exchange = ScriptedExchange(CLOSES)
+        first = Worker(make_config(api_port=8921), database, exchange)
+        exchange.worker = first
+        await first.run()
+        traded = first.challengers["trend_following"].portfolio
+
+        restarted = Worker(make_config(api_port=8922), database, ScriptedExchange([]))
+        await restarted.initialize()
+
+        replayed = restarted.challengers["trend_following"].portfolio
+        assert replayed.quote_balance == traded.quote_balance
+        assert replayed.realized_pnl_quote() == traded.realized_pnl_quote()
+        assert restarted.portfolio.quote_balance == first.portfolio.quote_balance
+
+    async def test_competition_snapshot_ranks_all_five_accounts(self, database: Database) -> None:
+        exchange = ScriptedExchange(CLOSES)
+        worker = Worker(make_config(api_port=8923), database, exchange)
+        exchange.worker = worker
+        await worker.run()
+
+        rows = await worker.competition_snapshot()
+
+        assert len(rows) == 5
+        assert sum(1 for row in rows if row["is_production"]) == 1
+        equities = [row["equity_quote"] for row in rows]
+        assert all(equity is not None for equity in equities)
+        assert equities == sorted(equities, reverse=True)
+        by_bot = {row["bot_id"]: row for row in rows}
+        assert by_bot["trend_following"]["entry_fills"] == 1
+        assert by_bot["trend_following"]["exit_fills"] == 1
+
+    async def test_competition_can_be_disabled(self, database: Database) -> None:
+        worker = Worker(
+            make_config(api_port=8924, competition_enabled=False),
+            database,
+            ScriptedExchange([]),
+        )
+        await worker.initialize()
+
+        assert worker.challengers == {}
+        rows = await worker.competition_snapshot()
+        assert [row["bot_id"] for row in rows] == ["production"]

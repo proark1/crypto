@@ -66,7 +66,9 @@ def make_runner(database: Database) -> tuple[EvaluationRunner, EvaluationStore]:
     runner = EvaluationRunner(
         CandleStore(database),
         store,
-        ScenarioEvaluator(
+        # Every strategy id grades the same shape here: these tests cover
+        # orchestration, not the lineup mapping (the worker owns that).
+        lambda _strategy_id: ScenarioEvaluator(
             lambda: TrendFollowingStrategy(
                 TrendFollowingConfig(fast_ema_period=5, slow_ema_period=12, atr_period=5)
             )
@@ -196,3 +198,62 @@ class TestManager:
         with pytest.raises(ValueError):
             await manager.start(CONFIG.model_copy(update={"timeframes": ("7m",)}))
         assert await store.list_runs() == []
+
+
+class TestComparison:
+    async def test_runs_share_a_group_a_frozen_window_and_identical_scenarios(
+        self, database: Database
+    ) -> None:
+        await seed_candles(database)
+        runner, store = make_runner(database)
+        manager, tasks = make_manager(runner, store)
+
+        run_ids = await manager.start_comparison(CONFIG, ["production", "trend_following"])
+        await asyncio.gather(*tasks)
+
+        lead = await store.fetch_run(run_ids[0])
+        second = await store.fetch_run(run_ids[1])
+        assert lead is not None and second is not None
+        assert lead["comparison_group"] == lead["id"]
+        assert second["comparison_group"] == lead["id"]
+        assert lead["strategy"] == "production"
+        assert second["strategy"] == "trend_following"
+        assert lead["status"] == second["status"] == "completed"
+        # One frozen window end: "now" moving between members would shift
+        # the scenario coordinates and break the comparison's premise.
+        assert lead["config"]["window_end"] == second["config"]["window_end"]
+        lead_scenarios = await store.fetch_scenarios(run_ids[0])
+        second_scenarios = await store.fetch_scenarios(run_ids[1])
+        assert [scenario.decision_time for _, scenario in lead_scenarios] == [
+            scenario.decision_time for _, scenario in second_scenarios
+        ]
+        # The store hands batches back grouped, members in creation order.
+        (batch,) = await store.list_comparisons()
+        assert [run["id"] for run in batch] == run_ids
+
+    async def test_comparison_holds_the_single_flight_slot(self, database: Database) -> None:
+        await seed_candles(database)
+        runner, store = make_runner(database)
+        manager, tasks = make_manager(runner, store)
+
+        await manager.start_comparison(CONFIG, ["production"])
+        with pytest.raises(RuntimeError, match="already in progress"):
+            await manager.start(CONFIG)
+        await asyncio.gather(*tasks)
+
+    async def test_cancel_interrupts_every_member_of_the_batch(self, database: Database) -> None:
+        await seed_candles(database)
+        runner, store = make_runner(database)
+        manager, tasks = make_manager(runner, store)
+
+        run_ids = await manager.start_comparison(CONFIG, ["production", "trend_following"])
+        # Cancelling any member kills the batch: half a comparison cannot
+        # answer the question the batch asked.
+        assert manager.cancel(run_ids[1]) is True
+        with pytest.raises(asyncio.CancelledError):
+            await tasks[0]
+        await asyncio.gather(*(task for task in tasks if not task.done()))
+
+        for run_id in run_ids:
+            run = await store.fetch_run(run_id)
+            assert run is not None and run["status"] == "interrupted"

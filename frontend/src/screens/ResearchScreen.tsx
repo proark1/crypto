@@ -4,6 +4,7 @@ import {
   acceptFinding,
   cancelEvaluation,
   cancelSweep,
+  fetchComparisons,
   fetchEvaluations,
   fetchEvaluationSuggestions,
   fetchFindings,
@@ -13,10 +14,12 @@ import {
   fetchSweeps,
   rejectFinding,
   revertStrategyVersion,
+  startComparison,
   startEvaluation,
   startSweep,
 } from "../api/client";
 import type {
+  ComparisonGroupResponse,
   EvaluationRunResponse,
   FindingResponse,
   ScenarioReplayResponse,
@@ -25,6 +28,7 @@ import type {
   SuggestedEvaluationResponse,
   SweepResponse,
 } from "../api/types";
+import { ComparisonPanel } from "../components/ComparisonPanel";
 import { FindingsPanel } from "../components/FindingsPanel";
 import { ImprovementsPanel } from "../components/ImprovementsPanel";
 import { ScenarioReplay } from "../components/ScenarioReplay";
@@ -260,6 +264,8 @@ export function ResearchScreen() {
   const [sweeps, setSweeps] = useState<SweepResponse[]>([]);
   const [versions, setVersions] = useState<StrategyVersionResponse[]>([]);
   const [suggestions, setSuggestions] = useState<SuggestedEvaluationResponse[]>([]);
+  const [comparisons, setComparisons] = useState<ComparisonGroupResponse[]>([]);
+  const [comparisonPending, setComparisonPending] = useState(false);
 
   const suggestionsLoaded = useRef(false);
 
@@ -268,6 +274,7 @@ export function ResearchScreen() {
       setRuns(await fetchEvaluations());
       setSweeps(await fetchSweeps());
       setVersions(await fetchStrategyVersions());
+      setComparisons(await fetchComparisons());
       // Suggestions ride the poll only until the first success: stored
       // history depth moves a day at a time, so once loaded they stay put —
       // but a fetch that failed (token not entered yet, transient outage)
@@ -328,6 +335,30 @@ export function ResearchScreen() {
       },
       (caught: unknown) => {
         setNotice(caught instanceof Error ? caught.message : "failed to start run");
+      },
+    );
+  };
+
+  // The backend rejects a second batch while one is in flight (409); the
+  // button disables on what we can see and the 409 detail covers the rest
+  // (e.g. a sweep started elsewhere) through the shared notice line.
+  const comparisonRunning = comparisons.some((group) =>
+    group.runs.some((run) => run.status === "running" || run.status === "pending"),
+  );
+
+  const handleStartComparison = () => {
+    // Empty body on purpose: the backend's defaults give every strategy
+    // the identical, fairly sized scenario set.
+    setComparisonPending(true);
+    startComparison({}).then(
+      (started) => {
+        setComparisonPending(false);
+        setNotice(started.detail);
+        void refresh();
+      },
+      (caught: unknown) => {
+        setComparisonPending(false);
+        setNotice(caught instanceof Error ? caught.message : "failed to start the comparison");
       },
     );
   };
@@ -538,6 +569,12 @@ export function ResearchScreen() {
           )}
         </section>
       </div>
+
+      <ComparisonPanel
+        groups={comparisons}
+        onStart={handleStartComparison}
+        startDisabled={comparisonPending || comparisonRunning}
+      />
 
       <ImprovementsPanel
         versions={versions}

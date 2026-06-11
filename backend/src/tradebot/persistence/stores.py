@@ -273,30 +273,61 @@ class CoinStore:
 
 
 class FillStore:
-    """Append-only record of every execution; the trade journal's raw data."""
+    """Append-only record of every execution; the trade journal's raw data.
 
-    def __init__(self, database: Database) -> None:
-        """Bind the store to ``database``."""
+    One instance per bot: the strategy competition runs several paper
+    accounts against one ``fills`` table, and ``bot_id`` keeps each
+    account's journal (and the portfolio replayed from it) separate.
+    The default scope is the production bot, which also owns every row
+    written before the competition existed.
+    """
+
+    def __init__(self, database: Database, bot_id: str = "production") -> None:
+        """Bind the store to ``database``, scoped to ``bot_id``'s journal."""
         self._database = database
+        self._bot_id = bot_id
 
     async def append(self, fill: Fill) -> None:
-        """Persist one fill."""
+        """Persist one fill under this store's bot."""
+        row = fill.model_dump()
+        row["bot_id"] = self._bot_id
         async with self._database.engine.begin() as connection:
-            await connection.execute(fills_table.insert(), [fill.model_dump()])
+            await connection.execute(fills_table.insert(), [row])
 
     async def fetch_all(self, symbol: str | None = None) -> list[Fill]:
-        """Return fills (optionally for one symbol) in execution order."""
-        statement = select(fills_table).order_by(fills_table.c.id)
+        """Return this bot's fills (optionally for one symbol) in execution order."""
+        statement = (
+            select(fills_table)
+            .where(fills_table.c.bot_id == self._bot_id)
+            .order_by(fills_table.c.id)
+        )
         if symbol is not None:
             statement = statement.where(fills_table.c.symbol == symbol)
         async with self._database.engine.connect() as connection:
             rows = (await connection.execute(statement)).mappings().all()
-        # The surrogate ``id`` column is ignored by validation (not a model field).
+        # The surrogate ``id`` and ``bot_id`` columns are ignored by
+        # validation (not model fields).
         return [Fill.model_validate(dict(row)) for row in rows]
+
+    async def count_by_side(self) -> dict[str, int]:
+        """Return this bot's fill counts per side — leaderboard activity, cheap.
+
+        One indexed aggregate instead of dragging the whole journal across
+        the wire every poll (the leaderboard refreshes continuously).
+        """
+        statement = (
+            select(fills_table.c.side, func.count())
+            .where(fills_table.c.bot_id == self._bot_id)
+            .group_by(fills_table.c.side)
+        )
+        async with self._database.engine.connect() as connection:
+            rows = (await connection.execute(statement)).all()
+        return {side: int(count) for side, count in rows}
 
 
 def _order_from_row(row: dict[str, Any]) -> Order:
     """Rebuild an ``Order`` from its row, folding the flattened exit plan."""
+    row.pop("bot_id", None)  # storage scoping, not part of the domain model
     stop = row.pop("protective_stop_price_quote")
     limit = row.pop("protective_limit_price_quote")
     breakeven = row.pop("protective_breakeven_at_r")
@@ -327,11 +358,17 @@ class OrderStore:
     submitted but had not filled when the process died exists nowhere else.
     This store records every submission and its terminal transition so
     :meth:`fetch_open` can re-arm the adapter on boot.
+
+    One instance per bot, like :class:`FillStore`: client order ids are
+    namespaced per bot upstream (competition strategies prefix their
+    signal ids), and ``bot_id`` keeps each account's restoration scoped
+    to its own orders.
     """
 
-    def __init__(self, database: Database) -> None:
-        """Bind the store to ``database``."""
+    def __init__(self, database: Database, bot_id: str = "production") -> None:
+        """Bind the store to ``database``, scoped to ``bot_id``'s orders."""
         self._database = database
+        self._bot_id = bot_id
 
     async def record_submitted(self, order: Order) -> None:
         """Journal ``order`` as open, before the adapter accepts it.
@@ -343,6 +380,7 @@ class OrderStore:
         fill-journal guard, not by refusing the write here.
         """
         row = order.model_dump(exclude={"protective_exit"})
+        row["bot_id"] = self._bot_id
         plan = order.protective_exit
         row["protective_stop_price_quote"] = None if plan is None else plan.stop_price_quote
         row["protective_limit_price_quote"] = None if plan is None else plan.limit_price_quote
@@ -423,6 +461,7 @@ class OrderStore:
                 isouter=True,
             )
             .where(
+                orders_table.c.bot_id == self._bot_id,
                 orders_table.c.status == OrderStatus.OPEN.value,
                 func.coalesce(filled.c.filled_base, 0) < orders_table.c.quantity_base,
             )
@@ -459,6 +498,7 @@ class OrderStore:
         statement = (
             select(orders_table)
             .where(
+                orders_table.c.bot_id == self._bot_id,
                 orders_table.c.symbol == symbol,
                 orders_table.c.side == Side.BUY.value,
                 # A journaled fill outranks the row's status: the crash may
@@ -476,24 +516,34 @@ class OrderStore:
 
 
 class DecisionStore:
-    """Append-only record of every signal's fate; the explainability trail."""
+    """Append-only record of every signal's fate; the explainability trail.
 
-    def __init__(self, database: Database) -> None:
-        """Bind the store to ``database``."""
+    One instance per bot (see :class:`FillStore`): each competition
+    account keeps its own decision trail, and the production bot owns
+    every row written before the competition existed.
+    """
+
+    def __init__(self, database: Database, bot_id: str = "production") -> None:
+        """Bind the store to ``database``, scoped to ``bot_id``'s decisions."""
         self._database = database
+        self._bot_id = bot_id
 
     async def append(self, decision: Decision) -> None:
-        """Persist one decision."""
+        """Persist one decision under this store's bot."""
         row = decision.model_dump()
+        row["bot_id"] = self._bot_id
         row["reasons"] = list(decision.reasons)  # ARRAY column wants a list
         async with self._database.engine.begin() as connection:
             await connection.execute(decisions_table.insert(), [row])
 
     async def fetch_recent(self, symbol: str, limit: int = 50) -> list[Decision]:
-        """Return the newest ``limit`` decisions for ``symbol``, newest first."""
+        """Return this bot's newest ``limit`` decisions for ``symbol``, newest first."""
         statement = (
             select(decisions_table)
-            .where(decisions_table.c.symbol == symbol)
+            .where(
+                decisions_table.c.bot_id == self._bot_id,
+                decisions_table.c.symbol == symbol,
+            )
             .order_by(decisions_table.c.id.desc())
             .limit(limit)
         )
@@ -512,16 +562,19 @@ class RiskStateStore:
     """
 
     ROW_ID = 1
+    """The production bot's row. Competition accounts persist their own
+    brake state under the fixed row ids their lineup entries declare."""
 
-    def __init__(self, database: Database) -> None:
-        """Bind the store to ``database``."""
+    def __init__(self, database: Database, row_id: int = ROW_ID) -> None:
+        """Bind the store to ``database``, scoped to one bot's ``row_id``."""
         self._database = database
+        self._row_id = row_id
 
     async def save(self, state: BreakerState, paused_symbols: Sequence[str], at: datetime) -> None:
-        """Upsert the one risk-state row."""
+        """Upsert this bot's one risk-state row."""
         _require_aware(at)
         row = state.model_dump()
-        row["id"] = self.ROW_ID
+        row["id"] = self._row_id
         row["paused_symbols"] = list(paused_symbols)
         row["updated_at"] = at
         statement = pg_insert(risk_state_table)
@@ -537,7 +590,7 @@ class RiskStateStore:
 
     async def load(self) -> tuple[BreakerState, tuple[str, ...]] | None:
         """Return the persisted state and paused symbols, or ``None`` if fresh."""
-        statement = select(risk_state_table).where(risk_state_table.c.id == self.ROW_ID)
+        statement = select(risk_state_table).where(risk_state_table.c.id == self._row_id)
         async with self._database.engine.connect() as connection:
             row = (await connection.execute(statement)).mappings().first()
         if row is None:

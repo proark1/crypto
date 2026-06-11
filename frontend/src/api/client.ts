@@ -7,6 +7,10 @@
 import type {
   CandleResponse,
   ChartInterval,
+  ComparisonGroupResponse,
+  ComparisonStartRequest,
+  ComparisonStartResponse,
+  CompetitionResponse,
   EvaluationRunResponse,
   CommandResponse,
   DecisionResponse,
@@ -170,6 +174,26 @@ export function startEvaluation(body: {
 }): Promise<{ run_id: number; detail: string }> {
   // Omitting symbols means the backend's default: every active coin.
   return request<{ run_id: number; detail: string }>("/evaluations", "POST", body);
+}
+
+/** The strategy-competition leaderboard. Competitors arrive already ranked
+ * best equity first (null equity last) — render them in order. */
+export function fetchCompetition(): Promise<CompetitionResponse> {
+  return request<CompetitionResponse>("/competition", "GET");
+}
+
+/** Start one evaluation run per strategy over identical scenario sets.
+ * An empty body means the backend's defaults; 409 = a batch or sweep is
+ * already in flight, 400 = bad config — both carry a plain-words detail. */
+export function startComparison(
+  body: ComparisonStartRequest = {},
+): Promise<ComparisonStartResponse> {
+  return request<ComparisonStartResponse>("/evaluations/compare", "POST", body);
+}
+
+/** Past comparison batches, newest first, runs in lineup order. */
+export function fetchComparisons(): Promise<ComparisonGroupResponse[]> {
+  return request<ComparisonGroupResponse[]>("/evaluations/comparisons", "GET");
 }
 
 export function fetchEvaluationSuggestions(): Promise<SuggestedEvaluationResponse[]> {

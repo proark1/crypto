@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 import secrets
 from collections import deque
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any, Protocol
@@ -79,7 +79,23 @@ class BotState(Protocol):
 
     @property
     def engines(self) -> Mapping[str, TradingEngine]:
-        """One trading loop per symbol, for pause/resume/kill commands."""
+        """The production bot's trading loops, one per symbol."""
+        ...
+
+    def all_engines(self) -> Iterator[TradingEngine]:
+        """Every engine across every competition account.
+
+        Pause/resume/kill act through this: an operator halt must mean
+        every account, never "except the challengers".
+        """
+        ...
+
+    async def competition_snapshot(self) -> list[dict[str, Any]]:
+        """Leaderboard rows (Decimal amounts), best equity first."""
+        ...
+
+    async def start_comparison(self, config: EvaluationRunConfig) -> list[int]:
+        """Grade the whole lineup on identical scenarios; returns run ids."""
         ...
 
     async def persist_risk_state(self) -> None:
@@ -333,6 +349,8 @@ class EvaluationRunResponse(BaseModel):
     id: int
     created_at: str
     status: str
+    strategy: str
+    comparison_group: int | None
     symbols: list[str]
     timeframes: list[str]
     progress_done: int
@@ -347,6 +365,8 @@ def _run_response(run: dict[str, Any]) -> EvaluationRunResponse:
         id=run["id"],
         created_at=run["created_at"].isoformat(),
         status=run["status"],
+        strategy=run["strategy"],
+        comparison_group=run["comparison_group"],
         symbols=list(run["symbols"]),
         timeframes=list(run["timeframes"]),
         progress_done=run["progress_done"],
@@ -354,6 +374,48 @@ def _run_response(run: dict[str, Any]) -> EvaluationRunResponse:
         config=run["config"],
         summary=run["summary"],
     )
+
+
+class CompetitorResponse(BaseModel):
+    """One strategy-competition leaderboard row, amounts as strings."""
+
+    bot_id: str
+    label: str
+    description: str
+    is_production: bool
+    equity_quote: str | None
+    initial_balance_quote: str
+    return_fraction: str | None
+    quote_balance: str
+    realized_pnl_quote: str
+    unrealized_pnl_quote: str | None
+    open_positions: int
+    entry_fills: int
+    exit_fills: int
+    breaker_tripped_reason: str | None
+
+
+class CompetitionResponse(BaseModel):
+    """The live leaderboard: every competitor, best equity first."""
+
+    quote_currency: str
+    competitors: list[CompetitorResponse]
+
+
+class ComparisonStartResponse(BaseModel):
+    """Acknowledgement that a comparison batch was created and launched."""
+
+    group_id: int
+    run_ids: list[int]
+    detail: str
+
+
+class ComparisonResponse(BaseModel):
+    """One comparison batch: runs over identical scenarios, lineup order."""
+
+    group_id: int
+    created_at: str
+    runs: list[EvaluationRunResponse]
 
 
 class ScenarioSummaryResponse(BaseModel):
@@ -825,6 +887,38 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
             equity_quote=str(equity) if equity is not None else None,
         )
 
+    @protected.get("/competition")
+    async def get_competition() -> CompetitionResponse:
+        """Rank every competition paper account by equity (the leaderboard).
+
+        With the competition disabled the lineup degrades to the production
+        bot alone — an honest one-row leaderboard, never a 404 the UI has
+        to special-case.
+        """
+        rows = await state.competition_snapshot()
+        return CompetitionResponse(
+            quote_currency=state.config.quote_currency,
+            competitors=[
+                CompetitorResponse(
+                    bot_id=row["bot_id"],
+                    label=row["label"],
+                    description=row["description"],
+                    is_production=row["is_production"],
+                    equity_quote=_optional_str(row["equity_quote"]),
+                    initial_balance_quote=str(row["initial_balance_quote"]),
+                    return_fraction=_optional_str(row["return_fraction"]),
+                    quote_balance=str(row["quote_balance"]),
+                    realized_pnl_quote=str(row["realized_pnl_quote"]),
+                    unrealized_pnl_quote=_optional_str(row["unrealized_pnl_quote"]),
+                    open_positions=row["open_positions"],
+                    entry_fills=row["entry_fills"],
+                    exit_fills=row["exit_fills"],
+                    breaker_tripped_reason=row["breaker_tripped_reason"],
+                )
+                for row in rows
+            ],
+        )
+
     @protected.get("/coins/{symbol:path}/divergence")
     async def get_divergence(
         symbol: str, hours: int = Query(24, ge=1, le=24 * 90)
@@ -847,15 +941,16 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
     @protected.post("/pause")
     async def pause() -> CommandResponse:
         # Whole-bot commands on purpose: pause/resume/kill are operator
-        # actions, and "I paused it" must never mean "except that symbol".
-        for engine in state.engines.values():
+        # actions, and "I paused it" must never mean "except that symbol"
+        # — or "except the competition accounts".
+        for engine in state.all_engines():
             engine.pause()
         await state.persist_risk_state()
         return CommandResponse(paused=True, detail="strategies muted; resting orders stay live")
 
     @protected.post("/resume")
     async def resume() -> CommandResponse:
-        for engine in state.engines.values():
+        for engine in state.all_engines():
             engine.resume()
         await state.persist_risk_state()
         return CommandResponse(paused=False, detail="strategies resumed")
@@ -864,9 +959,10 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
     async def kill() -> CommandResponse:
         exits_submitted = 0
         failures: list[str] = []
-        # Kill every engine before reporting any failure: one symbol's
-        # unpriceable exit must not leave the others trading.
-        for engine in state.engines.values():
+        # Kill every engine — every symbol, every competition account —
+        # before reporting any failure: one symbol's unpriceable exit must
+        # not leave the others trading.
+        for engine in state.all_engines():
             try:
                 if await engine.kill():
                     exits_submitted += 1
@@ -1071,6 +1167,52 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
         suggestions = await build_suggestions(state.candle_store, active_symbols())
         return [
             SuggestedEvaluationResponse(**suggestion.model_dump()) for suggestion in suggestions
+        ]
+
+    @protected.post("/evaluations/compare")
+    async def start_comparison(request: EvaluationStartRequest) -> ComparisonStartResponse:
+        """Grade every competition strategy on identical scenarios.
+
+        One run per lineup entry over one frozen window and seed — the
+        research counterpart of the live leaderboard.
+        """
+        config = EvaluationRunConfig(
+            symbols=tuple(request.symbols) if request.symbols else tuple(active_symbols()),
+            timeframes=tuple(request.timeframes),
+            history_days=request.history_days,
+            scenario_count=request.scenario_count,
+            lookback_candles=request.lookback_candles,
+            horizon_candles=request.horizon_candles,
+            seed=request.seed,
+        )
+        try:
+            run_ids = await state.start_comparison(config)
+        except RuntimeError as error:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)
+            ) from error
+        return ComparisonStartResponse(
+            group_id=run_ids[0],
+            run_ids=run_ids,
+            detail=f"comparison started: {len(run_ids)} strategies, identical scenarios",
+        )
+
+    @protected.get("/evaluations/comparisons")
+    async def list_comparisons() -> list[ComparisonResponse]:
+        """Recent comparison batches, newest first, runs in lineup order.
+
+        Declared before ``/evaluations/{run_id}`` so the literal segment is
+        matched as a path, not parsed as a run id.
+        """
+        return [
+            ComparisonResponse(
+                group_id=batch[0]["comparison_group"],
+                created_at=batch[0]["created_at"].isoformat(),
+                runs=[_run_response(run) for run in batch],
+            )
+            for batch in await state.evaluation_store.list_comparisons()
         ]
 
     @protected.get("/evaluations/{run_id}")

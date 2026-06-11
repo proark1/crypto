@@ -33,6 +33,23 @@ export function truncateAmount(amount: string, maxDecimals = 2): string {
   return trimAmount(amount.slice(0, dot + 1 + keep));
 }
 
+/**
+ * Render a backend fraction (e.g. "0.0123") as a signed percentage
+ * ("+1.23%"). Fractions are ratios, not money, so parsing them for
+ * display is allowed — money strings never come through here.
+ */
+export function formatFractionPercent(fraction: string | null): string {
+  if (fraction === null) {
+    return "—";
+  }
+  const parsed = Number(fraction);
+  if (Number.isNaN(parsed)) {
+    return "—";
+  }
+  const percent = (parsed * 100).toFixed(2);
+  return parsed > 0 ? `+${percent}%` : `${percent}%`;
+}
+
 export function signClass(amount: string | null): string {
   if (amount === null) {
     return "text-zinc-400";

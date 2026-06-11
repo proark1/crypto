@@ -1,15 +1,17 @@
 """Control-plane tests over the ASGI app with a real database behind it."""
 
 import os
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from typing import Any
 
 import httpx
 import pytest
 
 from tradebot.api import create_app, create_health_only_app
 from tradebot.backtest.parity import DivergenceReport, compare_fills
+from tradebot.competition import LINEUP
 from tradebot.core.config import AppConfig, TradingMode
 from tradebot.core.metrics import MetricsCollector
 from tradebot.core.models import (
@@ -82,6 +84,57 @@ class StubBot:
         self.news_flags = NewsFlags()
         self._evaluation_running = False
         self._sweep_running = False
+
+    def all_engines(self) -> Iterator[TradingEngine]:
+        yield from self.engines.values()
+
+    async def competition_snapshot(self) -> list[dict[str, Any]]:
+        # The incumbent alone, in the worker's row shape: enough surface
+        # for the endpoint's serialization to be exercised end to end.
+        fill_counts = await self.fill_store.count_by_side()
+        initial = self.config.paper_initial_balance_quote
+        equity = self.portfolio.quote_balance
+        return [
+            {
+                "bot_id": "production",
+                "label": "Regime router",
+                "description": "stub lineup entry",
+                "is_production": True,
+                "equity_quote": equity,
+                "initial_balance_quote": initial,
+                "return_fraction": (equity - initial) / initial,
+                "quote_balance": self.portfolio.quote_balance,
+                "realized_pnl_quote": self.portfolio.realized_pnl_quote(),
+                "unrealized_pnl_quote": Decimal(0),
+                "open_positions": len(self.portfolio.positions),
+                "entry_fills": fill_counts.get("buy", 0),
+                "exit_fills": fill_counts.get("sell", 0),
+                "breaker_tripped_reason": None,
+            }
+        ]
+
+    async def start_comparison(self, config: EvaluationRunConfig) -> list[int]:
+        config.intervals()  # same validation order as the real manager
+        if self._evaluation_running:
+            raise RuntimeError("evaluation run 1 is already in progress")
+        run_ids: list[int] = []
+        group: int | None = None
+        for spec in LINEUP:
+            run_id = await self.evaluation_store.create_run(
+                symbols=list(config.symbols),
+                timeframes=list(config.timeframes),
+                config=config.model_dump(mode="json"),
+                code_version="test",
+                progress_total=config.scenario_count,
+                created_at=BASE_TIME,
+                strategy=spec.bot_id,
+                comparison_group=group,
+            )
+            if group is None:
+                group = run_id
+                await self.evaluation_store.set_comparison_group(run_id, run_id)
+            run_ids.append(run_id)
+        return run_ids
 
     async def revert_strategy_version(self, version_id: int) -> int:
         row = await self.strategy_settings_store.fetch(version_id)
@@ -1103,7 +1156,7 @@ class TestSweeps:
         unknown_family = {
             "candidates": [
                 {"name": "incumbent", "params": {}},
-                {"name": "imaginary", "params": {}, "family": "momentum"},
+                {"name": "imaginary", "params": {}, "family": "martingale"},
             ]
         }
         async with make_client(bot) as client:
@@ -1289,3 +1342,48 @@ class TestRegimeVisibility:
             response = await client.get("/status")
         regime = response.json()["regime"]
         assert regime == {"enabled": False, "symbol": None, "label": None, "reasons": []}
+
+
+class TestCompetitionEndpoint:
+    async def test_leaderboard_serializes_amounts_as_strings(self, database: Database) -> None:
+        bot = StubBot(database)
+        async with make_client(bot) as client:
+            response = await client.get("/competition")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["quote_currency"] == "USDT"
+        (row,) = body["competitors"]
+        assert row["bot_id"] == "production" and row["is_production"] is True
+        assert row["equity_quote"] == "10000"
+        assert row["initial_balance_quote"] == "10000"
+        assert row["return_fraction"] == "0"
+        assert row["entry_fills"] == 0 and row["exit_fills"] == 0
+
+
+class TestComparisonEndpoints:
+    async def test_compare_creates_one_grouped_run_per_lineup_entry(
+        self, database: Database
+    ) -> None:
+        bot = StubBot(database)
+        async with make_client(bot) as client:
+            started = await client.post("/evaluations/compare", json={})
+            assert started.status_code == 200
+            body = started.json()
+            assert len(body["run_ids"]) == len(LINEUP)
+            assert body["group_id"] == body["run_ids"][0]
+
+            listed = await client.get("/evaluations/comparisons")
+
+        assert listed.status_code == 200
+        (batch,) = listed.json()
+        assert batch["group_id"] == body["group_id"]
+        assert [run["id"] for run in batch["runs"]] == body["run_ids"]
+        assert [run["strategy"] for run in batch["runs"]] == [spec.bot_id for spec in LINEUP]
+        assert all(run["comparison_group"] == body["group_id"] for run in batch["runs"])
+
+    async def test_no_comparisons_is_an_empty_list(self, database: Database) -> None:
+        async with make_client(StubBot(database)) as client:
+            response = await client.get("/evaluations/comparisons")
+        assert response.status_code == 200
+        assert response.json() == []
