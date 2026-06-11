@@ -74,6 +74,7 @@ class StubBot:
         }
         self.engine = self.engines[self.config.symbol_list()[0]]
         self.risk_state_persists = 0
+        self.regime_detector = None
         self.evaluation_store = EvaluationStore(database)
         self.strategy_settings_store = StrategySettingsStore(database)
         self.metrics = MetricsCollector()
@@ -1191,3 +1192,11 @@ class TestDivergenceEndpoint:
             response = await client.get("/status")
         assert response.status_code == 200
         assert "protective_stop_quote" in response.json()
+
+
+class TestRegimeVisibility:
+    async def test_status_reports_the_gate_disabled_when_absent(self, database: Database) -> None:
+        async with make_client(StubBot(database)) as client:
+            response = await client.get("/status")
+        regime = response.json()["regime"]
+        assert regime == {"enabled": False, "symbol": None, "label": None, "reasons": []}
