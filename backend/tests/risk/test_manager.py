@@ -482,3 +482,11 @@ class TestVenueFilters:
         bare_order = bare.evaluate(eth, Decimal("100"))
         assert filtered_order is not None and bare_order is not None
         assert filtered_order.quantity_base == bare_order.quantity_base
+
+    def test_sub_tick_levels_clamp_to_the_tick_never_zero(self) -> None:
+        """Zero is not a price: it fails validation and crashes the flow."""
+        from tradebot.core.models import SymbolFilters
+
+        filters = SymbolFilters(price_tick_quote=Decimal("0.01"))
+        assert filters.align_price_down(Decimal("0.004")) == Decimal("0.01")
+        assert filters.align_price_down(Decimal("0.05")) == Decimal("0.05")

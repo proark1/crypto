@@ -196,11 +196,15 @@ class SymbolFilters(BaseModel):
         """Round ``price_quote`` down to the tick.
 
         Down on purpose for protective sell stops: rounding a stop *up*
-        could trigger above the level the position was sized against.
+        could trigger above the level the position was sized against. The
+        one exception is a level below a single tick — zero is not a price
+        the venue (or ``PositiveAmount``) accepts, so it clamps to the
+        tick, the smallest representable price.
         """
         if self.price_tick_quote <= 0:
             return price_quote
-        return (price_quote // self.price_tick_quote) * self.price_tick_quote
+        aligned = (price_quote // self.price_tick_quote) * self.price_tick_quote
+        return max(aligned, self.price_tick_quote)
 
     def entry_block_reason(self, quantity_base: Decimal, price_quote: Decimal) -> str | None:
         """Why the venue would reject this entry, or ``None`` if it passes."""
