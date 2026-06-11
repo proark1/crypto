@@ -83,6 +83,10 @@ class TestPortfolioBacktestRunner:
             assert sides == [Side.BUY, Side.SELL], symbol
         # The account-level equity identity holds across both books.
         assert result.final_equity_quote == INITIAL_BALANCE + result.realized_pnl_quote
+        # One equity point per close time, marked once every book updated —
+        # never one stale-marked point per symbol.
+        timestamps = [at for at, _ in result.equity_curve]
+        assert len(timestamps) == len(set(timestamps)) == len(CLOSES)
 
     async def test_exposure_cap_is_enforced_across_symbols(self) -> None:
         """The point of the account runner: one coin's position consumes the

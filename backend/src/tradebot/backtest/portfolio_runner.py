@@ -68,7 +68,11 @@ class PortfolioBacktestRunner:
         ordered = sorted(candles, key=lambda candle: (candle.open_time, candle.symbol))
 
         marks: dict[str, Decimal] = {}
-        equity_curve: list[tuple[datetime, Decimal]] = []
+        # Keyed by close time: several symbols closing the same minute must
+        # yield one equity point — the value once every book is marked —
+        # not one stale-marked point per symbol. Insertion order is
+        # chronological because the sort gives non-decreasing close times.
+        equity_by_close: dict[datetime, Decimal] = {}
         for candle in ordered:
             engine = self._engines.get(candle.symbol)
             if engine is None:
@@ -82,7 +86,7 @@ class PortfolioBacktestRunner:
                 self._engines[candle.symbol] = engine
             await engine.process_candle(candle)
             marks[candle.symbol] = candle.close_quote
-            equity_curve.append((candle.close_time, self._portfolio.equity_quote(marks)))
+            equity_by_close[candle.close_time] = self._portfolio.equity_quote(marks)
 
         # Per-engine fills are already time-ordered; the merge key adds the
         # symbol and order id so simultaneous fills order deterministically.
@@ -90,9 +94,10 @@ class PortfolioBacktestRunner:
             (fill for engine in self._engines.values() for fill in engine.fills),
             key=lambda fill: (fill.filled_at, fill.symbol, fill.client_order_id),
         )
+        equity_curve = tuple(equity_by_close.items())
         return BacktestResult(
             fills=tuple(fills),
-            equity_curve=tuple(equity_curve),
+            equity_curve=equity_curve,
             final_equity_quote=equity_curve[-1][1],
             realized_pnl_quote=self._portfolio.realized_pnl_quote(),
         )
