@@ -77,7 +77,9 @@ from tradebot.persistence import (
 from tradebot.portfolio import Portfolio
 from tradebot.risk import BreakerState, ManagedStop, RiskConfig, RiskManager
 from tradebot.signals import (
+    DataHealthGate,
     EntryGate,
+    FeedHealth,
     MarketRegimeDetector,
     MarketSentiment,
     RegimeGate,
@@ -763,24 +765,30 @@ class Worker:
         if self._notifier is not None:
             await self._notifier.send(text)
 
-    def _entry_gates(self) -> tuple[EntryGate, ...]:
-        """Build the §5.2 gate chain in pipeline order: regime, then news."""
-        gates: tuple[EntryGate, ...] = ()
+    def _entry_gates(self, feed: FeedHealth) -> tuple[EntryGate, ...]:
+        """Build the §5.2 gate chain in pipeline order: data, regime, news.
+
+        The data-health gate leads: a degraded feed (an unrepaired gap)
+        means every later gate and the strategy itself are reading suspect
+        candles, so entries pause until backfill confirms the data.
+        """
+        gates: tuple[EntryGate, ...] = (DataHealthGate(feed),)
         if self.regime_detector is not None:
             gates += (RegimeGate(self.regime_detector, self.sentiment),)
         return (*gates, NewsGate(self.news_flags, self.news_calendar))
 
-    def _challenger_entry_gates(self) -> tuple[EntryGate, ...]:
-        """Challenger gates: news/event veto only — no regime gate.
+    def _challenger_entry_gates(self, feed: FeedHealth) -> tuple[EntryGate, ...]:
+        """Challenger gates: data-health and news/event veto — no regime gate.
 
         The regime gate routes families (trend entries in trends,
         mean-reversion in ranges); that routing IS the production router's
         strategy, and applying it to a solo bot would mute the bot for
         every regime its family is "wrong" for — the competition would
-        compare gate schedules, not strategies. Hard news and event
-        windows still veto everyone: those are market facts, not strategy.
+        compare gate schedules, not strategies. Degraded data and hard
+        news/event windows still veto everyone: those are market facts, not
+        strategy.
         """
-        return (NewsGate(self.news_flags, self.news_calendar),)
+        return (DataHealthGate(feed), NewsGate(self.news_flags, self.news_calendar))
 
     def _challenger_strategy(self, runtime: CompetitorRuntime) -> Strategy:
         """One fresh, bot-scoped strategy for a challenger account."""
@@ -834,8 +842,18 @@ class Worker:
 
         One feed per symbol fans out to every competitor's engine through
         the bus — the competition multiplies accounts, never market-data
-        connections (the exchange rate budget is shared).
+        connections (the exchange rate budget is shared). The feed is built
+        first: every engine's data-health gate reads its health latch, so
+        the feed must exist before any engine on this symbol is wired.
         """
+        feed = LiveMarketDataFeed(
+            self._exchange,
+            symbol,
+            self.candle_store,
+            self.bus,
+            history_days=self.config.history_backfill_days,
+        )
+        self._feeds[symbol] = feed
         engine = TradingEngine(
             self._build_strategy(),
             self.risk_manager,
@@ -850,20 +868,12 @@ class Worker:
                 ttl=timedelta(seconds=self.config.proposal_ttl_seconds),
                 max_drift_fraction=self.config.proposal_max_drift_fraction,
             ),
-            entry_gates=self._entry_gates(),
+            entry_gates=self._entry_gates(feed),
         )
         engine.attach_to(self.bus)
         for runtime in self.challengers.values():
             self._activate_challenger_engine(runtime, symbol)
-        feed = LiveMarketDataFeed(
-            self._exchange,
-            symbol,
-            self.candle_store,
-            self.bus,
-            history_days=self.config.history_backfill_days,
-        )
         self.engines[symbol] = engine
-        self._feeds[symbol] = feed
         if self._task_group is not None:
             self._feed_tasks[symbol] = self._task_group.create_task(feed.run())
 
@@ -874,9 +884,11 @@ class Worker:
 
         Always autonomous (a challenger exists to show what its strategy
         does unattended; co-pilot approval queues are the operator's bot's
-        concern), and gated by news only — see
+        concern), and gated by data health and news only — see
         :meth:`_challenger_entry_gates` for why the regime gate does not
-        apply to solo bots.
+        apply to solo bots. The symbol's feed already exists: ``_activate``
+        builds it before any engine, and runtime bot additions only target
+        already-active symbols.
         """
         engine = TradingEngine(
             strategy if strategy is not None else self._challenger_strategy(runtime),
@@ -888,7 +900,7 @@ class Worker:
             decision_store=runtime.decision_store,
             order_store=runtime.order_store,
             autonomy_mode=AutonomyMode.AUTONOMOUS,
-            entry_gates=self._challenger_entry_gates(),
+            entry_gates=self._challenger_entry_gates(self._feeds[symbol]),
             signal_id_scope=f"{runtime.spec.bot_id}/",
         )
         engine.attach_to(self.bus)

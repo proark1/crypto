@@ -331,3 +331,75 @@ class TestDeepenHistory:
         # Nothing older than the pre-existing earliest appeared: the stored
         # history already reaches past the 1-day horizon.
         assert earliest == datetime.fromtimestamp((now - two_days_back * MINUTE_MS) / 1000, tz=UTC)
+
+
+class RaisingExchange:
+    """A feed exchange whose REST backfill always fails."""
+
+    def __init__(self, error: Exception) -> None:
+        self._error = error
+
+    async def watch_ohlcv(self, symbol: str, timeframe: str) -> list[OhlcvRow]:
+        raise self._error
+
+    async def fetch_ohlcv(
+        self, symbol: str, timeframe: str, since: int | None = None, limit: int | None = None
+    ) -> list[OhlcvRow]:
+        raise self._error
+
+
+class FlakyExchange:
+    """Fails the first backfill, then succeeds — for recovery tests."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def watch_ohlcv(self, symbol: str, timeframe: str) -> list[OhlcvRow]:
+        raise StopFeed("not used")
+
+    async def fetch_ohlcv(
+        self, symbol: str, timeframe: str, since: int | None = None, limit: int | None = None
+    ) -> list[OhlcvRow]:
+        self.calls += 1
+        if self.calls == 1:
+            raise ConnectionError("first backfill down")
+        return []
+
+
+class TestFeedHealth:
+    """The data-health latch the entry gate reads (ARCHITECTURE.md 5.2)."""
+
+    async def test_feed_starts_unhealthy_until_the_first_backfill(self, database: Database) -> None:
+        store = CandleStore(database)
+        feed = LiveMarketDataFeed(FakeExchange([]), "BTC/USDT", store, EventBus())
+        assert feed.healthy is False
+        assert feed.health_reason == "awaiting first backfill"
+
+    async def test_successful_backfill_marks_the_feed_healthy(self, database: Database) -> None:
+        store = CandleStore(database)
+        feed = LiveMarketDataFeed(FakeExchange([], rest_rows=[]), "BTC/USDT", store, EventBus())
+        await feed.backfill()
+        assert feed.healthy is True
+        assert feed.health_reason is None
+
+    async def test_failed_backfill_marks_the_feed_degraded(self, database: Database) -> None:
+        store = CandleStore(database)
+        feed = LiveMarketDataFeed(
+            RaisingExchange(ConnectionError("boom")), "BTC/USDT", store, EventBus()
+        )
+        with pytest.raises(ConnectionError):
+            await feed.backfill()
+        assert feed.healthy is False
+        assert feed.health_reason == "backfill failed: ConnectionError"
+
+    async def test_a_later_successful_backfill_clears_the_degraded_latch(
+        self, database: Database
+    ) -> None:
+        store = CandleStore(database)
+        feed = LiveMarketDataFeed(FlakyExchange(), "BTC/USDT", store, EventBus())
+        with pytest.raises(ConnectionError):
+            await feed.backfill()
+        assert feed.healthy is False
+        await feed.backfill()
+        assert feed.healthy is True
+        assert feed.health_reason is None
