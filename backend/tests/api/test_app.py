@@ -1,7 +1,7 @@
 """Control-plane tests over the ASGI app with a real database behind it."""
 
 import os
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Iterator, Mapping
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -84,34 +84,111 @@ class StubBot:
         self.news_flags = NewsFlags()
         self._evaluation_running = False
         self._sweep_running = False
+        # Custom bots, in-memory: bot_id -> {label, description, rules};
+        # paused state per bot id. Enough behavior for the endpoints'
+        # contract tests — worker tests cover the real lifecycle.
+        self.custom_bots: dict[str, dict[str, Any]] = {}
+        self.paused_bots: set[str] = set()
 
     def all_engines(self) -> Iterator[TradingEngine]:
         yield from self.engines.values()
 
-    async def competition_snapshot(self) -> list[dict[str, Any]]:
-        # The incumbent alone, in the worker's row shape: enough surface
-        # for the endpoint's serialization to be exercised end to end.
-        fill_counts = await self.fill_store.count_by_side()
+    def _snapshot_row(self, bot_id: str, label: str, description: str, kind: str) -> dict[str, Any]:
         initial = self.config.paper_initial_balance_quote
         equity = self.portfolio.quote_balance
-        return [
-            {
-                "bot_id": "production",
-                "label": "Regime router",
-                "description": "stub lineup entry",
-                "is_production": True,
-                "equity_quote": equity,
-                "initial_balance_quote": initial,
-                "return_fraction": (equity - initial) / initial,
-                "quote_balance": self.portfolio.quote_balance,
-                "realized_pnl_quote": self.portfolio.realized_pnl_quote(),
-                "unrealized_pnl_quote": Decimal(0),
-                "open_positions": len(self.portfolio.positions),
-                "entry_fills": fill_counts.get("buy", 0),
-                "exit_fills": fill_counts.get("sell", 0),
-                "breaker_tripped_reason": None,
-            }
+        return {
+            "bot_id": bot_id,
+            "label": label,
+            "description": description,
+            "is_production": kind == "production",
+            "kind": kind,
+            "paused": bot_id in self.paused_bots,
+            "equity_quote": equity,
+            "initial_balance_quote": initial,
+            "return_fraction": (equity - initial) / initial,
+            "quote_balance": self.portfolio.quote_balance,
+            "realized_pnl_quote": self.portfolio.realized_pnl_quote(),
+            "unrealized_pnl_quote": Decimal(0),
+            "open_positions": len(self.portfolio.positions),
+            "entry_fills": 0,
+            "exit_fills": 0,
+            "breaker_tripped_reason": None,
+        }
+
+    async def competition_snapshot(self) -> list[dict[str, Any]]:
+        # The incumbent plus any stub custom bots, in the worker's row
+        # shape: enough surface for serialization to be exercised.
+        rows = [
+            self._snapshot_row("production", "Regime router", "stub lineup entry", "production")
         ]
+        for bot_id, bot in self.custom_bots.items():
+            rows.append(self._snapshot_row(bot_id, bot["label"], bot["description"], "custom"))
+        return rows
+
+    async def bot_detail(self, bot_id: str) -> dict[str, Any]:
+        rows = await self.competition_snapshot()
+        row = next((entry for entry in rows if entry["bot_id"] == bot_id), None)
+        if row is None:
+            raise KeyError(f"no competition bot {bot_id!r}")
+        strategy: dict[str, Any] = (
+            {"kind": "custom", "rules": self.custom_bots[bot_id]["rules"]}
+            if bot_id in self.custom_bots
+            else {"kind": "production", "regime_routed": False, "families": {}}
+        )
+        return {**row, "positions": [], "strategy": strategy}
+
+    async def pause_bot(self, bot_id: str) -> None:
+        await self.bot_detail(bot_id)  # KeyError for unknown bots
+        self.paused_bots.add(bot_id)
+
+    async def resume_bot(self, bot_id: str) -> None:
+        await self.bot_detail(bot_id)
+        self.paused_bots.discard(bot_id)
+
+    async def kill_bot(self, bot_id: str) -> tuple[int, list[str]]:
+        await self.bot_detail(bot_id)
+        self.paused_bots.add(bot_id)
+        return 0, []
+
+    async def create_custom_bot(
+        self, label: str, description: str, rules: Mapping[str, Any]
+    ) -> str:
+        from tradebot.competition import describe_rules, slugify_bot_label, validate_rules
+
+        normalized = validate_rules(rules)
+        bot_id = slugify_bot_label(label)
+        if bot_id in self.custom_bots:
+            raise ValueError(f"a bot named {label.strip()!r} already exists")
+        self.custom_bots[bot_id] = {
+            "label": label.strip(),
+            "description": description.strip() or describe_rules(normalized),
+            "rules": normalized,
+        }
+        return bot_id
+
+    async def update_custom_bot(self, bot_id: str, rules: Mapping[str, Any]) -> None:
+        from tradebot.competition import validate_rules
+
+        if bot_id not in self.custom_bots:
+            raise KeyError(f"no custom bot {bot_id!r}")
+        self.custom_bots[bot_id]["rules"] = validate_rules(rules)
+
+    async def delete_custom_bot(self, bot_id: str) -> None:
+        if bot_id == "production":
+            raise ValueError("production is a built-in lineup bot and cannot be deleted")
+        if bot_id not in self.custom_bots:
+            raise KeyError(f"no custom bot {bot_id!r}")
+        del self.custom_bots[bot_id]
+
+    def fill_store_for(self, bot_id: str) -> FillStore:
+        if bot_id != "production" and bot_id not in self.custom_bots:
+            raise KeyError(f"no competition bot {bot_id!r}")
+        return self.fill_store
+
+    def decision_store_for(self, bot_id: str) -> DecisionStore:
+        if bot_id != "production" and bot_id not in self.custom_bots:
+            raise KeyError(f"no competition bot {bot_id!r}")
+        return self.decision_store
 
     async def start_comparison(self, config: EvaluationRunConfig) -> list[int]:
         config.intervals()  # same validation order as the real manager
@@ -1387,3 +1464,67 @@ class TestComparisonEndpoints:
             response = await client.get("/evaluations/comparisons")
         assert response.status_code == 200
         assert response.json() == []
+
+
+class TestBotManagementEndpoints:
+    async def test_builder_options_come_from_the_real_registry(self, database: Database) -> None:
+        async with make_client(StubBot(database)) as client:
+            response = await client.get("/bots/options")
+
+        assert response.status_code == 200
+        body = response.json()
+        families = {option["family"] for option in body["families"]}
+        assert {"trend_following", "mean_reversion", "breakout", "momentum"} <= families
+        assert body["entry_modes"] == ["any", "all"]
+        assert all(option["description"] for option in body["families"])
+        assert all(option["defaults"] for option in body["families"])
+
+    async def test_custom_bot_crud_and_controls(self, database: Database) -> None:
+        bot = StubBot(database)
+        async with make_client(bot) as client:
+            created = await client.post(
+                "/bots",
+                json={"name": "Dip Buyer", "rules": {"families": {"mean_reversion": {}}}},
+            )
+            assert created.status_code == 200
+            bot_id = created.json()["bot_id"]
+            assert bot_id == "custom-dip-buyer"
+
+            duplicate = await client.post(
+                "/bots",
+                json={"name": "Dip Buyer", "rules": {"families": {"mean_reversion": {}}}},
+            )
+            assert duplicate.status_code == 400
+            bad_rules = await client.post(
+                "/bots", json={"name": "Bad", "rules": {"families": {"martingale": {}}}}
+            )
+            assert bad_rules.status_code == 400
+
+            detail = await client.get(f"/bots/{bot_id}")
+            assert detail.status_code == 200
+            assert detail.json()["summary"]["kind"] == "custom"
+            assert detail.json()["strategy"]["kind"] == "custom"
+
+            paused = await client.post(f"/bots/{bot_id}/pause")
+            assert paused.status_code == 200 and paused.json()["paused"] is True
+            leaderboard = await client.get("/competition")
+            row = next(
+                entry for entry in leaderboard.json()["competitors"] if entry["bot_id"] == bot_id
+            )
+            assert row["paused"] is True
+            assert (await client.post(f"/bots/{bot_id}/resume")).status_code == 200
+
+            updated = await client.put(
+                f"/bots/{bot_id}/rules",
+                json={"rules": {"entry_mode": "all", "families": {"momentum": {}}}},
+            )
+            assert updated.status_code == 200
+
+            assert (await client.post(f"/bots/{bot_id}/kill")).status_code == 200
+            assert (await client.delete(f"/bots/{bot_id}")).status_code == 200
+            assert (await client.get(f"/bots/{bot_id}")).status_code == 404
+
+    async def test_unknown_bot_journal_scope_is_404(self, database: Database) -> None:
+        async with make_client(StubBot(database)) as client:
+            response = await client.get("/fills", params={"bot": "custom-ghost"})
+        assert response.status_code == 404

@@ -688,3 +688,48 @@ class TestBotScoping:
         assert loaded is not None and loaded[0].entries_today == 3
         loaded = await challenger.load()
         assert loaded is not None and loaded[0].entries_today == 7
+
+
+class TestCustomBotStore:
+    async def test_create_list_round_trip_allocates_risk_rows(self, database: Database) -> None:
+        from tradebot.persistence import CustomBotStore
+
+        store = CustomBotStore(database)
+        first_row = await store.create(
+            "custom-dip-buyer", "Dip Buyer", "buys dips", {"entry_mode": "any"}, BASE_TIME
+        )
+        second_row = await store.create(
+            "custom-confluence", "Confluence", "needs agreement", {"entry_mode": "all"}, BASE_TIME
+        )
+
+        assert first_row >= 100  # built-ins own the low ids
+        assert second_row == first_row + 1
+        bots = await store.list_all()
+        assert [bot["bot_id"] for bot in bots] == ["custom-dip-buyer", "custom-confluence"]
+        assert bots[0]["rules"] == {"entry_mode": "any"}
+
+    async def test_duplicate_id_is_refused(self, database: Database) -> None:
+        from tradebot.persistence import CustomBotStore
+
+        store = CustomBotStore(database)
+        await store.create("custom-x", "X", "", {}, BASE_TIME)
+        with pytest.raises(ValueError, match="already exists"):
+            await store.create("custom-x", "X again", "", {}, BASE_TIME)
+
+    async def test_update_and_delete_unknown_are_loud(self, database: Database) -> None:
+        from tradebot.persistence import CustomBotStore
+
+        store = CustomBotStore(database)
+        with pytest.raises(KeyError):
+            await store.update_rules("custom-ghost", {})
+        with pytest.raises(KeyError):
+            await store.delete("custom-ghost")
+
+    async def test_update_rules_round_trips(self, database: Database) -> None:
+        from tradebot.persistence import CustomBotStore
+
+        store = CustomBotStore(database)
+        await store.create("custom-x", "X", "", {"entry_mode": "any"}, BASE_TIME)
+        await store.update_rules("custom-x", {"entry_mode": "all"})
+        (bot,) = await store.list_all()
+        assert bot["rules"] == {"entry_mode": "all"}

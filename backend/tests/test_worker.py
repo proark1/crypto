@@ -943,3 +943,68 @@ class TestCompetition:
         assert worker.challengers == {}
         rows = await worker.competition_snapshot()
         assert [row["bot_id"] for row in rows] == ["production"]
+
+
+class TestBotManagement:
+    async def test_challengers_trade_ungated_by_the_regime_router(self, database: Database) -> None:
+        """Solo bots must not inherit the router's family schedule.
+
+        With the regime gate on but warming up (minutes of scripted data
+        against a ~10-day warm-up), production entries are gated — and the
+        trend challenger must trade anyway: gating a solo bot by regime
+        would make the competition compare gate schedules, not strategies.
+        """
+        exchange = ScriptedExchange(CLOSES)
+        worker = Worker(make_config(api_port=8925, regime_gate_enabled=True), database, exchange)
+        exchange.worker = worker
+
+        await worker.run()
+
+        challenger_fills = await FillStore(database, bot_id="trend_following").fetch_all()
+        assert [fill.side for fill in challenger_fills] == [Side.BUY, Side.SELL]
+        assert await worker.fill_store.fetch_all() == []  # production: gated, honestly
+
+    async def test_custom_bot_lifecycle(self, database: Database) -> None:
+        worker = Worker(make_config(api_port=8926), database, ScriptedExchange([]))
+        await worker.initialize()
+
+        bot_id = await worker.create_custom_bot(
+            "Dip Buyer", "", {"families": {"mean_reversion": {"rsi_period": 7}}}
+        )
+        assert bot_id == "custom-dip-buyer"
+        assert "BTC/USDT" in worker.challengers[bot_id].engines
+        rows = await worker.competition_snapshot()
+        assert any(row["bot_id"] == bot_id and row["kind"] == "custom" for row in rows)
+        detail = await worker.bot_detail(bot_id)
+        assert detail["strategy"]["kind"] == "custom"
+        assert detail["strategy"]["rules"]["families"]["mean_reversion"]["rsi_period"] == 7
+
+        # A restart reloads the bot from Postgres, rules included.
+        restarted = Worker(make_config(api_port=8927), database, ScriptedExchange([]))
+        await restarted.initialize()
+        assert bot_id in restarted.challengers
+        assert restarted.challengers[bot_id].rules is not None
+
+        await restarted.pause_bot(bot_id)
+        assert all(engine.paused for engine in restarted.challengers[bot_id].engines.values())
+        snapshot = await restarted.competition_snapshot()
+        paused_row = next(row for row in snapshot if row["bot_id"] == bot_id)
+        assert paused_row["paused"] is True
+        await restarted.resume_bot(bot_id)
+
+        await restarted.delete_custom_bot(bot_id)
+        assert bot_id not in restarted.challengers
+        rebooted = Worker(make_config(api_port=8928), database, ScriptedExchange([]))
+        await rebooted.initialize()
+        assert bot_id not in rebooted.challengers  # retired bots stay retired
+
+    async def test_builtins_cannot_be_edited_or_deleted(self, database: Database) -> None:
+        worker = Worker(make_config(api_port=8929), database, ScriptedExchange([]))
+        await worker.initialize()
+
+        with pytest.raises(ValueError, match="built-in"):
+            await worker.delete_custom_bot("momentum")
+        with pytest.raises(ValueError, match="built-in"):
+            await worker.update_custom_bot("momentum", {"families": {"momentum": {}}})
+        with pytest.raises(KeyError):
+            await worker.pause_bot("custom-ghost")
