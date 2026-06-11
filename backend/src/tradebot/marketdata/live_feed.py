@@ -143,12 +143,51 @@ class LiveMarketDataFeed:
         self._interval = CandleInterval.M1
         self._tracker = OhlcvCandleTracker(symbol, self._interval)
         self._stopping = False
+        # Data-health latch (read by the entry gate). Starts unhealthy: until
+        # the first backfill confirms a repaired, gap-free history, new
+        # entries must not fire on possibly-stale data. Exits are never
+        # gated, so an unhealthy feed pauses new risk, never traps capital.
+        self._healthy = False
+        self._health_reason: str | None = "awaiting first backfill"
+
+    @property
+    def healthy(self) -> bool:
+        """Whether the last backfill confirmed gap-free history for this symbol.
+
+        ``True`` only after a backfill has succeeded; a failed backfill (an
+        unrepaired gap) flips it back to ``False`` until the next one
+        succeeds. The entry gate reads this to pause entries on degraded data.
+        """
+        return self._healthy
+
+    @property
+    def health_reason(self) -> str | None:
+        """Why the feed is unhealthy, or ``None`` when it is healthy."""
+        return self._health_reason
 
     def stop(self) -> None:
         """Request a clean shutdown after the current iteration."""
         self._stopping = True
 
     async def backfill(self) -> int:
+        """Repair history, then mark the feed healthy; on failure mark it not.
+
+        Every backfill attempt updates the data-health latch, so all callers
+        (startup, post-disconnect, the worker's reference-market priming)
+        keep it current. The exception is re-raised unchanged so existing
+        callers' own logging is preserved.
+        """
+        try:
+            inserted = await self._backfill()
+        except Exception as error:
+            self._healthy = False
+            self._health_reason = f"backfill failed: {type(error).__name__}"
+            raise
+        self._healthy = True
+        self._health_reason = None
+        return inserted
+
+    async def _backfill(self) -> int:
         """Repair history both ways: deepen the past, then page to now.
 
         Pagination matters: an outage longer than one REST page (typically

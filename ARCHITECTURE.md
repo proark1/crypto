@@ -264,6 +264,15 @@ evaluate them. Everything beyond P0/P1 is research material first.
 
 A trade decision is a pipeline of gates, not a vote among equals:
 
+0. **Data-health gate (per coin):** before anything reads a candle, the coin's
+   feed must have confirmed gap-free history. A feed is *degraded* until its
+   first REST backfill succeeds and after any backfill fails (an unrepaired
+   outage gap), and the gate blocks new entries while it is — entering on a
+   feed with a hole means the strategy's indicators were computed across
+   missing candles and resting orders may have skipped the candles that
+   actually happened offline. Exits are never gated, so a degraded feed pauses
+   new risk without trapping an open position behind its still-working stop.
+   The block is journaled as a `gated` decision like every other gate.
 1. **Regime gate (market-wide):** BTC regime (trend/range/risk-off via ADX + Fear &
    Greed extremes + BTC dominance shifts) decides *whether* altcoin entries are
    allowed at all and which strategy family (trend vs. mean-reversion) is active.

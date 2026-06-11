@@ -148,6 +148,15 @@ class MultiSymbolScriptedExchange:
         return {symbol: {} for symbol in self._rows}
 
 
+class BackfillFailingExchange(ScriptedExchange):
+    """Streams candles, but every REST backfill fails — a degraded feed."""
+
+    async def fetch_ohlcv(
+        self, symbol: str, timeframe: str, since: int | None = None, limit: int | None = None
+    ) -> list[OhlcvRow]:
+        raise ConnectionError("backfill unavailable")
+
+
 class TestWorker:
     async def test_paper_trades_end_to_end(self, database: Database) -> None:
         exchange = ScriptedExchange(CLOSES)
@@ -379,6 +388,26 @@ class TestWorker:
         assert journal == []  # the entry never reached the adapter
         decisions = await worker.decision_store.fetch_recent("BTC/USDT", 50)
         assert any(decision.outcome.value == "gated" for decision in decisions)
+
+    async def test_degraded_feed_blocks_entries_end_to_end(self, database: Database) -> None:
+        """A feed whose backfill never succeeds gates every entry, journaled.
+
+        The same scripted rally that fills BUY then SELL in
+        ``test_paper_trades_end_to_end`` produces no fills here: the
+        data-health gate (wired ahead of the regime/news gates in the
+        production chain) blocks the entry while the feed is degraded.
+        """
+        exchange = BackfillFailingExchange(CLOSES)
+        worker = Worker(make_config(api_port=8913), database, exchange)
+        exchange.worker = worker
+
+        await worker.run()
+
+        assert await worker.fill_store.fetch_all("BTC/USDT") == []
+        decisions = await worker.decision_store.fetch_recent("BTC/USDT", 50)
+        gated = [d for d in decisions if d.outcome.value == "gated"]
+        assert gated
+        assert any("data health" in reason for d in gated for reason in d.reasons)
 
     async def test_regime_gate_disables_itself_without_its_reference_feed(
         self, database: Database

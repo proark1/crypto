@@ -7,6 +7,7 @@ this package may know whether it runs in backtest, paper, or live.
 """
 
 from tradebot.signals.base import EntryGate, GateDecision
+from tradebot.signals.data_health import DataHealthGate, FeedHealth
 from tradebot.signals.regime import (
     RANGING,
     RISK_OFF,
@@ -25,7 +26,9 @@ __all__ = [
     "RISK_OFF",
     "TRENDING",
     "WARMING_UP",
+    "DataHealthGate",
     "EntryGate",
+    "FeedHealth",
     "GateDecision",
     "MarketRegimeDetector",
     "MarketSentiment",
