@@ -51,7 +51,7 @@ from tradebot.persistence import (
     StrategySettingsStore,
 )
 from tradebot.portfolio import Portfolio
-from tradebot.signals import MarketRegimeDetector
+from tradebot.signals import FeedHealth, MarketRegimeDetector
 
 logger = logging.getLogger(__name__)
 
@@ -147,6 +147,20 @@ class BotState(Protocol):
         """The regime gate's detector, or ``None`` when the gate is off."""
         ...
 
+    @property
+    def regime_disabled_reason(self) -> str | None:
+        """Why the regime gate is unexpectedly off (reference feed missing).
+
+        ``None`` when the gate is running or was simply never enabled — it
+        flags only the surprising case where a configured gate had to be
+        switched off because its reference market is not traded.
+        """
+        ...
+
+    def feed_health(self, symbol: str) -> FeedHealth | None:
+        """Return the symbol's market-data health, or ``None`` without a feed."""
+        ...
+
     async def divergence_report(
         self, symbol: str, window_hours: int = 24, window_end: datetime | None = None
     ) -> DivergenceReport:
@@ -238,6 +252,22 @@ class RegimeResponse(BaseModel):
     """"warming_up" | "trending" | "ranging" | "risk_off" when enabled."""
 
     reasons: list[str]
+    reason: str | None = None
+    """Set only when a configured gate was switched off because its reference
+    market is not traded — the surprising "entries run ungated" case."""
+
+
+class DataHealthResponse(BaseModel):
+    """Per-coin market-data health: is this symbol's feed safe to trade on.
+
+    ``healthy`` is ``False`` until the feed's first backfill confirms gap-free
+    history and after any backfill fails; ``reason`` explains why when it is.
+    Entries are paused while degraded (the data-health gate), so this is the
+    first place to look when a coin's entries are quietly not firing.
+    """
+
+    healthy: bool
+    reason: str | None
 
 
 class StatusResponse(BaseModel):
@@ -251,6 +281,9 @@ class StatusResponse(BaseModel):
     regime: RegimeResponse
     """The regime gate's current verdict — the first place to look when
     every entry shows up gated."""
+
+    data_health: DataHealthResponse
+    """The selected coin's market-data health; entries pause while degraded."""
 
     symbol: str
     symbols: list[str]
@@ -980,7 +1013,13 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
         breakers = engine.breakers  # one shared account-level instance
         detector = state.regime_detector
         regime = (
-            RegimeResponse(enabled=False, symbol=None, label=None, reasons=[])
+            RegimeResponse(
+                enabled=False,
+                symbol=None,
+                label=None,
+                reasons=[],
+                reason=state.regime_disabled_reason,
+            )
             if detector is None
             else RegimeResponse(
                 enabled=True,
@@ -989,11 +1028,17 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
                 reasons=list(detector.regime.reasons),
             )
         )
+        health = state.feed_health(selected)
+        data_health = DataHealthResponse(
+            healthy=health.healthy if health is not None else False,
+            reason=(health.health_reason if health is not None else "no feed for this coin"),
+        )
         return StatusResponse(
             mode=state.config.mode.value,
             paused=engine.paused,
             protective_stop_quote=engine.protective_stop_quote,
             regime=regime,
+            data_health=data_health,
             breakers=BreakersResponse(
                 tripped_reason=breakers.tripped_reason,
                 cooldown_until=(

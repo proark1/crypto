@@ -24,6 +24,16 @@ export interface RegimeResponse {
   /** "warming_up" | "trending" | "ranging" | "risk_off" when enabled. */
   label: string | null;
   reasons: string[];
+  /** Set only when a configured gate was switched off because its reference
+   * market is not traded — the "entries run ungated" case. */
+  reason: string | null;
+}
+
+export interface DataHealthResponse {
+  /** False until the feed's first backfill confirms gap-free history, and
+   * after any backfill fails; entries pause while degraded. */
+  healthy: boolean;
+  reason: string | null;
 }
 
 export interface StatusResponse {
@@ -34,6 +44,8 @@ export interface StatusResponse {
   /** The regime gate's current verdict — first place to look when entries
    * keep showing up gated. */
   regime: RegimeResponse;
+  /** The selected coin's market-data health; entries pause while degraded. */
+  data_health: DataHealthResponse;
   symbol: string;
   symbols: string[];
   exchange_id: string;

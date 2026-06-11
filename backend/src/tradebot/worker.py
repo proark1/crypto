@@ -283,6 +283,10 @@ class Worker:
             if config.regime_gate_enabled
             else None
         )
+        # Set only when a configured gate had to be switched off at startup
+        # because its reference market is not traded — surfaced in /status so
+        # "entries run ungated" is visible, not silent.
+        self.regime_disabled_reason: str | None = None
         # News state is always built: the gate is a pass-through with no
         # flags and an empty calendar, and event awareness must not depend
         # on remembering to enable it.
@@ -358,6 +362,14 @@ class Worker:
     def symbols(self) -> tuple[str, ...]:
         """The actively traded pairs, in the order they were added."""
         return tuple(self.engines)
+
+    def feed_health(self, symbol: str) -> LiveMarketDataFeed | None:
+        """Return the symbol's market-data feed (its health latch), or ``None``.
+
+        The feed satisfies the :class:`FeedHealth` contract the control plane
+        reads for /status; ``None`` before the coin is activated.
+        """
+        return self._feeds.get(symbol)
 
     def all_engines(self) -> Iterator[TradingEngine]:
         """Every engine across every competition account.
@@ -954,11 +966,15 @@ class Worker:
         # activation, and a gate without a data feed would block every entry
         # forever on stale data.
         if self.regime_detector is not None and self.regime_detector.symbol not in symbols:
+            reference = self.regime_detector.symbol
             logger.warning(
                 "regime gate disabled: reference symbol %s is not among the traded "
                 "coins (%s); entries run ungated",
-                self.regime_detector.symbol,
+                reference,
                 ", ".join(symbols),
+            )
+            self.regime_disabled_reason = (
+                f"reference market {reference} is not among the traded coins; entries run ungated"
             )
             self.regime_detector = None
         for symbol in symbols:
