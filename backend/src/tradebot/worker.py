@@ -773,6 +773,7 @@ class Worker:
             return None
         improver = AutoImprover(
             sweeps=self.sweeps,
+            evaluations=self.evaluations,
             store=self.evaluation_store,
             active_params=lambda: self.strategy_params,
             symbols=lambda: self.symbols,

@@ -118,3 +118,31 @@ class TestConfig:
     def test_fast_period_must_be_shorter_than_slow(self) -> None:
         with pytest.raises(ValueError, match="must be shorter"):
             TrendFollowingStrategy(TrendFollowingConfig(fast_ema_period=50, slow_ema_period=20))
+
+
+class TestAntiChaseFilter:
+    def test_extended_crosses_are_skipped(self) -> None:
+        """A violent rally crosses the EMAs far above them — the chase case."""
+        config = TrendFollowingConfig(
+            fast_ema_period=3, slow_ema_period=6, atr_period=3, max_entry_extension_atr=1.0
+        )
+        filtered = TrendFollowingStrategy(config)
+        unfiltered = TrendFollowingStrategy(
+            config.model_copy(update={"max_entry_extension_atr": 0.0})
+        )
+
+        filtered_signals = run_series(filtered, DOWN_THEN_UP)
+        unfiltered_signals = run_series(unfiltered, DOWN_THEN_UP)
+
+        # The bare config buys this vertical move; the filter refuses to
+        # chase a close sitting far above the slow EMA.
+        assert any(s is not None and s.side == Side.BUY for s in unfiltered_signals)
+        assert all(s is None or s.side != Side.BUY for s in filtered_signals)
+
+    def test_exits_ignore_the_filter(self) -> None:
+        config = TrendFollowingConfig(
+            fast_ema_period=3, slow_ema_period=6, atr_period=3, max_entry_extension_atr=1.0
+        )
+        strategy = TrendFollowingStrategy(config)
+        signals = run_series(strategy, UP_THEN_DOWN, position=make_position())
+        assert any(s is not None and s.side == Side.SELL for s in signals)

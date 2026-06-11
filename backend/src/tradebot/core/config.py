@@ -243,8 +243,9 @@ class AppConfig(BaseSettings):
     coin (rotating), so with two coins every coin is revisited daily at the
     default."""
 
-    auto_improve_history_days: int = Field(default=180, gt=0)
-    """History window the automated sweeps train and validate on."""
+    auto_improve_history_days: int = Field(default=365, gt=0)
+    """History window automated evaluations and sweeps learn from — the
+    full default backfill, so the loop never judges on a sliver."""
 
     auto_improve_timeframe: str = "1h"
     """Candle timeframe the automated sweeps evaluate (validated at boot)."""

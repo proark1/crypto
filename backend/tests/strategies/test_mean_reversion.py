@@ -93,3 +93,37 @@ class TestSignals:
     def test_inverted_thresholds_are_rejected(self) -> None:
         with pytest.raises(ValueError, match="must sit below"):
             MeanReversionStrategy(MeanReversionConfig(oversold_threshold=60.0, exit_rsi=55.0))
+
+
+class TestTrendFilter:
+    def test_dip_buys_are_skipped_below_the_trend_ema(self) -> None:
+        """The falling-knife case: oversold recovery inside a downtrend."""
+        filtered = MeanReversionStrategy(
+            FAST_CONFIG.model_copy(update={"trend_filter_ema_period": 8})
+        )
+        unfiltered = MeanReversionStrategy(FAST_CONFIG)
+
+        # The recovery candle (92 after the slide) sits well below EMA(3)
+        # of the slide — the filter must veto what the bare config buys.
+        slide = [100.0, 97.0, 94.0, 91.0, 88.0, 85.0, 88.0]
+        filtered_signals = run_series(filtered, slide)
+        unfiltered_signals = run_series(unfiltered, slide)
+
+        assert any(s is not None and s.side == Side.BUY for s in unfiltered_signals)
+        assert all(s is None or s.side != Side.BUY for s in filtered_signals)
+
+    def test_exits_ignore_the_trend_filter(self) -> None:
+        """Capital protection: the filter must never delay an exit."""
+        strategy = MeanReversionStrategy(
+            FAST_CONFIG.model_copy(update={"trend_filter_ema_period": 8})
+        )
+        position = Position(
+            symbol="BTC/USDT", quantity_base=Decimal("1"), cost_basis_quote=Decimal("90")
+        )
+        signals = run_series(strategy, SLIDE_THEN_RECOVER, position=position)
+        assert any(s is not None and s.side == Side.SELL for s in signals)
+
+    def test_zero_keeps_the_historical_behavior(self) -> None:
+        default = MeanReversionStrategy(FAST_CONFIG)
+        signals = run_series(default, SLIDE_THEN_RECOVER)
+        assert any(s is not None and s.side == Side.BUY for s in signals)

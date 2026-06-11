@@ -12,7 +12,7 @@ This document is the target design. Implementation status as of June 2026
 | Core domain models, event bus, config (§4, §11) | **Done** — Decimal money, UTC timestamps, fail-safe defaults |
 | Market data: live CCXT feed, closed-candle tracking, backfill, validation (§4.1) | **Done** — per-coin 1m feeds; one-year default first-boot backfill (the §12 research window) primes the regime gate before trading starts while /health serves from the first second; in-process timeframe aggregation plus SQL calendar buckets (hour/day/week/month) for charting |
 | Indicators: incremental EMA, RSI, ATR (§4.2) | **Done** — tested against reference values |
-| Strategies: trend-following EMA crossover (§4.2) | **Done** — one strategy; the pluggable registry is the pattern, more strategies pending |
+| Strategies: trend-following EMA crossover (§4.2) | **Done** — EMA cross with ATR stops plus an optional anti-chase entry-extension filter as a sweepable knob; the pluggable registry is the pattern, more families pending |
 | Backtester: runner, pessimistic fill simulator, golden test (§5) | **Done** — walk-forward splitting feeds the parameter sweeps (§12.5) |
 | Risk manager: sizing, per-trade limits, circuit breakers (§4.3) | **Done** — daily-loss + drawdown trips (human reset), loss-streak cooldown, daily entry cap, account-wide exposure cap (open positions treated as one fully correlated block; per-coin caps alone understate crypto risk) |
 | Execution: simulated adapter (backtest + paper) (§4.4) | **Done for paper** — live adapter, exchange-native stops, partial-fill handling are Phase 3 (see LIVE_TRADING_CHECKLIST.md) |
@@ -23,10 +23,10 @@ This document is the target design. Implementation status as of June 2026
 | Telegram notifications (§6.2) | **Done** — alerts only; command handling missing |
 | Dashboard: status, chart, decisions, proposals, controls (§6.1) | **Done** — per-coin view with coin switcher; wizard, journal, research screens missing |
 | Multi-coin support (§4.2) | **Done** — per-symbol feed+engine, shared account/breakers, per-coin dashboard, runtime add/remove via API + UI (coins persisted in Postgres; env var seeds first boot) |
-| Automated improvement: sweep-validated self-tuning (§12.7) | **Done** — paper-scoped; promotes only statistically validated sweep winners; versioned settings journal with UI revert; Telegram alert per promotion |
+| Automated improvement: sweep-validated self-tuning (§12.7) | **Done** — paper-scoped; self-feeding cycle (auto-evaluates when stale, findings target the next sweep's challengers with recorded lineage); promotes only statistically validated sweep winners; versioned settings journal with UI revert; Telegram alert per promotion |
 | Evaluation & training: blind walk-forward (§12) | **Done** — foundations, scenario engine (leak-tested), run orchestration + API, research screen, scenario replay viewer, learning findings (mined + human accept/reject), walk-forward parameter sweeps with explicit overfit verdicts, cross-family candidates, multiple validation windows, bootstrap confidence intervals + Bonferroni-corrected significance on every verdict; evaluation runs grade the production strategy shape (regime-routed families, self-classified per scenario) |
 | News pipeline, regime gates, signal fusion (§5.2, §5.3) | **Partial** — BTC regime gate done (ADX trend/range + drawdown risk-off; family routing: trend entries in trends, mean-reversion entries in ranges; exits never gated; verdicts journaled as `gated` decisions); sentiment tighteners done (Fear & Greed extremes, BTC dominance surges, broad negative news flow — advisory, one-way, stale data contributes nothing); news pipeline done defensively (CryptoPanic polling + keyword classifier, negative-news coin flags, env-configured event windows); confirmation filters (order-flow/funding, P2 data) and automated calendar ingestion missing |
-| Mean-reversion strategy family (§5.2 routing) | **Done** — RSI oversold-recovery entries, midline exits, same ATR stop convention as trend; regime-routed per coin, both families' indicators always warm, exits pass from either family in any regime |
+| Mean-reversion strategy family (§5.2 routing) | **Done** — RSI oversold-recovery entries, midline exits, same ATR stop convention as trend; optional trend-filter EMA (skip falling knives) as a sweepable knob; regime-routed per coin, both families' indicators always warm, exits pass from either family in any regime |
 | Observability: dead-man's switch, metrics, DB backups (§4.9, §7) | **Done** — heartbeat ping gated on feed freshness; /metrics (feed lag, equity, breakers, bus counters) behind the bearer token; scheduled gzipped-JSONL backups to S3-compatible storage with exact-Decimal restore (production restore drill pending, see checklist) |
 | Live trading (§8 Phase 3) | **Missing** — blockers enumerated in LIVE_TRADING_CHECKLIST.md |
 
@@ -610,6 +610,16 @@ of the parameters it is trading right now, runs them through the blind
 walk-forward sweep, and promotes the winner **only when the verdict is
 validated** — the Bonferroni-corrected, multi-window statistical bar.
 Training wins, near-misses, and findings never promote anything.
+
+The cycle is self-feeding: when no fresh evaluation run exists, the
+cycle starts one (with a sample size large enough that sweeps are never
+starved below their minimum-trades bar); its completion mines findings
+from the graded record in Postgres; and the next cycle's sweep adds
+challengers *targeted at those findings* — a losing-downtrend pattern
+toggles the mean-reversion trend filter, a chasing pattern toggles the
+trend family's entry-extension filter — with the finding ids recorded as
+the sweep's motivation. Patterns the bot has no knob for yet remain
+human-facing suggestions.
 
 Guardrails, in order of importance: promotions apply to the **paper** bot
 only (the worker refuses to construct in any other mode, and going live
