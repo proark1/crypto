@@ -26,10 +26,11 @@ from typing import TYPE_CHECKING, Any, Protocol
 import httpx
 
 from tradebot.authorization import ProposalQueue
+from tradebot.backtest.parity import DivergenceReport
 from tradebot.core.config import AppConfig, TradingMode, validate_symbol_quote
 from tradebot.core.events import CandleClosed, EventBus
 from tradebot.core.metrics import MetricsCollector
-from tradebot.core.models import CandleInterval, SymbolFilters
+from tradebot.core.models import CandleInterval, Fill, SymbolFilters
 from tradebot.engine import TradingEngine
 from tradebot.evaluation import ScenarioEvaluator
 from tradebot.evaluation.improve import AutoImprover
@@ -642,6 +643,52 @@ class Worker:
         except Exception:
             self._saved_risk_state = previous
             logger.exception("failed to persist risk state; will retry next candle")
+
+    async def divergence_report(self, symbol: str, window_hours: int = 24) -> DivergenceReport:
+        """Compare ``symbol``'s live paper fills against a same-candle replay.
+
+        The §10 paper-gate metric: stored candles for the window (plus the
+        standard priming history before it) are replayed through a fresh
+        instance of the production strategy shape with the active
+        parameters, and the replay's fills are matched against the fills
+        the live engine journaled in the same window. Zero divergence is
+        the expectation — paper and backtest are one code path; non-zero
+        is either documented gating (regime/news/pause/co-pilot, which the
+        replay deliberately omits) or a parity bug. Raises ``KeyError``
+        for a coin that is not being traded.
+        """
+        from tradebot.backtest import BacktestRunner, compare_fills
+
+        if symbol not in self.engines:
+            raise KeyError(f"{symbol} is not being traded")
+        window_end = datetime.now(UTC)
+        window_start = window_end - timedelta(hours=window_hours)
+        prime_start = window_start - timedelta(minutes=STRATEGY_PRIME_CANDLES)
+        candles = await self.candle_store.fetch_range(
+            symbol, CandleInterval.M1, prime_start, window_end
+        )
+        replay_fills: tuple[Fill, ...] = ()
+        if candles:
+            portfolio = Portfolio(self.config.paper_initial_balance_quote)
+            runner = BacktestRunner(
+                build_traded_strategy(
+                    regime_routed=self.regime_detector is not None,
+                    params_by_family=self.strategy_params,
+                ),
+                RiskManager(RiskConfig(), portfolio, self.symbol_filters),
+                portfolio,
+                SimulatedExecutionAdapter(FillSimulatorConfig()),
+            )
+            result = await runner.run(candles)
+            # Fills inside the priming prefix exist only to warm state and
+            # are not part of the comparison window.
+            replay_fills = tuple(f for f in result.fills if f.filled_at >= window_start)
+        live_fills = tuple(
+            fill
+            for fill in await self.fill_store.fetch_all(symbol)
+            if window_start <= fill.filled_at < window_end
+        )
+        return compare_fills(live_fills, replay_fills, window_start, window_end)
 
     async def _replay_missed_candles(self) -> None:
         """Run downtime candles through restored orders before streaming.
