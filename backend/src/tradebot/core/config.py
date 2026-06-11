@@ -175,17 +175,19 @@ class AppConfig(BaseSettings):
             )
         return self
 
-    history_backfill_days: int = Field(default=365, ge=0)
+    history_backfill_days: int = Field(default=730, ge=0)
     """How many days of candle history to fetch for a symbol that has none
     stored yet (first boot, newly added coin). Binance-class venues serve
     years of public 1m history for free; the only cost is database storage
     (roughly 0.5 GB per symbol-year of 1m candles) and a one-time deep
     crawl on first boot (a few minutes per symbol behind CCXT's rate
-    limiter; later boots resume from the newest stored candle). A year is
-    the research system's default evaluation window (§12), keeps walk-
-    forward sweeps fed, and dwarfs the regime gate's ~10-day warm-up, so
-    a fresh deploy trades and researches from day one. ``0`` disables deep
-    backfill: only the gap from the newest stored candle forward is
+    limiter; later boots resume from the newest stored candle). Two years
+    covers the research system's one-year default evaluation window (§12)
+    with a full year of out-of-sample headroom for walk-forward sweeps,
+    and dwarfs the regime gate's ~10-day warm-up, so a fresh deploy trades
+    and researches from day one. Databases backfilled under a shallower
+    setting are deepened to this horizon on the next boot. ``0`` disables
+    deep backfill: only the gap from the newest stored candle forward is
     repaired."""
 
     api_token: str | None = None
@@ -244,8 +246,8 @@ class AppConfig(BaseSettings):
     default."""
 
     auto_improve_history_days: int = Field(default=365, gt=0)
-    """History window automated evaluations and sweeps learn from — the
-    full default backfill, so the loop never judges on a sliver."""
+    """History window automated evaluations and sweeps learn from — a full
+    year of the stored backfill, so the loop never judges on a sliver."""
 
     auto_improve_timeframe: str = "1h"
     """Candle timeframe the automated sweeps evaluate (validated at boot)."""
