@@ -522,14 +522,19 @@ class Worker:
         """
         snapshot = self.risk_manager.breakers.snapshot()
         paused = tuple(symbol for symbol, engine in self.engines.items() if engine.paused)
-        if self._saved_risk_state == (snapshot, paused):
+        pending = (snapshot, paused)
+        if self._saved_risk_state == pending:
             return
+        # Claim before the await: per-symbol feeds publish candles
+        # concurrently, and two interleaved handlers must not both write the
+        # same snapshot. Reverted on failure so the retry guarantee holds.
+        previous = self._saved_risk_state
+        self._saved_risk_state = pending
         try:
             await self.risk_state_store.save(snapshot, paused, datetime.now(UTC))
         except Exception:
+            self._saved_risk_state = previous
             logger.exception("failed to persist risk state; will retry next candle")
-            return
-        self._saved_risk_state = (snapshot, paused)
 
     async def _rearm_protective_stops(self) -> None:
         """Rebuild each replayed position's protection after a restart.

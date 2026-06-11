@@ -353,10 +353,13 @@ class OrderStore:
         row["status_at"] = order.created_at
         # Refresh every column, not just the status: a ratcheted stop is
         # resubmitted under the same id at a new level, and the reopened row
-        # must carry the values the adapter is actually working with.
-        statement = pg_insert(orders_table).on_conflict_do_update(
+        # must carry the values the adapter is actually working with. The
+        # SET clause references the excluded (inserted) row so the statement
+        # shape stays constant and plan-cacheable.
+        statement = pg_insert(orders_table)
+        statement = statement.on_conflict_do_update(
             index_elements=["client_order_id"],
-            set_={name: value for name, value in row.items() if name != "client_order_id"},
+            set_={name: statement.excluded[name] for name in row if name != "client_order_id"},
         )
         async with self._database.engine.begin() as connection:
             await connection.execute(statement, [row])
@@ -500,9 +503,13 @@ class RiskStateStore:
         row["id"] = self.ROW_ID
         row["paused_symbols"] = list(paused_symbols)
         row["updated_at"] = at
-        statement = pg_insert(risk_state_table).on_conflict_do_update(
+        statement = pg_insert(risk_state_table)
+        statement = statement.on_conflict_do_update(
             index_elements=["id"],
-            set_={name: value for name, value in row.items() if name != "id"},
+            # Reference the excluded (inserted) row rather than re-binding
+            # literals: the statement shape stays constant across saves, so
+            # the driver can cache its plan.
+            set_={name: statement.excluded[name] for name in row if name != "id"},
         )
         async with self._database.engine.begin() as connection:
             await connection.execute(statement, [row])
