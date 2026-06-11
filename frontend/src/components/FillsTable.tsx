@@ -11,7 +11,7 @@ export function FillsTable(props: { fills: FillResponse[] }) {
   }
   return (
     <section className="overflow-x-auto rounded-xl border border-zinc-800 bg-zinc-900">
-      <h3 className="border-b border-zinc-800 px-4 py-3 text-xs uppercase tracking-wide text-zinc-500">
+      <h3 className="sticky left-0 border-b border-zinc-800 bg-zinc-900 px-4 py-3 text-xs uppercase tracking-wide text-zinc-500">
         <span className="font-bold">trades</span>
         <span className="ml-2 normal-case tracking-normal">
           — every executed buy and sell across all coins, newest first

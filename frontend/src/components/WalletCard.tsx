@@ -16,7 +16,7 @@ export function WalletCard(props: { wallet: WalletResponse | null }) {
     <section className="rounded-xl border border-zinc-800 bg-zinc-900 p-5">
       <div className="mb-3 flex flex-wrap items-baseline gap-x-2 gap-y-1">
         <h2 className="text-sm font-bold uppercase tracking-wide text-zinc-400">wallet</h2>
-        <span className="text-xs text-zinc-600">
+        <span className="text-xs text-zinc-500">
           what the account holds, valued at the latest prices
         </span>
         <div className="ml-auto text-sm text-zinc-400">

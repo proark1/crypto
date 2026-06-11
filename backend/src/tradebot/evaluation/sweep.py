@@ -389,6 +389,17 @@ def _score_block(score: CandidateScore, seed: int) -> dict[str, Any]:
     }
 
 
+def _prose_r(value: Decimal | None) -> str:
+    """Round R to four decimals for explanations, matching the report tables.
+
+    A twelve-digit Decimal in a sentence buries the comparison it exists
+    to make.
+    """
+    if value is None:
+        return "—"
+    return str(value.quantize(Decimal("0.0001"), rounding=ROUND_HALF_EVEN))
+
+
 def validation_verdict(
     baseline: CandidateScore, winner: CandidateScore, comparisons: int, seed: int
 ) -> tuple[str, str, dict[str, Any]]:
@@ -419,8 +430,9 @@ def validation_verdict(
         return (
             "overfit",
             f"{winner.candidate.name} won the training windows but not the untouched "
-            f"validation windows ({winner_r}R vs {baseline_r}R per trade); it wins only on "
-            f"the data it was tuned on — keep {baseline.candidate.name}",
+            f"validation windows ({_prose_r(winner_r)}R vs {_prose_r(baseline_r)}R per "
+            f"trade); it wins only on the data it was tuned on — keep "
+            f"{baseline.candidate.name}",
             significance,
         )
     p_value = superiority_p_value(winner.r_values, baseline.r_values, seed)
@@ -430,7 +442,7 @@ def validation_verdict(
         return (
             "insufficient_evidence",
             f"{winner.candidate.name} beat {baseline.candidate.name} on the validation "
-            f"windows ({winner_r}R per trade), but the baseline produced only "
+            f"windows ({_prose_r(winner_r)}R per trade), but the baseline produced only "
             f"{baseline.trade_count} trades there — too few to test the edge against",
             significance,
         )
@@ -439,16 +451,17 @@ def validation_verdict(
         return (
             "insufficient_evidence",
             f"{winner.candidate.name} beat {baseline.candidate.name} on the validation "
-            f"windows ({winner_r}R vs {baseline_r}R per trade), but the edge is not "
-            f"distinguishable from luck after correcting for {comparisons} comparisons "
-            f"(p={p_value}, needs <= {threshold})",
+            f"windows ({_prose_r(winner_r)}R vs {_prose_r(baseline_r)}R per trade), but "
+            f"the edge is not distinguishable from luck after correcting for "
+            f"{comparisons} comparisons (p={p_value}, needs <= {threshold})",
             significance,
         )
     return (
         "validated",
         f"{winner.candidate.name} beat {baseline.candidate.name} on the untouched "
-        f"validation windows ({winner_r}R vs {baseline_r}R per trade, p={p_value} at "
-        f"the {threshold} corrected level); the improvement survived walk-forward",
+        f"validation windows ({_prose_r(winner_r)}R vs {_prose_r(baseline_r)}R per "
+        f"trade, p={p_value} at the {threshold} corrected level); the improvement "
+        f"survived walk-forward",
         significance,
     )
 

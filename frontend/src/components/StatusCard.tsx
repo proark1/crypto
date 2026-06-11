@@ -8,7 +8,7 @@ function Metric(props: { label: string; value: string; hint?: string; valueClass
       <div className={`text-lg font-semibold ${props.valueClass ?? "text-zinc-100"}`}>
         {props.value}
       </div>
-      {props.hint !== undefined && <div className="text-xs text-zinc-600">{props.hint}</div>}
+      {props.hint !== undefined && <div className="text-xs text-zinc-500">{props.hint}</div>}
     </div>
   );
 }
