@@ -813,8 +813,11 @@ class TestDivergenceReport:
         live_fills = await worker.fill_store.fetch_all("BTC/USDT")
         assert len(live_fills) == 2  # the scripted round trip happened
 
-        # The window must reach back to the scripted 2026-01-02 candles.
-        report = await worker.divergence_report("BTC/USDT", window_hours=24 * 365)
+        # A pinned window over the scripted 2026-01-02 candles: reproducible
+        # regardless of when the test runs.
+        report = await worker.divergence_report(
+            "BTC/USDT", window_hours=24, window_end=BASE_TIME + timedelta(days=1)
+        )
 
         assert report.live_fill_count == 2
         assert report.replay_fill_count == 2
