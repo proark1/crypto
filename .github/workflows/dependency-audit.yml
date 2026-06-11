@@ -1,0 +1,48 @@
+name: Dependency Audit
+
+# Advisory only: this never blocks a merge. It surfaces known CVEs in the
+# locked dependency sets on a schedule (and on demand) so they are noticed,
+# while a flaky registry or an unfixable transitive advisory cannot wedge CI.
+# Every audit step is continue-on-error; read the run summary, do not gate on it.
+
+on:
+  schedule:
+    - cron: "0 6 * * 1" # Mondays 06:00 UTC
+  workflow_dispatch:
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      # Audit the exact locked set, not whatever resolves today, so the result
+      # matches what actually deploys.
+      - name: Export locked requirements
+        run: uv export --format requirements-txt --no-emit-project --no-dev > requirements.txt
+      - name: pip-audit (advisory)
+        continue-on-error: true
+        run: uvx pip-audit --requirement requirements.txt --strict
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: npm audit (advisory)
+        continue-on-error: true
+        run: npm audit --omit=dev
