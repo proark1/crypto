@@ -388,6 +388,21 @@ class TestWorker:
         await worker.initialize()
         assert worker.regime_detector is None  # BTC/USDT is not among the coins
 
+    async def test_sentiment_thresholds_flow_from_env_config(self, database: Database) -> None:
+        """The operator's tuned thresholds must reach the gate, not the defaults."""
+        config = make_config(regime_gate_enabled=True).model_copy(
+            update={
+                "sentiment_enabled": True,  # construction only; polling needs run()
+                "sentiment_extreme_fear_at_or_below": 10,
+                "sentiment_extreme_greed_at_or_above": 85,
+            }
+        )
+        worker = Worker(config, database, ScriptedExchange([]))
+
+        assert worker.sentiment is not None
+        assert worker.sentiment.config.extreme_fear_at_or_below == 10
+        assert worker.sentiment.config.extreme_greed_at_or_above == 85
+
     async def test_reference_symbol_cannot_be_removed_while_gated(self, database: Database) -> None:
         worker = Worker(
             make_config("BTC/USDT,ETH/USDT", regime_gate_enabled=True),

@@ -33,7 +33,11 @@ class SentimentConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     extreme_fear_at_or_below: int = Field(default=20, ge=0, le=100)
-    """Fear & Greed at or below this is capitulation conditions: risk-off."""
+    """Fear & Greed at or below this is capitulation conditions: trend
+    entries pause (chasing momentum into a capitulating market). Mean-
+    reversion entries are exempt — buying oversold recoveries *is* that
+    family's edge, each entry carries its protective stop, and the regime
+    gate's drawdown risk-off state still halts everything in a real crash."""
 
     extreme_greed_at_or_above: int = Field(default=90, ge=0, le=100)
     """Fear & Greed at or above this is euphoria — historically where tops
@@ -80,17 +84,22 @@ class MarketSentiment:
         """Count one negative headline toward the broad-flow window."""
         self._negative_news.append(at)
 
-    def risk_off_reason(self, at: datetime) -> str | None:
+    def risk_off_reason(self, at: datetime, *, mean_reversion_entry: bool = False) -> str | None:
         """Return why entries should pause as of ``at``, or ``None``.
 
         First match wins; the reason is journaled verbatim by the gate.
+        ``mean_reversion_entry`` exempts the extreme-fear check only: that
+        family exists to buy fear, so blocking it there would gate out its
+        entire edge. Greed euphoria, dominance surges, and broad negative
+        news still pause every family, and the default stays the strict
+        path for any caller that does not say otherwise.
         """
         config = self._config
         if self._fear_greed is not None:
             value, seen_at = self._fear_greed
             if at - seen_at <= config.reading_ttl:
-                if value <= config.extreme_fear_at_or_below:
-                    return f"Fear & Greed at {value} (extreme fear)"
+                if value <= config.extreme_fear_at_or_below and not mean_reversion_entry:
+                    return f"Fear & Greed at {value} (extreme fear; trend entries pause)"
                 if value >= config.extreme_greed_at_or_above:
                     return f"Fear & Greed at {value} (extreme greed / euphoria)"
         surge = self._dominance_surge(at)

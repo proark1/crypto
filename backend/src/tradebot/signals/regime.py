@@ -292,7 +292,13 @@ class RegimeGate:
                 reasons=("regime gate: trend entries disabled — " + regime.reasons[0],),
             )
         if self._sentiment is not None:
-            sentiment_reason = self._sentiment.risk_off_reason(signal.created_at)
+            # Family-aware tightening: extreme fear pauses trend entries
+            # only — mean-reversion is the family built to buy fear, and a
+            # real crash is already caught by the RISK_OFF drawdown state
+            # above. All other tighteners apply to every family.
+            sentiment_reason = self._sentiment.risk_off_reason(
+                signal.created_at, mean_reversion_entry=is_reversion
+            )
             if sentiment_reason is not None:
                 return GateDecision(
                     allowed=False,
