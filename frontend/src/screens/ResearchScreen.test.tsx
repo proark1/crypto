@@ -73,6 +73,14 @@ describe("RunReport", () => {
     expect(screen.getByText(/\+4\.50%/)).toBeDefined();
   });
 
+  it("offers a tap-friendly definition for the jargon metrics", () => {
+    render(<RunReport run={RUN} />);
+    // The expectancy metric carries a glossary tooltip explaining R.
+    expect(
+      screen.getByRole("button", { name: /average R won or lost per trade/ }),
+    ).toBeDefined();
+  });
+
   it("says so when the run has no report yet", () => {
     render(<RunReport run={{ ...RUN, summary: null }} />);
     expect(screen.getByText(/no report yet/)).toBeDefined();

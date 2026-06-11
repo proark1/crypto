@@ -29,6 +29,7 @@ import type {
   SweepResponse,
 } from "../api/types";
 import { formatFractionPercent, formatMoney, formatTime } from "../lib/format";
+import { Alert, GLOSSARY, InfoTooltip, StatTile, type GlossaryTerm } from "../ui";
 import { ComparisonPanel } from "../components/ComparisonPanel";
 import { FindingsPanel } from "../components/FindingsPanel";
 import { ImprovementsPanel } from "../components/ImprovementsPanel";
@@ -64,15 +65,30 @@ function text(value: unknown): string {
   return "—";
 }
 
-function Metric(props: { label: string; value: string; hint: string; tone?: Tone }) {
+function Metric(props: {
+  label: string;
+  value: string;
+  hint: string;
+  tone?: Tone;
+  /** When set, a tap-friendly definition appears beside the label. */
+  term?: GlossaryTerm;
+}) {
   return (
-    <div>
-      <div className="text-xs uppercase tracking-wide text-zinc-500">{props.label}</div>
-      <div className={`text-lg font-semibold ${TONE_TEXT_CLASS[props.tone ?? "neutral"]}`}>
-        {props.value}
-      </div>
-      <div className="text-xs text-zinc-500">{props.hint}</div>
-    </div>
+    <StatTile
+      label={
+        props.term === undefined ? (
+          props.label
+        ) : (
+          <span className="inline-flex items-center gap-1">
+            {props.label}
+            <InfoTooltip text={props.term.definition} />
+          </span>
+        )
+      }
+      value={props.value}
+      hint={props.hint}
+      tone={props.tone}
+    />
   );
 }
 
@@ -180,22 +196,26 @@ export function RunReport(props: { run: EvaluationRunResponse }) {
           value={text(summary.expectancy_r)}
           tone={expectancyTone(summary.expectancy_r)}
           hint="average R per trade — above 0 makes money"
+          term={GLOSSARY.expectancy}
         />
         <Metric
           label="profit factor"
           value={text(summary.profit_factor)}
           tone={profitFactorTone(summary.profit_factor)}
           hint="wins ÷ losses — above 1.0 makes money"
+          term={GLOSSARY.profitFactor}
         />
         <Metric
           label="win rate"
           value={text(summary.win_rate)}
           hint="alone says little — win size matters more"
+          term={GLOSSARY.winRate}
         />
         <Metric
           label="trades / scenarios"
           value={`${text(summary.trade_count)} / ${text(summary.scenario_count)}`}
           hint="sample size — small samples lie"
+          term={GLOSSARY.expectancySample}
         />
       </div>
       <div>
@@ -463,14 +483,13 @@ export function ResearchScreen() {
   return (
     <div className="space-y-4">
       {pollStale && (
-        <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-700 dark:text-amber-300">
-          <span className="font-bold uppercase">not refreshing</span> — the research data below
-          may be out of date
+        <Alert tone="warn" title="not refreshing">
+          the research data below may be out of date
           {lastUpdated !== null
             ? ` (last updated ${formatTime(new Date(lastUpdated).toISOString())})`
             : ""}
           . If this persists, check the connection on the overview screen.
-        </div>
+        </Alert>
       )}
       {suggestions.length > 0 && (
         <section className="rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900 p-4">
