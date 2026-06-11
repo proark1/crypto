@@ -20,6 +20,7 @@ import os
 import signal
 from collections.abc import Coroutine, Mapping
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Protocol
 
 import httpx
@@ -54,7 +55,7 @@ from tradebot.persistence import (
     StrategySettingsStore,
 )
 from tradebot.portfolio import Portfolio
-from tradebot.risk import RiskConfig, RiskManager
+from tradebot.risk import ManagedStop, RiskConfig, RiskManager
 from tradebot.signals import (
     EntryGate,
     MarketRegimeDetector,
@@ -416,7 +417,9 @@ class Worker:
                 self.regime_detector.symbol,
                 self.regime_detector.regime.label,
             )
-        return await self.replay_journal()
+        replayed = await self.replay_journal()
+        await self._rearm_protective_stops()
+        return replayed
 
     async def add_coin(self, symbol: str) -> None:
         """Start trading ``symbol``: validate, persist, build, stream.
@@ -470,6 +473,60 @@ class Worker:
         engine.detach_from(self.bus)
         del self.engines[symbol]
         logger.info("coin removed at runtime: %s", symbol)
+
+    async def _rearm_protective_stops(self) -> None:
+        """Give every replayed position a fresh protective stop.
+
+        Restart recovery: the journal restores positions but the in-memory
+        managed stop is gone, and an unprotected position is the exact
+        failure the stop exists to prevent. The re-armed level is an
+        approximation — average entry minus the active trend multiple of
+        the current ATR — because the original signal's stop did not
+        survive the restart; better an approximate stop than none.
+        """
+        from tradebot.indicators import Atr
+
+        trend = TrendFollowingConfig(**self.strategy_params.get("trend_following", {}))
+        for symbol, position in self.portfolio.positions.items():
+            engine = self.engines.get(symbol)
+            if engine is None:
+                continue  # position on a coin no longer traded; kill handles it
+            stored = await self.candle_store.fetch_recent(
+                symbol, CandleInterval.M1, 5 * trend.atr_period
+            )
+            atr = Atr(trend.atr_period)
+            atr_value: float | None = None
+            for candle in stored:
+                atr_value = atr.update(
+                    float(candle.high_quote), float(candle.low_quote), float(candle.close_quote)
+                )
+            if atr_value is None:
+                logger.warning(
+                    "cannot re-arm protective stop for %s: no stored candles to size it; "
+                    "the position trades unprotected until the strategy exits",
+                    symbol,
+                )
+                continue
+            entry = position.average_entry_price_quote
+            stop_price = entry - Decimal(str(trend.atr_stop_multiple * atr_value))
+            if stop_price <= 0:
+                logger.warning("cannot re-arm protective stop for %s: degenerate level", symbol)
+                continue
+            engine.arm_protective_stop(
+                ManagedStop(
+                    entry_price_quote=entry,
+                    initial_stop_quote=stop_price,
+                    breakeven_at_r=trend.breakeven_at_r,
+                    trail_distance_quote=(
+                        Decimal(str(trend.trail_atr_multiple * atr_value))
+                        if trend.trail_atr_multiple > 0
+                        else None
+                    ),
+                )
+            )
+            logger.info(
+                "protective stop re-armed for %s at %s (restart recovery)", symbol, stop_price
+            )
 
     async def replay_journal(self) -> int:
         """Rebuild portfolio state from persisted fills; returns fills replayed.
