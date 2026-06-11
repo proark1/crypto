@@ -238,7 +238,9 @@ def _wrong_holds(run_id: int, records: list[_Record], now: datetime) -> list[Lea
             average_r_impact=WRONG_HOLD_R,
             suggestion=(
                 "exit signals fire too late on deteriorating positions; review the "
-                "evidence scenarios for a common warning sign worth exiting on"
+                "evidence scenarios for a common warning sign worth exiting on "
+                "(sweepable knobs: breakeven_at_r and trail_atr_multiple — the "
+                "automated improver tests them when this finding appears)"
             ),
             confidence=_confidence(len(wrong)),
             created_at=now,

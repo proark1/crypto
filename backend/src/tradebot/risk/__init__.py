@@ -8,5 +8,6 @@ risk logic is wedged.
 
 from tradebot.risk.breakers import BreakerConfig, CircuitBreakers
 from tradebot.risk.manager import RiskConfig, RiskManager
+from tradebot.risk.stops import ManagedStop
 
-__all__ = ["BreakerConfig", "CircuitBreakers", "RiskConfig", "RiskManager"]
+__all__ = ["BreakerConfig", "CircuitBreakers", "ManagedStop", "RiskConfig", "RiskManager"]
