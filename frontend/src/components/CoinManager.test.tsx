@@ -27,16 +27,16 @@ describe("CoinManager", () => {
     expect(onAdd).not.toHaveBeenCalled();
   });
 
-  it("removes the selected coin only after confirmation", () => {
+  it("removes the selected coin only after the inline confirm step", () => {
     const onRemove = vi.fn();
-    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
     render(<CoinManager selected="BTC/USDT" onAdd={() => undefined} onRemove={onRemove} />);
 
+    // First click only arms the confirm; nothing is removed yet.
     fireEvent.click(screen.getByText("remove BTC/USDT"));
-    expect(onRemove).not.toHaveBeenCalled(); // declined
+    expect(onRemove).not.toHaveBeenCalled();
 
-    confirmSpy.mockReturnValue(true);
-    fireEvent.click(screen.getByText("remove BTC/USDT"));
+    // The armed state asks to confirm; the second click commits.
+    fireEvent.click(screen.getByText(/stop BTC\/USDT/));
     expect(onRemove).toHaveBeenCalledWith("BTC/USDT");
   });
 });
