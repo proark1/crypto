@@ -8,6 +8,12 @@ const FLAT_STATUS: StatusResponse = {
   mode: "paper",
   paused: false,
   protective_stop_quote: null,
+  regime: {
+    enabled: true,
+    symbol: "BTC/USDT",
+    label: "trending",
+    reasons: ["ADX 31 above 25"],
+  },
   symbol: "BTC/USDT",
   symbols: ["BTC/USDT"],
   exchange_id: "binance",

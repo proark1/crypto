@@ -48,6 +48,7 @@ from tradebot.persistence import (
     StrategySettingsStore,
 )
 from tradebot.portfolio import Portfolio
+from tradebot.signals import MarketRegimeDetector
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +83,11 @@ class BotState(Protocol):
 
     async def persist_risk_state(self) -> None:
         """Persist the brake/pause snapshot now (operator halts cannot wait)."""
+        ...
+
+    @property
+    def regime_detector(self) -> MarketRegimeDetector | None:
+        """The regime gate's detector, or ``None`` when the gate is off."""
         ...
 
     async def divergence_report(
@@ -161,6 +167,17 @@ class BreakersResponse(BaseModel):
     entries_today: int
 
 
+class RegimeResponse(BaseModel):
+    """Why entries are (or are not) flowing: the gate's view of the market."""
+
+    enabled: bool
+    symbol: str | None
+    label: str | None
+    """"warming_up" | "trending" | "ranging" | "risk_off" when enabled."""
+
+    reasons: list[str]
+
+
 class StatusResponse(BaseModel):
     """The three-second answer to "is everything okay?"."""
 
@@ -168,6 +185,10 @@ class StatusResponse(BaseModel):
     paused: bool
     protective_stop_quote: str | None
     """The armed protective stop level, or ``None`` while flat/unarmed."""
+
+    regime: RegimeResponse
+    """The regime gate's current verdict — the first place to look when
+    every entry shows up gated."""
 
     symbol: str
     symbols: list[str]
@@ -743,10 +764,22 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
                 ),
             )
         breakers = engine.breakers  # one shared account-level instance
+        detector = state.regime_detector
+        regime = (
+            RegimeResponse(enabled=False, symbol=None, label=None, reasons=[])
+            if detector is None
+            else RegimeResponse(
+                enabled=True,
+                symbol=detector.symbol,
+                label=detector.regime.label,
+                reasons=list(detector.regime.reasons),
+            )
+        )
         return StatusResponse(
             mode=state.config.mode.value,
             paused=engine.paused,
             protective_stop_quote=engine.protective_stop_quote,
+            regime=regime,
             breakers=BreakersResponse(
                 tripped_reason=breakers.tripped_reason,
                 cooldown_until=(

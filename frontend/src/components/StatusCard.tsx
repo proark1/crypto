@@ -27,6 +27,18 @@ export function StatusCard(props: { status: StatusResponse }) {
             paused
           </span>
         )}
+        {status.regime.enabled && status.regime.label !== null && (
+          <span
+            className={`rounded px-2 py-0.5 text-xs font-bold uppercase ${
+              status.regime.label === "risk_off" || status.regime.label === "warming_up"
+                ? "bg-red-500/20 text-red-400"
+                : "bg-sky-500/20 text-sky-400"
+            }`}
+            title={status.regime.reasons.join("; ")}
+          >
+            regime: {status.regime.label.replace("_", " ")}
+          </span>
+        )}
         <span className="w-full text-sm text-zinc-500 sm:ml-auto sm:w-auto sm:text-right">
           {status.exchange_id} · last candle {formatTime(status.last_candle_close_time)}
         </span>

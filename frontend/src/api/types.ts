@@ -18,11 +18,22 @@ export interface BreakersResponse {
   entries_today: number;
 }
 
+export interface RegimeResponse {
+  enabled: boolean;
+  symbol: string | null;
+  /** "warming_up" | "trending" | "ranging" | "risk_off" when enabled. */
+  label: string | null;
+  reasons: string[];
+}
+
 export interface StatusResponse {
   mode: string;
   paused: boolean;
   /** Armed protective stop level, or null while flat/unarmed. */
   protective_stop_quote: string | null;
+  /** The regime gate's current verdict — first place to look when entries
+   * keep showing up gated. */
+  regime: RegimeResponse;
   symbol: string;
   symbols: string[];
   exchange_id: string;
