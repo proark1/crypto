@@ -8,10 +8,22 @@ import type {
   StrategyFamilyOption,
 } from "../api/types";
 import { humanizeParamName } from "../lib/format";
+import { Alert, ArrowLeftIcon, Button } from "../ui";
 
 /** Input drafts per family: strings for number/text fields (so partial
  * typing never fights the input), booleans for checkboxes. */
 type ParamDrafts = Record<string, Record<string, string | boolean>>;
+
+/** A numeric parameter is invalid when its draft is blank or not a number.
+ * Validating live (rather than only on submit) lets the field flag itself as
+ * the user types, instead of failing silently at the end. */
+function isNumberDraftInvalid(defaultValue: unknown, draft: string | boolean): boolean {
+  if (typeof defaultValue !== "number") {
+    return false;
+  }
+  const text = typeof draft === "string" ? draft.trim() : "";
+  return text === "" || Number.isNaN(Number(text));
+}
 
 function draftsFromDefaults(families: StrategyFamilyOption[]): ParamDrafts {
   const drafts: ParamDrafts = {};
@@ -75,27 +87,39 @@ function ParamField(props: {
       </label>
     );
   }
+  const invalid = isNumberDraftInvalid(props.defaultValue, props.draft);
   return (
     <label className="text-xs text-zinc-600 dark:text-zinc-400">
       {label}
       <input
         type={typeof props.defaultValue === "number" ? "number" : "text"}
         step="any"
+        aria-invalid={invalid}
         value={typeof props.draft === "string" ? props.draft : String(props.draft)}
         onChange={(event) => {
           props.onChange(event.target.value);
         }}
-        className="mt-1 block w-32 rounded-lg border border-zinc-300 bg-white px-2 py-1.5 text-sm text-zinc-900 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+        className={`mt-1 block w-32 rounded-lg border bg-white px-2 py-1.5 text-sm text-zinc-900 dark:bg-zinc-950 dark:text-zinc-100 ${
+          invalid
+            ? "border-red-400 dark:border-red-700"
+            : "border-zinc-300 dark:border-zinc-700"
+        }`}
       />
+      {invalid && (
+        <span className="mt-0.5 block text-[11px] text-red-600 dark:text-red-400">
+          must be a number
+        </span>
+      )}
     </label>
   );
 }
 
 /**
- * Build (or edit) a custom bot by picking and mixing rules. Each rule card
- * is one strategy family with its defaults editable under "advanced
- * settings"; two or more rules unlock the entry-mode choice. Creation posts
- * the recipe and hands the new bot id back to the caller for navigation.
+ * Build (or edit) a custom bot by picking and mixing rules. Each rule card is
+ * one strategy family; selecting it reveals its settings inline (each numeric
+ * field validates as you type), and two or more rules unlock the entry-mode
+ * choice. Creation posts the recipe and hands the new bot id back to the
+ * caller for navigation.
  */
 export function BotBuilderScreen(props: {
   /** Custom bot id when editing its rules; null builds a new bot. */
@@ -234,16 +258,24 @@ export function BotBuilderScreen(props: {
     })();
   }, [options, selected, editBotId, name, description, drafts, entryMode, props]);
 
+  // A picked rule with a blank/non-numeric field blocks saving up front,
+  // rather than letting the user submit only to bounce off a server error.
+  const hasInvalidParam =
+    options !== null &&
+    options.families.some(
+      (option) =>
+        selected.has(option.family) &&
+        Object.entries(option.defaults).some(([key, defaultValue]) =>
+          isNumberDraftInvalid(defaultValue, drafts[option.family]?.[key] ?? ""),
+        ),
+    );
+
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-3">
-        <button
-          type="button"
-          onClick={props.onCancel}
-          className="rounded-lg border border-zinc-300 px-3 py-1.5 text-sm text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
-        >
-          ← back
-        </button>
+        <Button variant="ghost" size="sm" onClick={props.onCancel} icon={<ArrowLeftIcon />}>
+          back
+        </Button>
         <h2 className="text-xl font-bold text-zinc-900 dark:text-zinc-100">
           {editBotId === null ? "create a bot" : `edit rules — ${editLabel ?? editBotId}`}
         </h2>
@@ -292,11 +324,11 @@ export function BotBuilderScreen(props: {
                     </span>
                   </label>
                   {isSelected && Object.keys(option.defaults).length > 0 && (
-                    <details className="mt-3">
-                      <summary className="cursor-pointer text-xs font-semibold text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300">
-                        advanced settings
-                      </summary>
-                      <div className="mt-2 flex flex-wrap gap-x-4 gap-y-2">
+                    <div className="mt-3 border-t border-zinc-200/70 pt-3 dark:border-zinc-800/60">
+                      <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-zinc-500">
+                        settings
+                      </div>
+                      <div className="flex flex-wrap gap-x-4 gap-y-2">
                         {Object.entries(option.defaults).map(([key, defaultValue]) => (
                           <ParamField
                             key={key}
@@ -309,7 +341,7 @@ export function BotBuilderScreen(props: {
                           />
                         ))}
                       </div>
-                    </details>
+                    </div>
                   )}
                 </div>
               );
@@ -375,27 +407,19 @@ export function BotBuilderScreen(props: {
             </div>
           )}
 
-          {error !== null && (
-            <div className="rounded-lg border border-red-300 bg-red-50 px-4 py-2 text-sm text-red-700 dark:border-red-800 dark:bg-red-950/50 dark:text-red-300">
-              {error}
-            </div>
-          )}
+          {error !== null && <Alert tone="error">{error}</Alert>}
 
           <div className="flex gap-3">
-            <button
+            <Button
               type="submit"
-              disabled={pending}
-              className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-500 disabled:opacity-50"
+              disabled={pending || hasInvalidParam}
+              title={hasInvalidParam ? "fix the highlighted settings first" : undefined}
             >
               {editBotId === null ? "create the bot" : "save the rules"}
-            </button>
-            <button
-              type="button"
-              onClick={props.onCancel}
-              className="rounded-lg border border-zinc-300 px-4 py-2 text-sm text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
-            >
+            </Button>
+            <Button variant="secondary" onClick={props.onCancel}>
               cancel
-            </button>
+            </Button>
           </div>
         </form>
       )}
