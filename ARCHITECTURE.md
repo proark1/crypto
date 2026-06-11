@@ -23,6 +23,7 @@ This document is the target design. Implementation status as of June 2026
 | Telegram notifications (§6.2) | **Done** — alerts only; command handling missing |
 | Dashboard: status, chart, decisions, proposals, controls (§6.1) | **Done** — per-coin view with coin switcher; wizard, journal, research screens missing |
 | Multi-coin support (§4.2) | **Done** — per-symbol feed+engine, shared account/breakers, per-coin dashboard, runtime add/remove via API + UI (coins persisted in Postgres; env var seeds first boot) |
+| Automated improvement: sweep-validated self-tuning (§12.7) | **Done** — paper-scoped; promotes only statistically validated sweep winners; versioned settings journal with UI revert; Telegram alert per promotion |
 | Evaluation & training: blind walk-forward (§12) | **Done** — foundations, scenario engine (leak-tested), run orchestration + API, research screen, scenario replay viewer, learning findings (mined + human accept/reject), walk-forward parameter sweeps with explicit overfit verdicts, cross-family candidates, multiple validation windows, bootstrap confidence intervals + Bonferroni-corrected significance on every verdict; evaluation runs grade the production strategy shape (regime-routed families, self-classified per scenario) |
 | News pipeline, regime gates, signal fusion (§5.2, §5.3) | **Partial** — BTC regime gate done (ADX trend/range + drawdown risk-off; family routing: trend entries in trends, mean-reversion entries in ranges; exits never gated; verdicts journaled as `gated` decisions); sentiment tighteners done (Fear & Greed extremes, BTC dominance surges, broad negative news flow — advisory, one-way, stale data contributes nothing); news pipeline done defensively (CryptoPanic polling + keyword classifier, negative-news coin flags, env-configured event windows); confirmation filters (order-flow/funding, P2 data) and automated calendar ingestion missing |
 | Mean-reversion strategy family (§5.2 routing) | **Done** — RSI oversold-recovery entries, midline exits, same ATR stop convention as trend; regime-routed per coin, both families' indicators always warm, exits pass from either family in any regime |
@@ -601,6 +602,26 @@ bootstrap confidence interval. Accepted findings link to the config
 change they motivated, so every strategy version carries its lineage:
 what changed, why, and whether validation confirmed it.
 
+### 12.7 Automated improvement (paper-scoped)
+
+The loop closes the research cycle without a human in the middle: on a
+schedule (`TRADEBOT_AUTO_IMPROVE_*`), the bot derives single-knob variants
+of the parameters it is trading right now, runs them through the blind
+walk-forward sweep, and promotes the winner **only when the verdict is
+validated** — the Bonferroni-corrected, multi-window statistical bar.
+Training wins, near-misses, and findings never promote anything.
+
+Guardrails, in order of importance: promotions apply to the **paper** bot
+only (the worker refuses to construct in any other mode, and going live
+stays a human decision in every configuration); every promotion appends a
+version to the `strategy_settings` journal carrying its sweep as lineage
+(history is never rewritten); the dashboard lists every version with a
+one-click revert — the human override that always stays available; and a
+promotion hot-swaps engines onto pre-warmed strategy instances, never
+touching positions, orders, stops, or risk state. Evaluations, sweeps,
+and live engines all read the same active-parameters source, so research
+always grades the configuration actually being traded.
+
 ### 12.6 Delivery status
 
 All six steps are implemented: foundations (this section, aggregation
@@ -625,5 +646,7 @@ evidence* (including a real but statistically unproven edge). Evaluation
 runs grade the strategy shape production trades: the regime-routed family
 router, with the regime self-classified from each scenario's own candles
 (`evaluation/strategy.py` documents the divergence from the live
-reference-market detector, which scenarios must not read). Sweeps and
-findings recommend; applying a config change remains a human action.
+reference-market detector, which scenarios must not read). Findings
+always only recommend. Sweep verdicts feed the automated improvement loop
+(§12.7): in paper mode a *validated* challenger is promoted automatically;
+anything touching live trading remains a human action.

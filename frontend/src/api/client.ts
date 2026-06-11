@@ -16,6 +16,7 @@ import type {
   ScenarioReplayResponse,
   ScenarioSummaryResponse,
   StatusResponse,
+  StrategyVersionResponse,
   SweepResponse,
 } from "./types";
 
@@ -175,6 +176,14 @@ export function acceptFinding(findingId: number): Promise<FindingResponse> {
 
 export function rejectFinding(findingId: number): Promise<FindingResponse> {
   return request<FindingResponse>(`/evaluations/findings/${String(findingId)}/reject`, "POST");
+}
+
+export function fetchStrategyVersions(): Promise<StrategyVersionResponse[]> {
+  return request<StrategyVersionResponse[]>("/strategy/versions", "GET");
+}
+
+export function revertStrategyVersion(versionId: number): Promise<CommandResponse> {
+  return request<CommandResponse>(`/strategy/versions/${String(versionId)}/revert`, "POST");
 }
 
 export function fetchSweeps(): Promise<SweepResponse[]> {

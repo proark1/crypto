@@ -86,6 +86,21 @@ coins_table = Table(
 ``TRADEBOT_SYMBOLS`` only seeds this table on first boot; afterwards coins
 are added and removed through the control API."""
 
+strategy_settings_table = Table(
+    "strategy_settings",
+    metadata,
+    Column("id", BigInteger, primary_key=True, autoincrement=True),
+    Column("family", Text, nullable=False, index=True),
+    Column("params", JSONB, nullable=False),
+    Column("source_sweep_id", BigInteger, nullable=True),
+    Column("note", Text, nullable=True),
+    Column("activated_at", DateTime(timezone=True), nullable=False),
+)
+"""Versioned strategy parameters, append-only: the newest row per family is
+what the bot trades; every promotion (automated, or a manual revert) appends
+a new row carrying its lineage (the sweep that validated it). History is
+never rewritten — §12.5 requires every config to know where it came from."""
+
 
 evaluation_runs_table = Table(
     "evaluation_runs",
