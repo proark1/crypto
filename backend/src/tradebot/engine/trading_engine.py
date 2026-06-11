@@ -202,6 +202,13 @@ class TradingEngine:
                 self._journaled_triggered.discard(order.client_order_id)
                 self._submitted_entries.pop(order.client_order_id, None)
                 self._risk_manager.on_order_cancelled(order.client_order_id)
+                if order.client_order_id == self._pending_exit_order:
+                    # The latched exit is one of the orders we just cancelled,
+                    # so it is no longer in flight: clear the latch, or the
+                    # "exit already in flight" check below would suppress the
+                    # kill's own market flatten and leave the position open
+                    # and unprotected.
+                    self._pending_exit_order = None
                 logger.warning("kill switch cancelled open order %s", order.client_order_id)
             except Exception:
                 logger.exception("kill switch failed to cancel order %s", order.client_order_id)

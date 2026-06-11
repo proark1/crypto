@@ -603,6 +603,56 @@ class TestOrderJournal:
         # only working order.
         assert all(o.order_type != OrderType.STOP_LIMIT for o in engine.open_orders())
 
+    async def test_kill_flattens_even_when_a_restored_exit_is_latched(
+        self, database: Database
+    ) -> None:
+        """Kill must flatten despite a latch on an exit it cancels itself.
+
+        A restored non-stop exit arms the exit-in-flight latch. Kill cancels
+        every open order — including that exit — so the latch is stale: if kill
+        still treated it as in flight it would skip its own market flatten and
+        leave the position open and unprotected.
+        """
+        order_store = OrderStore(database)
+        exit_order = Order(
+            client_order_id="exit-1",
+            signal_id="sig-exit",
+            symbol="BTC/USDT",
+            side=Side.SELL,
+            order_type=OrderType.LIMIT,
+            quantity_base=Decimal("1"),
+            limit_price_quote=Decimal("200"),
+            created_at=BASE_TIME,
+        )
+        await order_store.record_submitted(exit_order)
+
+        portfolio = Portfolio(INITIAL_BALANCE)
+        portfolio.apply_fill(
+            Fill(
+                client_order_id="seed",
+                symbol="BTC/USDT",
+                side=Side.BUY,
+                price_quote=Decimal("100"),
+                quantity_base=Decimal("1"),
+                fee_quote=Decimal("0"),
+                filled_at=BASE_TIME,
+            )
+        )
+        engine = make_engine(portfolio, order_store=order_store)
+        for open_order in await order_store.fetch_open("BTC/USDT"):
+            engine.restore_order(open_order)
+
+        # Price the exit; the 200 limit cannot fill at 96, so it is still the
+        # working order (and still latched) when the kill arrives.
+        await engine.process_candle(make_candle(0, 96.0))
+        assert portfolio.position("BTC/USDT") is not None
+
+        assert await engine.kill() is True
+        # The kill cancelled the restored exit and submitted its own market
+        # flatten; the next candle fills it and the position is closed.
+        await engine.process_candle(make_candle(1, 95.0))
+        assert portfolio.position("BTC/USDT") is None
+
     async def test_kill_journals_the_cancellation(self, database: Database) -> None:
         order_store = OrderStore(database)
         engine = make_engine(Portfolio(INITIAL_BALANCE), order_store=order_store)
