@@ -28,6 +28,19 @@ import {
   trimAmount,
   truncateAmount,
 } from "../lib/format";
+import { useMediaQuery } from "../lib/useMediaQuery";
+import {
+  Alert,
+  ArrowLeftIcon,
+  Badge,
+  Button,
+  Card,
+  ConfirmButton,
+  PauseIcon,
+  PlayIcon,
+  SectionHeader,
+  StatTile,
+} from "../ui";
 
 const POLL_INTERVAL_MS = 5000;
 
@@ -46,42 +59,17 @@ function plainOutcome(outcome: string): string {
   return OUTCOME_PLAIN[outcome] ?? outcome.replace(/_/g, " ");
 }
 
-function Badge(props: {
-  tone: "sky" | "violet" | "zinc" | "amber";
-  title?: string;
-  children: string;
-}) {
-  const tones = {
-    sky: "bg-sky-100 text-sky-700 dark:bg-sky-500/20 dark:text-sky-400",
-    violet: "bg-violet-100 text-violet-700 dark:bg-violet-500/20 dark:text-violet-400",
-    zinc: "bg-zinc-200 text-zinc-600 dark:bg-zinc-700/60 dark:text-zinc-300",
-    amber: "bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-400",
-  } as const;
-  return (
-    <span
-      title={props.title}
-      className={`rounded px-2 py-0.5 text-xs font-bold uppercase ${tones[props.tone]}`}
-    >
-      {props.children}
-    </span>
-  );
-}
-
+/** One headline metric in its own bordered tile. */
 function StatCard(props: { label: string; value: string; hint?: string; valueClass?: string }) {
   return (
-    <div className="rounded-xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
-      <div className="text-xs uppercase tracking-wide text-zinc-500">{props.label}</div>
-      <div
-        className={`mt-1 text-lg font-semibold ${
-          props.valueClass ?? "text-zinc-900 dark:text-zinc-100"
-        }`}
-      >
-        {props.value}
-      </div>
-      {props.hint !== undefined && (
-        <div className="mt-0.5 text-xs text-zinc-500">{props.hint}</div>
-      )}
-    </div>
+    <Card padding="md">
+      <StatTile
+        label={props.label}
+        value={props.value}
+        hint={props.hint}
+        valueClass={props.valueClass}
+      />
+    </Card>
   );
 }
 
@@ -125,6 +113,24 @@ function familyMeta(
   };
 }
 
+/** One named rule with its description and collapsible parameters. */
+function FamilyCard(props: {
+  family: string;
+  params: Record<string, unknown>;
+  options: BotOptionsResponse | null;
+}) {
+  const meta = familyMeta(props.options, props.family);
+  return (
+    <div className="rounded-lg border border-zinc-200/70 bg-zinc-50 p-3 dark:border-zinc-800/60 dark:bg-zinc-950/60">
+      <div className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">{meta.label}</div>
+      {meta.description !== "" && (
+        <p className="mt-0.5 text-xs text-zinc-500">{meta.description}</p>
+      )}
+      <ParamTable params={props.params} />
+    </div>
+  );
+}
+
 /** Render how a bot trades in plain language, per strategy kind. */
 function StrategySection(props: {
   strategy: BotStrategyResponse;
@@ -132,37 +138,21 @@ function StrategySection(props: {
 }) {
   const { strategy, options } = props;
   return (
-    <section className="rounded-xl border border-zinc-200 bg-white p-5 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
-      <h3 className="text-sm font-bold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
-        how it trades
-      </h3>
+    <Card padding="lg">
+      <SectionHeader title="How it trades" />
       {strategy.kind === "production" && (
-        <div className="mt-2 space-y-3">
+        <div className="space-y-3">
           <p className="text-sm text-zinc-700 dark:text-zinc-300">
             Switches between trend following (in trending markets) and mean reversion (in
             calm/sideways markets), based on overall BTC market conditions.
           </p>
-          {Object.entries(strategy.families).map(([family, params]) => {
-            const meta = familyMeta(options, family);
-            return (
-              <div
-                key={family}
-                className="rounded-lg border border-zinc-200/70 bg-zinc-50 p-3 dark:border-zinc-800/60 dark:bg-zinc-950/60"
-              >
-                <div className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
-                  {meta.label}
-                </div>
-                {meta.description !== "" && (
-                  <p className="mt-0.5 text-xs text-zinc-500">{meta.description}</p>
-                )}
-                <ParamTable params={params} />
-              </div>
-            );
-          })}
+          {Object.entries(strategy.families).map(([family, params]) => (
+            <FamilyCard key={family} family={family} params={params} options={options} />
+          ))}
         </div>
       )}
       {strategy.kind === "builtin" && (
-        <div className="mt-2">
+        <div>
           <div className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
             {familyMeta(options, strategy.family).label}
           </div>
@@ -175,39 +165,26 @@ function StrategySection(props: {
         </div>
       )}
       {strategy.kind === "custom" && (
-        <div className="mt-2 space-y-3">
+        <div className="space-y-3">
           <p className="text-sm text-zinc-700 dark:text-zinc-300">
             {strategy.rules.entry_mode === "all"
               ? "Buys only when all of its rules agree (trades less, higher conviction)."
               : "Buys when any of its rules fires (trades more)."}
           </p>
-          {Object.entries(strategy.rules.families).map(([family, params]) => {
-            const meta = familyMeta(options, family);
-            return (
-              <div
-                key={family}
-                className="rounded-lg border border-zinc-200/70 bg-zinc-50 p-3 dark:border-zinc-800/60 dark:bg-zinc-950/60"
-              >
-                <div className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
-                  {meta.label}
-                </div>
-                {meta.description !== "" && (
-                  <p className="mt-0.5 text-xs text-zinc-500">{meta.description}</p>
-                )}
-                <ParamTable params={params} />
-              </div>
-            );
-          })}
+          {Object.entries(strategy.rules.families).map(([family, params]) => (
+            <FamilyCard key={family} family={family} params={params} options={options} />
+          ))}
         </div>
       )}
-    </section>
+    </Card>
   );
 }
 
 /**
- * One competing bot in full: header with controls, stat cards, how it
- * trades, open positions, its own trade journal, and its recent decisions
- * in plain words. Polls on the app's usual cadence.
+ * One competing bot in full: header with controls, stat cards, how it trades,
+ * open positions, its own trade journal, and its recent decisions in plain
+ * words. Positions render as a table on desktop and stacked cards on phones.
+ * Polls on the app's usual cadence.
  */
 export function BotDetailScreen(props: {
   botId: string;
@@ -224,8 +201,8 @@ export function BotDetailScreen(props: {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [commandPending, setCommandPending] = useState(false);
-  const [confirmingStop, setConfirmingStop] = useState(false);
   const requestIdRef = useRef(0);
+  const isMobile = useMediaQuery("(max-width: 639px)");
 
   const { botId, symbol } = props;
 
@@ -307,22 +284,16 @@ export function BotDetailScreen(props: {
   }, [botId, props]);
 
   const backButton = (
-    <button
-      type="button"
-      onClick={props.onBack}
-      className="rounded-lg border border-zinc-300 px-3 py-1.5 text-sm text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
-    >
-      ← back to overview
-    </button>
+    <Button variant="ghost" size="sm" onClick={props.onBack} icon={<ArrowLeftIcon />}>
+      back to bots
+    </Button>
   );
 
   if (error !== null && detail === null) {
     return (
       <div className="space-y-4">
         {backButton}
-        <div className="rounded-lg border border-red-300 bg-red-50 px-4 py-2 text-sm text-red-700 dark:border-red-800 dark:bg-red-950/50 dark:text-red-300">
-          {error}
-        </div>
+        <Alert tone="error">{error}</Alert>
       </div>
     );
   }
@@ -368,76 +339,45 @@ export function BotDetailScreen(props: {
 
       <div className="flex flex-wrap items-center gap-2">
         {summary.paused ? (
-          <button
-            type="button"
+          <Button
+            icon={<PlayIcon className="h-4 w-4" />}
             disabled={commandPending}
             onClick={() => void runCommand(() => resumeBot(botId))}
-            className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-500 disabled:opacity-50"
           >
             resume
-          </button>
+          </Button>
         ) : (
-          <button
-            type="button"
+          <Button
+            variant="secondary"
+            icon={<PauseIcon className="h-4 w-4" />}
             disabled={commandPending}
             title="stop opening trades — protective stops keep running"
             onClick={() => void runCommand(() => pauseBot(botId))}
-            className="rounded-lg bg-zinc-200 px-4 py-2 text-sm font-semibold text-zinc-800 hover:bg-zinc-300 disabled:opacity-50 dark:bg-zinc-700 dark:text-white dark:hover:bg-zinc-600"
           >
             pause
-          </button>
+          </Button>
         )}
-        {confirmingStop ? (
-          <>
-            <button
-              type="button"
-              disabled={commandPending}
-              onClick={() => {
-                setConfirmingStop(false);
-                void runCommand(() => killBot(botId));
-              }}
-              className="rounded-lg bg-red-600 px-4 py-2 text-sm font-bold text-white hover:bg-red-500 disabled:opacity-50"
-            >
-              confirm: halt the bot and sell its holdings at the next price
-            </button>
-            <button
-              type="button"
-              disabled={commandPending}
-              onClick={() => {
-                setConfirmingStop(false);
-              }}
-              className="rounded-lg border border-zinc-300 px-4 py-2 text-sm text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
-            >
-              cancel
-            </button>
-          </>
-        ) : (
-          <button
-            type="button"
-            disabled={commandPending}
-            title="halts the bot and sells its holdings at the next price"
-            onClick={() => {
-              setConfirmingStop(true);
-            }}
-            className="rounded-lg border border-red-300 px-4 py-2 text-sm font-semibold text-red-600 hover:bg-red-50 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-950/40 disabled:opacity-50"
-          >
-            stop
-          </button>
-        )}
+        <ConfirmButton
+          label="stop"
+          confirmLabel="confirm: halt the bot and sell its holdings at the next price"
+          title="halts the bot and sells its holdings at the next price"
+          disabled={commandPending}
+          stopPropagation={false}
+          onConfirm={() => void runCommand(() => killBot(botId))}
+        />
         {summary.kind === "custom" && (
           <>
-            <button
-              type="button"
+            <Button
+              variant="ghost"
               disabled={commandPending}
               onClick={() => {
                 props.onEdit(botId);
               }}
-              className="rounded-lg border border-zinc-300 px-4 py-2 text-sm text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
             >
               edit rules
-            </button>
-            <button
-              type="button"
+            </Button>
+            <Button
+              variant="dangerOutline"
               disabled={commandPending || holdsSomething}
               title={
                 holdsSomething
@@ -445,23 +385,17 @@ export function BotDetailScreen(props: {
                   : "remove this bot and its account for good"
               }
               onClick={() => void handleDelete()}
-              className="rounded-lg border border-red-300 px-4 py-2 text-sm text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-950/40"
             >
               delete
-            </button>
+            </Button>
           </>
         )}
       </div>
-      {notice !== null && (
-        <div className="rounded-lg border border-zinc-300 bg-white px-4 py-2 text-sm text-zinc-700 shadow-sm dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300">
-          {notice}
-        </div>
-      )}
+      {notice !== null && <Alert tone="info">{notice}</Alert>}
       {summary.breaker_tripped_reason !== null && (
-        <div className="rounded-lg border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-900 dark:text-red-300">
-          <span className="font-bold uppercase">circuit breaker tripped</span> —{" "}
+        <Alert tone="error" title="circuit breaker tripped">
           {summary.breaker_tripped_reason}
-        </div>
+        </Alert>
       )}
 
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
@@ -479,13 +413,13 @@ export function BotDetailScreen(props: {
           hint={`profit since its ${truncateAmount(summary.initial_balance_quote)} start`}
         />
         <StatCard
-          label="realized pnl"
+          label="realized P/L"
           value={truncateAmount(summary.realized_pnl_quote)}
           valueClass={signClass(summary.realized_pnl_quote)}
           hint="profit or loss from closed trades"
         />
         <StatCard
-          label="unrealized pnl"
+          label="unrealized P/L"
           value={
             summary.unrealized_pnl_quote === null
               ? "—"
@@ -508,68 +442,95 @@ export function BotDetailScreen(props: {
 
       <StrategySection strategy={strategy} options={options} />
 
-      <section className="rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
-        <h3 className="border-b border-zinc-200 px-4 py-3 text-xs uppercase tracking-wide text-zinc-500 dark:border-zinc-800">
-          <span className="font-bold">open positions</span>
-          <span className="ml-2 normal-case tracking-normal">
-            — what this bot holds right now
-          </span>
-        </h3>
+      <Card padding="none">
+        <SectionHeader
+          title="Open positions"
+          description="what this bot holds right now"
+          className="border-b border-zinc-200 px-4 py-3 dark:border-zinc-800"
+        />
         {positions.length === 0 ? (
           <div className="px-4 py-3 text-sm text-zinc-500">flat — no open positions</div>
-        ) : (
-          <table className="w-full text-left text-sm">
-            <thead className="text-xs text-zinc-500">
-              <tr>
-                <th className="px-4 py-2">coin</th>
-                <th className="px-4 py-2">amount</th>
-                <th className="px-4 py-2">entry price</th>
-                <th className="px-4 py-2">current price</th>
-                <th className="px-4 py-2">unrealized pnl</th>
-              </tr>
-            </thead>
-            <tbody>
-              {positions.map((position) => (
-                <tr
-                  key={position.symbol}
-                  className="border-t border-zinc-200/70 text-zinc-700 dark:border-zinc-800/60 dark:text-zinc-300"
-                >
-                  <td className="px-4 py-2 font-semibold text-zinc-900 dark:text-zinc-100">
+        ) : isMobile ? (
+          <ul className="divide-y divide-zinc-200/70 dark:divide-zinc-800/60">
+            {positions.map((position) => (
+              <li key={position.symbol} className="px-4 py-3">
+                <div className="flex items-center justify-between">
+                  <span className="font-semibold text-zinc-900 dark:text-zinc-100">
                     {position.symbol}
-                  </td>
-                  <td className="px-4 py-2 font-mono">{trimAmount(position.quantity_base)}</td>
-                  <td className="px-4 py-2 font-mono">
-                    {truncateAmount(position.average_entry_price_quote)}
-                  </td>
-                  <td className="px-4 py-2 font-mono">
-                    {position.mark_price_quote === null
-                      ? "—"
-                      : truncateAmount(position.mark_price_quote)}
-                  </td>
-                  <td
-                    className={`px-4 py-2 font-mono ${signClass(position.unrealized_pnl_quote)}`}
+                  </span>
+                  <span
+                    className={`font-mono text-sm ${signClass(position.unrealized_pnl_quote)}`}
                   >
                     {position.unrealized_pnl_quote === null
                       ? "—"
                       : truncateAmount(position.unrealized_pnl_quote)}
-                  </td>
+                  </span>
+                </div>
+                <div className="mt-1 text-xs text-zinc-500">
+                  {trimAmount(position.quantity_base)} @{" "}
+                  {truncateAmount(position.average_entry_price_quote)} · now{" "}
+                  {position.mark_price_quote === null
+                    ? "—"
+                    : truncateAmount(position.mark_price_quote)}
+                </div>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-sm">
+              <thead className="text-xs text-zinc-500">
+                <tr>
+                  <th className="px-4 py-2">coin</th>
+                  <th className="px-4 py-2">amount</th>
+                  <th className="px-4 py-2">entry price</th>
+                  <th className="px-4 py-2">current price</th>
+                  <th className="px-4 py-2">unrealized P/L</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {positions.map((position) => (
+                  <tr
+                    key={position.symbol}
+                    className="border-t border-zinc-200/70 text-zinc-700 dark:border-zinc-800/60 dark:text-zinc-300"
+                  >
+                    <td className="px-4 py-2 font-semibold text-zinc-900 dark:text-zinc-100">
+                      {position.symbol}
+                    </td>
+                    <td className="px-4 py-2 font-mono">
+                      {trimAmount(position.quantity_base)}
+                    </td>
+                    <td className="px-4 py-2 font-mono">
+                      {truncateAmount(position.average_entry_price_quote)}
+                    </td>
+                    <td className="px-4 py-2 font-mono">
+                      {position.mark_price_quote === null
+                        ? "—"
+                        : truncateAmount(position.mark_price_quote)}
+                    </td>
+                    <td
+                      className={`px-4 py-2 font-mono ${signClass(position.unrealized_pnl_quote)}`}
+                    >
+                      {position.unrealized_pnl_quote === null
+                        ? "—"
+                        : truncateAmount(position.unrealized_pnl_quote)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
-      </section>
+      </Card>
 
       <FillsTable fills={fills} />
 
-      <section className="rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
-        <h3 className="border-b border-zinc-200 px-4 py-3 text-xs uppercase tracking-wide text-zinc-500 dark:border-zinc-800">
-          <span className="font-bold">recent decisions</span>
-          <span className="ml-2 normal-case tracking-normal">
-            — what this bot wanted to do{symbol === null ? "" : ` on ${symbol}`} and what came
-            of it
-          </span>
-        </h3>
+      <Card padding="none">
+        <SectionHeader
+          title="Recent decisions"
+          description={`what this bot wanted to do${symbol === null ? "" : ` on ${symbol}`} and what came of it`}
+          className="border-b border-zinc-200 px-4 py-3 dark:border-zinc-800"
+        />
         {decisions.length === 0 ? (
           <div className="px-4 py-3 text-sm text-zinc-500">no decisions yet</div>
         ) : (
@@ -616,7 +577,7 @@ export function BotDetailScreen(props: {
             ))}
           </ul>
         )}
-      </section>
+      </Card>
     </div>
   );
 }
