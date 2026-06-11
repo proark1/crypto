@@ -77,8 +77,8 @@ _LADDER: tuple[_Rung, ...] = (
         title="deep cycle",
         rationale=(
             "1h candles across the same ~4-year cycle — the timeframe the "
-            "bot trades at four times the resolution, the ladder's biggest "
-            "sample"
+            "bot trades, at four times the resolution, making it the "
+            "ladder's biggest sample"
         ),
     ),
     _Rung(
