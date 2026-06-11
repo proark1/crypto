@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import enum
 from decimal import Decimal
+from typing import Literal
 
 from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -56,6 +57,10 @@ class AppConfig(BaseSettings):
 
     log_level: str = "INFO"
     """Root log level for structured logging."""
+
+    log_format: Literal["json", "text"] = "json"
+    """Log output format: ``json`` (one structured event per line, for
+    production aggregation) or ``text`` (human-readable, for local tailing)."""
 
     exchange_id: str = "binance"
     """CCXT exchange id for market data (and, in Phase 3, execution)."""

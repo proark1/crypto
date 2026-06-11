@@ -19,6 +19,7 @@ from decimal import Decimal
 
 from tradebot.authorization import ProposalQueue
 from tradebot.core.events import CandleClosed, EventBus, FillRecorded, ProposalCreated
+from tradebot.core.logging import log_event
 from tradebot.core.models import (
     AutonomyMode,
     Candle,
@@ -245,8 +246,15 @@ class TradingEngine:
             return False
         await self._submit(exit_order)
         self._pending_exit_order = exit_order.client_order_id
-        logger.warning(
-            "kill switch submitted exit %s for %s", exit_order.client_order_id, self._symbol
+        log_event(
+            logger,
+            logging.WARNING,
+            "kill_exit_submitted",
+            signal_id=exit_order.signal_id,
+            client_order_id=exit_order.client_order_id,
+            symbol=self._symbol,
+            side=exit_order.side,
+            quantity_base=exit_order.quantity_base,
         )
         await self._record_decision(signal, DecisionOutcome.SUBMITTED)
         return True
@@ -314,11 +322,15 @@ class TradingEngine:
             for gate in self._entry_gates:
                 verdict = gate.evaluate(signal)
                 if not verdict.allowed:
-                    logger.info(
-                        "entry gated: %s %s — %s",
-                        signal.strategy_name,
-                        signal.symbol,
-                        "; ".join(verdict.reasons),
+                    log_event(
+                        logger,
+                        logging.INFO,
+                        "entry_gated",
+                        signal_id=signal.signal_id,
+                        symbol=signal.symbol,
+                        strategy_name=signal.strategy_name,
+                        side=signal.side,
+                        reasons="; ".join(verdict.reasons),
                     )
                     journaled = signal.model_copy(
                         update={"reasons": signal.reasons + verdict.reasons}
@@ -334,38 +346,60 @@ class TradingEngine:
             # must not sit behind a human queue — ARCHITECTURE.md 4.8).
             proposal = self._proposal_queue.create(signal, candle.close_quote, candle.close_time)
             if proposal is None:
-                logger.info("proposal already pending for %s; signal dropped", signal.symbol)
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "proposal_dropped_pending",
+                    signal_id=signal.signal_id,
+                    symbol=signal.symbol,
+                )
                 return
-            logger.info("co-pilot proposal created: %s", signal.signal_id)
+            log_event(
+                logger,
+                logging.INFO,
+                "proposal_created",
+                signal_id=signal.signal_id,
+                symbol=signal.symbol,
+                strategy_name=signal.strategy_name,
+            )
             await self._record_decision(signal, DecisionOutcome.PROPOSED)
             if self._bus is not None:
                 await self._bus.publish(ProposalCreated(proposal=proposal))
             return
         if signal.side == Side.SELL and self._pending_exit_order is not None:
-            logger.info(
-                "exit already in flight for %s; %s exit superseded",
-                signal.symbol,
-                signal.strategy_name,
+            log_event(
+                logger,
+                logging.INFO,
+                "exit_superseded",
+                signal_id=signal.signal_id,
+                symbol=signal.symbol,
+                strategy_name=signal.strategy_name,
+                client_order_id=self._pending_exit_order,
             )
             await self._record_decision(signal, DecisionOutcome.SUPERSEDED)
             return
         order = self._risk_manager.evaluate(signal, candle.close_quote)
         if order is None:
-            logger.info(
-                "signal vetoed by risk manager: %s %s %s",
-                signal.strategy_name,
-                signal.side,
-                signal.symbol,
+            log_event(
+                logger,
+                logging.INFO,
+                "signal_vetoed",
+                signal_id=signal.signal_id,
+                symbol=signal.symbol,
+                strategy_name=signal.strategy_name,
+                side=signal.side,
             )
             await self._record_decision(signal, DecisionOutcome.VETOED)
             return
-        logger.info(
-            "submitting order %s: %s %s %s (signal %s)",
-            order.client_order_id,
-            order.side,
-            order.quantity_base,
-            order.symbol,
-            order.signal_id,
+        log_event(
+            logger,
+            logging.INFO,
+            "order_submitted",
+            signal_id=order.signal_id,
+            client_order_id=order.client_order_id,
+            symbol=order.symbol,
+            side=order.side,
+            quantity_base=order.quantity_base,
         )
         if order.side == Side.SELL:
             # The strategy exit replaces the protective stop: both SELL the
@@ -796,12 +830,14 @@ class TradingEngine:
                 self._armed_entry = None
         if self._bus is not None:
             await self._bus.publish(FillRecorded(fill=fill))
-        logger.info(
-            "fill %s: %s %s %s @ %s (fee %s)",
-            fill.client_order_id,
-            fill.side,
-            fill.quantity_base,
-            fill.symbol,
-            fill.price_quote,
-            fill.fee_quote,
+        log_event(
+            logger,
+            logging.INFO,
+            "fill_recorded",
+            client_order_id=fill.client_order_id,
+            symbol=fill.symbol,
+            side=fill.side,
+            quantity_base=fill.quantity_base,
+            price_quote=fill.price_quote,
+            fee_quote=fill.fee_quote,
         )
