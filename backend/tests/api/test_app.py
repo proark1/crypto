@@ -757,6 +757,47 @@ class TestEvaluations:
             response = await client.post("/evaluations", json={"timeframes": ["7m"]})
         assert response.status_code == 400
 
+    async def test_suggestions_fit_stored_history(self, database: Database) -> None:
+        """A coin with candles gets the full three-rung ladder, ready to run."""
+        bot = StubBot(database)
+        await bot.candle_store.insert_batch([make_candle(close="110")])
+        async with make_client(bot) as client:
+            response = await client.get("/evaluations/suggestions")
+
+        assert response.status_code == 200
+        suggestions = response.json()
+        assert [s["timeframe"] for s in suggestions] == ["4h", "1h", "15m"]
+        assert all(s["symbol"] == "BTC/USDT" for s in suggestions)
+        # Exact depths depend on the wall clock; runnability does not.
+        assert all(s["history_days"] >= 1 for s in suggestions)
+        assert all(s["scenario_count"] > 0 for s in suggestions)
+
+    async def test_no_stored_candles_means_no_suggestions(self, database: Database) -> None:
+        bot = StubBot(database)
+        async with make_client(bot) as client:
+            response = await client.get("/evaluations/suggestions")
+
+        assert response.status_code == 200
+        assert response.json() == []
+
+    async def test_suggestion_starts_verbatim(self, database: Database) -> None:
+        """The whole point: a suggestion submits as-is and creates a run."""
+        bot = StubBot(database)
+        await bot.candle_store.insert_batch([make_candle(close="110")])
+        async with make_client(bot) as client:
+            suggestion = (await client.get("/evaluations/suggestions")).json()[0]
+            started = await client.post(
+                "/evaluations",
+                json={
+                    "symbols": [suggestion["symbol"]],
+                    "timeframes": [suggestion["timeframe"]],
+                    "history_days": suggestion["history_days"],
+                    "scenario_count": suggestion["scenario_count"],
+                },
+            )
+
+        assert started.status_code == 200
+
     async def test_cancel_and_unknown_run(self, database: Database) -> None:
         bot = StubBot(database)
         async with make_client(bot) as client:

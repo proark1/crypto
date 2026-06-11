@@ -175,20 +175,21 @@ class AppConfig(BaseSettings):
             )
         return self
 
-    history_backfill_days: int = Field(default=730, ge=0)
+    history_backfill_days: int = Field(default=1460, ge=0)
     """How many days of candle history to fetch for a symbol that has none
     stored yet (first boot, newly added coin). Binance-class venues serve
     years of public 1m history for free; the only cost is database storage
     (roughly 0.5 GB per symbol-year of 1m candles) and a one-time deep
     crawl on first boot (a few minutes per symbol behind CCXT's rate
-    limiter; later boots resume from the newest stored candle). Two years
-    covers the research system's one-year default evaluation window (§12)
-    with a full year of out-of-sample headroom for walk-forward sweeps,
-    and dwarfs the regime gate's ~10-day warm-up, so a fresh deploy trades
-    and researches from day one. Databases backfilled under a shallower
-    setting are deepened to this horizon on the next boot. ``0`` disables
-    deep backfill: only the gap from the newest stored candle forward is
-    repaired."""
+    limiter; later boots resume from the newest stored candle). Four years
+    spans a full halving cycle — bull, bear, and chop — so evaluations and
+    walk-forward sweeps are never blind to a regime the market has already
+    shown, and it dwarfs the research system's one-year default evaluation
+    window (§12) and the regime gate's ~10-day warm-up, so a fresh deploy
+    trades and researches from day one. Databases backfilled under a
+    shallower setting are deepened to this horizon on the next boot. ``0``
+    disables deep backfill: only the gap from the newest stored candle
+    forward is repaired."""
 
     api_token: str | None = None
     """Bearer token for the control API. Unset means the API does not start:

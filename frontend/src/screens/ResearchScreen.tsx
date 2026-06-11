@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
   acceptFinding,
   cancelEvaluation,
   cancelSweep,
   fetchEvaluations,
+  fetchEvaluationSuggestions,
   fetchFindings,
   fetchScenarioReplay,
   fetchScenarios,
@@ -21,6 +22,7 @@ import type {
   ScenarioReplayResponse,
   ScenarioSummaryResponse,
   StrategyVersionResponse,
+  SuggestedEvaluationResponse,
   SweepResponse,
 } from "../api/types";
 import { FindingsPanel } from "../components/FindingsPanel";
@@ -254,12 +256,23 @@ export function ResearchScreen() {
   const [replay, setReplay] = useState<ScenarioReplayResponse | null>(null);
   const [sweeps, setSweeps] = useState<SweepResponse[]>([]);
   const [versions, setVersions] = useState<StrategyVersionResponse[]>([]);
+  const [suggestions, setSuggestions] = useState<SuggestedEvaluationResponse[]>([]);
+
+  const suggestionsLoaded = useRef(false);
 
   const refresh = useCallback(async () => {
     try {
       setRuns(await fetchEvaluations());
       setSweeps(await fetchSweeps());
       setVersions(await fetchStrategyVersions());
+      // Suggestions ride the poll only until the first success: stored
+      // history depth moves a day at a time, so once loaded they stay put —
+      // but a fetch that failed (token not entered yet, transient outage)
+      // must retry, or the panel would sit empty until a full reload.
+      if (!suggestionsLoaded.current) {
+        setSuggestions(await fetchEvaluationSuggestions());
+        suggestionsLoaded.current = true;
+      }
     } catch {
       // The overview screen owns auth/error UX; research polls quietly.
     }
@@ -298,6 +311,24 @@ export function ResearchScreen() {
     });
   };
 
+  const runSuggestion = (suggestion: SuggestedEvaluationResponse) => {
+    startEvaluation({
+      symbols: [suggestion.symbol],
+      timeframes: [suggestion.timeframe],
+      history_days: suggestion.history_days,
+      scenario_count: suggestion.scenario_count,
+    }).then(
+      (started) => {
+        setNotice(started.detail);
+        setSelectedId(started.run_id);
+        void refresh();
+      },
+      (caught: unknown) => {
+        setNotice(caught instanceof Error ? caught.message : "failed to start run");
+      },
+    );
+  };
+
   const handleStartSweep = () => {
     startSweep({ timeframe, history_days: Number(days) || 90 }).then(
       (started) => {
@@ -327,6 +358,41 @@ export function ResearchScreen() {
 
   return (
     <div className="space-y-4">
+      {suggestions.length > 0 && (
+        <section className="rounded-xl border border-zinc-800 bg-zinc-900 p-4">
+          <h3 className="text-xs uppercase tracking-wide text-zinc-500">
+            suggested evaluations — fitted to each coin&apos;s stored history
+          </h3>
+          <div className="mt-2 grid gap-3 sm:grid-cols-3">
+            {suggestions.map((suggestion) => (
+              <div
+                key={`${suggestion.symbol}-${suggestion.timeframe}`}
+                className="flex flex-col justify-between rounded-lg border border-zinc-800 bg-zinc-950/60 p-3"
+              >
+                <div>
+                  <div className="text-sm font-semibold text-zinc-100">
+                    {suggestion.title} · {suggestion.symbol}
+                  </div>
+                  <div className="mt-0.5 text-xs text-zinc-500">
+                    {suggestion.timeframe} · {suggestion.history_days} days · ~
+                    {suggestion.expected_candles.toLocaleString()} candles
+                  </div>
+                  <p className="mt-1 text-xs text-zinc-400">{suggestion.rationale}</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    runSuggestion(suggestion);
+                  }}
+                  className="mt-3 self-start rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-500"
+                >
+                  run
+                </button>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
       <form
         className="flex flex-wrap items-end gap-3 rounded-xl border border-zinc-800 bg-zinc-900 p-4"
         onSubmit={(event) => {

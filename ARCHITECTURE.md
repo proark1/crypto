@@ -10,7 +10,7 @@ This document is the target design. Implementation status as of June 2026
 | Component (section) | Status |
 |---|---|
 | Core domain models, event bus, config (§4, §11) | **Done** — Decimal money, UTC timestamps, fail-safe defaults |
-| Market data: live CCXT feed, closed-candle tracking, backfill, validation (§4.1) | **Done** — per-coin 1m feeds; two-year default first-boot backfill (the §12 research window plus a year of walk-forward headroom; shallower stores are deepened on boot) primes the regime gate before trading starts while /health serves from the first second; in-process timeframe aggregation plus SQL calendar buckets (hour/day/week/month) for charting |
+| Market data: live CCXT feed, closed-candle tracking, backfill, validation (§4.1) | **Done** — per-coin 1m feeds; four-year default first-boot backfill (a full halving cycle, covering the §12 research window across bull, bear, and chop; shallower stores are deepened on boot) primes the regime gate before trading starts while /health serves from the first second; in-process timeframe aggregation plus SQL calendar buckets (hour/day/week/month) for charting |
 | Indicators: incremental EMA, RSI, ATR (§4.2) | **Done** — tested against reference values |
 | Strategies: trend-following EMA crossover (§4.2) | **Done** — EMA cross with ATR stops plus sweepable knobs: anti-chase entry-extension filter, breakeven lock, ATR trailing stop; the pluggable registry is the pattern, more families pending |
 | Backtester: runner, pessimistic fill simulator, golden test (§5) | **Done** — walk-forward splitting feeds the parameter sweeps (§12.5); account-level multi-symbol runner (one strategy per symbol, one shared book/risk manager, deterministic candle interleave) exercises exposure ceilings and balance contention no single-symbol backtest can show, with an account report (return, drawdown, turnover, exposure utilization, per-coin attribution) composable per walk-forward window |
@@ -537,6 +537,17 @@ system never changes trading rules by itself.**
 4. **Persist** — runs, scenarios, results, findings (section 12.4). Old
    runs are never rescored or overwritten; every run snapshots its full
    strategy config and code version.
+
+Runs are shaped either by hand or from **suggested evaluations**
+(`evaluation/suggestions.py`, served at `GET /evaluations/suggestions`):
+for every active coin the backend proposes exactly three ready-to-run
+shapes, fitted to how deep that coin's stored 1m history actually
+reaches — a full ~4-year cycle on 4h candles, a year on 1h, the latest
+quarter on 15m. The rungs are tuned to comparable sample sizes (~8.7k
+candles at full depth) so each suggestion carries real statistical
+weight; coins with shallower history get the window clamped to what
+exists, so a suggestion is always runnable with one click from the
+research screen.
 
 ### 12.2 Frozen scoring definitions
 

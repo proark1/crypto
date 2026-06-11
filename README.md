@@ -67,7 +67,7 @@ internally.
 | `TRADEBOT_EXCHANGE_ID` | no | `binance` (any CCXT id: `kraken`, `coinbase`, ...) |
 | `TRADEBOT_SYMBOLS` | no | `BTC/USDT` — comma-separated, e.g. `BTC/USDT,ETH/USDT` (all pairs share the quote currency; singular `TRADEBOT_SYMBOL` still works). **Seeds the coin list on first boot only** — afterwards add/remove coins from the dashboard and the database is the source of truth |
 | `TRADEBOT_PAPER_INITIAL_BALANCE_QUOTE` | no | `10000` |
-| `TRADEBOT_HISTORY_BACKFILL_DAYS` | no | `730` — 2 years of 1m history (free, public REST) fetched the first time a coin has no stored candles; existing databases are deepened to the horizon on the next boot. Expect the initial crawl to take ~30–60 min per coin-year and ~0.5 GB of Postgres per coin-year |
+| `TRADEBOT_HISTORY_BACKFILL_DAYS` | no | `1460` — a full ~4-year crypto cycle of 1m history (free, public REST) fetched the first time a coin has no stored candles; existing databases are deepened to the horizon on the next boot. Expect the initial crawl to take ~30–60 min per coin-year and ~0.5 GB of Postgres per coin-year |
 | `TRADEBOT_HEARTBEAT_URL` | recommended | a healthchecks.io ping URL; the monitor alerts when the bot (or its data feed) goes silent |
 | `TRADEBOT_HEARTBEAT_INTERVAL_SECONDS` | no | `60` |
 | `TRADEBOT_TELEGRAM_BOT_TOKEN` | for alerts | from @BotFather |

@@ -18,6 +18,7 @@ import type {
   DivergenceReportResponse,
   StatusResponse,
   StrategyVersionResponse,
+  SuggestedEvaluationResponse,
   SweepResponse,
   WalletResponse,
 } from "./types";
@@ -162,11 +163,17 @@ export function fetchEvaluation(runId: number): Promise<EvaluationRunResponse> {
 }
 
 export function startEvaluation(body: {
+  symbols?: string[];
   timeframes: string[];
   history_days: number;
   scenario_count: number;
 }): Promise<{ run_id: number; detail: string }> {
+  // Omitting symbols means the backend's default: every active coin.
   return request<{ run_id: number; detail: string }>("/evaluations", "POST", body);
+}
+
+export function fetchEvaluationSuggestions(): Promise<SuggestedEvaluationResponse[]> {
+  return request<SuggestedEvaluationResponse[]>("/evaluations/suggestions", "GET");
 }
 
 export function cancelEvaluation(runId: number): Promise<CommandResponse> {
