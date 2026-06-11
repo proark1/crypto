@@ -55,6 +55,12 @@ MIN_SWEEP_TRADES = 10
 """Candidates with fewer graded trades than this cannot be compared
 honestly; expectancy over a handful of trades is noise."""
 
+DEFAULT_SCENARIO_COUNT = 400
+"""Default scenarios per candidate per period, manual and automated alike.
+The strategies trade in only a few percent of scenarios, so the old
+default of 100 yielded 3-4 trades per candidate — every sweep ended
+"insufficient evidence" by construction."""
+
 STRATEGY_FAMILIES: Mapping[str, tuple[type[BaseModel], Callable[..., Strategy]]] = {
     "trend_following": (TrendFollowingConfig, TrendFollowingStrategy),
     "mean_reversion": (MeanReversionConfig, MeanReversionStrategy),
@@ -112,7 +118,7 @@ class SweepConfig(BaseModel):
     symbol: str
     timeframe: str = "1h"
     history_days: int = Field(default=180, gt=0)
-    scenario_count: int = Field(default=100, gt=0)
+    scenario_count: int = Field(default=DEFAULT_SCENARIO_COUNT, gt=0)
     """Scenarios per candidate per window side (training and validation)."""
 
     lookback_candles: int = Field(default=200, ge=60)
