@@ -70,6 +70,33 @@ def test_non_positive_heartbeat_interval_fails_at_load(monkeypatch: pytest.Monke
         AppConfig()
 
 
+def test_backfill_shallower_than_research_window_fails_at_load(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The improvement loop must never silently evaluate on a sliver."""
+    monkeypatch.setenv("TRADEBOT_HISTORY_BACKFILL_DAYS", "180")
+    monkeypatch.setenv("TRADEBOT_AUTO_IMPROVE_HISTORY_DAYS", "365")
+    with pytest.raises(ValidationError, match="must cover"):
+        AppConfig()
+
+
+def test_disabled_backfill_skips_research_window_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """0 means deep backfill is off; stored history is the operator's choice."""
+    monkeypatch.setenv("TRADEBOT_HISTORY_BACKFILL_DAYS", "0")
+    monkeypatch.setenv("TRADEBOT_AUTO_IMPROVE_HISTORY_DAYS", "365")
+    assert AppConfig().history_backfill_days == 0
+
+
+def test_disabled_auto_improve_skips_research_window_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TRADEBOT_AUTO_IMPROVE_ENABLED", "false")
+    monkeypatch.setenv("TRADEBOT_HISTORY_BACKFILL_DAYS", "180")
+    assert AppConfig().history_backfill_days == 180
+
+
 def test_config_is_frozen(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("TRADEBOT_MODE", raising=False)
     config = AppConfig()

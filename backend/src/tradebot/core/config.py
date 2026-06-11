@@ -249,6 +249,27 @@ class AppConfig(BaseSettings):
     """History window automated evaluations and sweeps learn from — a full
     year of the stored backfill, so the loop never judges on a sliver."""
 
+    @model_validator(mode="after")
+    def _backfill_must_cover_auto_improve_window(self) -> AppConfig:
+        """Reject a backfill horizon shallower than the research window.
+
+        The improvement loop trusts that ``auto_improve_history_days`` of
+        candles exist; a deep backfill that stops short would have it judge
+        on a sliver anyway — silently, which is the failure the window
+        exists to prevent. ``0`` is exempt: deep backfill is off and the
+        stored history (however it got there) is what the operator chose.
+        """
+        if self.auto_improve_enabled and 0 < self.history_backfill_days < (
+            self.auto_improve_history_days
+        ):
+            raise ValueError(
+                f"TRADEBOT_HISTORY_BACKFILL_DAYS ({self.history_backfill_days}) must "
+                f"cover TRADEBOT_AUTO_IMPROVE_HISTORY_DAYS "
+                f"({self.auto_improve_history_days}): the improvement loop would "
+                "evaluate on less history than configured"
+            )
+        return self
+
     auto_improve_timeframe: str = "1h"
     """Candle timeframe the automated sweeps evaluate (validated at boot)."""
 
