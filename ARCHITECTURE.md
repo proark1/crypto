@@ -542,10 +542,10 @@ Runs are shaped either by hand or from **suggested evaluations**
 (`evaluation/suggestions.py`, served at `GET /evaluations/suggestions`):
 for every active coin the backend proposes exactly three ready-to-run
 shapes, fitted to how deep that coin's stored 1m history actually
-reaches — a full ~4-year cycle on 4h candles, a year on 1h, the latest
-quarter on 15m. The rungs are tuned to comparable sample sizes (~8.7k
-candles at full depth) so each suggestion carries real statistical
-weight; coins with shallower history get the window clamped to what
+reaches — a full ~4-year cycle on 4h candles, the same full cycle on the
+1h trading timeframe (~35k candles, the ladder's biggest sample), and
+the latest quarter on 15m so the fine-grained read reflects current
+conditions. Coins with shallower history get the window clamped to what
 exists, so a suggestion is always runnable with one click from the
 research screen.
 
