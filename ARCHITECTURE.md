@@ -28,6 +28,8 @@ This document is the target design. Implementation status as of June 2026
 | News pipeline, regime gates, signal fusion (§5.2, §5.3) | **Partial** — BTC regime gate done (ADX trend/range + drawdown risk-off; family routing: trend entries in trends, mean-reversion entries in ranges; exits never gated; verdicts journaled as `gated` decisions); sentiment tighteners done (Fear & Greed extremes, BTC dominance surges, broad negative news flow — advisory, one-way, stale data contributes nothing); news pipeline done defensively (CryptoPanic polling + keyword classifier, negative-news coin flags, env-configured event windows); confirmation filters (order-flow/funding, P2 data) and automated calendar ingestion missing |
 | Breakout strategy family (§5.2, review item 9) | **Research-only** — Donchian-channel entries (close clears the prior N-candle ceiling), turtle-style channel exits, shared ATR stop convention and managed-stop knobs; registered for sweeps/evaluation so research can pit it against the incumbents on identical scenarios, but deliberately unrouted in production: which regime activates it (and at whose expense) is a human decision the sweep evidence should inform, and the worker refuses to promote it until that route exists |
 | Mean-reversion strategy family (§5.2 routing) | **Done** — RSI oversold-recovery entries, midline exits, same ATR stop convention as trend; optional trend-filter EMA (skip falling knives) as a sweepable knob; regime-routed per coin, both families' indicators always warm, exits pass from either family in any regime |
+| Momentum strategy family (§13) | **Research + competition** — MACD histogram-crossover entries (12/26/9 defaults, zero-line filter on by default), histogram-flip exits, shared ATR stop convention; built from the TA-Lib-verified incremental EMA; sweepable and evaluated like every family, traded solo by its competition account, unrouted in production until a human routes it |
+| Strategy competition: five paper bots, leaderboard, research comparison (§13) | **Done** — production regime router plus four solo-family challengers (trend, mean-reversion, breakout, momentum) trade the same coins, candles, and gates from isolated journal-backed paper accounts (bot-scoped fills/orders/decisions/risk rows, per-bot signal-id namespacing, full restart replay per account); GET /competition serves the equity-ranked leaderboard; POST /evaluations/compare grades the whole lineup on byte-identical scenario sets (one frozen window + seed, grouped runs) for the research screen's side-by-side table |
 | Observability: dead-man's switch, metrics, DB backups (§4.9, §7) | **Done** — heartbeat ping gated on feed freshness; /metrics (feed lag, equity, breakers, bus counters) behind the bearer token; live-vs-backtest divergence measurable per coin (the §10 paper-gate metric: live paper fills matched against a same-candle replay of the production strategy shape; zero is the one-code-path expectation, non-zero is documented gating or a parity bug); scheduled gzipped-JSONL backups to S3-compatible storage with exact-Decimal restore (production restore drill pending, see checklist) |
 | Live trading (§8 Phase 3) | **Missing** — blockers enumerated in LIVE_TRADING_CHECKLIST.md |
 
@@ -693,10 +695,104 @@ intervals and a Bonferroni-corrected superiority test
 *validated* (now meaning statistically validated), *overfit* ("wins only
 on the data it was tuned on"), *baseline best*, or *insufficient
 evidence* (including a real but statistically unproven edge). Evaluation
-runs grade the strategy shape production trades: the regime-routed family
-router, with the regime self-classified from each scenario's own candles
-(`evaluation/strategy.py` documents the divergence from the live
+runs grade a named competition lineup entry (§13) — by default the
+incumbent, i.e. the strategy shape production trades: the regime-routed
+family router, with the regime self-classified from each scenario's own
+candles (`evaluation/strategy.py` documents the divergence from the live
 reference-market detector, which scenarios must not read). Findings
 always only recommend. Sweep verdicts feed the automated improvement loop
 (§12.7): in paper mode a *validated* challenger is promoted automatically;
 anything touching live trading remains a human action.
+
+---
+
+## 13. Strategy competition (five bots, one winner)
+
+One question drives this section: **which strategy is actually best?**
+Backtests answer it on history; the competition answers it forward, with
+the same paper money, at the same time, under the same rules.
+
+### 13.1 The lineup
+
+Five competitors, fixed in code (`competition/lineup.py`) because the
+roster is an architecture decision — a stable lineup is what makes the
+leaderboard's history meaningful:
+
+| Bot id | Strategy |
+|---|---|
+| `production` | The incumbent: regime-routed trend + mean-reversion router (the bot's real shape) |
+| `trend_following` | EMA crossover with ATR stops, solo, always on |
+| `mean_reversion` | RSI oversold-recovery entries, midline exits, solo |
+| `breakout` | Donchian-channel entries, turtle-style channel exits, solo |
+| `momentum` | MACD histogram crossovers (zero-line filtered), solo |
+
+Every challenger trades its family's **active** (possibly auto-promoted)
+parameters, so the comparison is always against what the family trades
+today, not a stale snapshot.
+
+### 13.2 Fairness rules
+
+The only variable is the strategy. Everything else is identical:
+
+- **Same candles** — one market-data feed per symbol fans out to every
+  account's engine over the bus; the competition multiplies accounts,
+  never exchange connections or rate-limit spend.
+- **Same gates** — regime gate, sentiment tighteners, and news vetoes
+  apply to every account identically (§5.2).
+- **Same risk rules** — each account gets its own `RiskManager` over its
+  own portfolio (same `RiskConfig`), so breakers judge each account's own
+  equity; one bot's drawdown never mutes another's entries — or hides
+  behind them.
+- **Same starting balance** — every account seeds from
+  `TRADEBOT_PAPER_INITIAL_BALANCE_QUOTE`.
+
+### 13.3 Isolation and persistence
+
+Each account is real bookkeeping, not a toy counter: fills, orders, and
+decisions are journaled in the shared tables under a `bot_id` column
+(rows predating the competition default to `production` — they always
+belonged to the production bot), and each account persists its breaker
+state in its own `risk_state` row. Restarts replay every account from
+its own journal, restore its open orders, replay its downtime candles,
+and re-arm its protective stops — the same recovery path as production,
+account by account.
+
+Signal ids are namespaced per bot (`<bot_id>/<signal_id>`, applied by a
+strategy wrapper for entries/exits and by the engine for its synthesized
+kill/stop exits), because order ids derive from signal ids: without the
+prefix, two bots trading the same family on the same candle would mint
+the same order id and collide in the shared journal. Production ids stay
+unprefixed — its id streams predate the competition.
+
+Challengers are always autonomous (co-pilot approvals are the operator's
+bot's concern), never notify, and **never get routed into production by
+winning** — promotion of a family into the production router remains a
+human architecture decision informed by this evidence. Operator commands
+stay whole-bot: pause/resume/kill act on every account, and a coin
+cannot be removed while any account holds a position or order in it.
+`TRADEBOT_COMPETITION_ENABLED=false` falls back to the incumbent alone.
+
+### 13.4 The leaderboard
+
+`GET /competition` returns every account ranked by equity (marks: newest
+stored 1m closes, gathered once so no competitor is priced at a
+different moment): equity, return on initial balance, realized and
+unrealized PnL, open positions, entry/exit fill counts, and breaker
+state. The dashboard renders it as the strategy battle card. Unknown
+marks make an honest `null` equity that ranks last — never a guessed
+number.
+
+### 13.5 Research comparison (same question, graded scenarios)
+
+The live leaderboard needs weeks to mean anything; the research
+comparison answers the same question in minutes on history.
+`POST /evaluations/compare` starts one §12 evaluation run per lineup
+entry, sequentially (the single-flight rule protects the live candle
+loop), all sharing one frozen window end, one seed, and therefore
+**byte-identical scenario sets** — the runs differ only by strategy.
+Members share a `comparison_group` (the lead run's id) so
+`GET /evaluations/comparisons` can hand the research screen whole
+batches for a side-by-side table (expectancy, win rate, profit factor,
+per-regime breakdowns — every §12.3 metric, one column per strategy).
+Cancelling any member cancels the batch: half a comparison cannot answer
+the question the batch asked.
