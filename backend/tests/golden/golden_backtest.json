@@ -57,62 +57,62 @@
       "side": "buy"
     },
     {
-      "client_order_id": "ord-trend_following:BTC/USDT:2026-01-01T14:45:00+00:00",
-      "fee_quote": "2.490406408716",
-      "filled_at": "2026-01-01T14:45:00+00:00",
-      "price_quote": "105.601962565020",
+      "client_order_id": "stop-ord-trend_following:BTC/USDT:2026-01-01T14:18:00+00:00",
+      "fee_quote": "2.507387118272",
+      "filled_at": "2026-01-01T14:43:00+00:00",
+      "price_quote": "106.322004180944",
       "quantity_base": "23.582955735152",
       "side": "sell"
     },
     {
       "client_order_id": "ord-trend_following:BTC/USDT:2026-01-01T15:29:00+00:00",
-      "fee_quote": "2.531043259852",
+      "fee_quote": "2.535286312529",
       "filled_at": "2026-01-01T15:29:00+00:00",
       "price_quote": "107.065953203490",
-      "quantity_base": "23.640038538126",
+      "quantity_base": "23.679668808541",
       "side": "buy"
     },
     {
       "client_order_id": "ord-trend_following:BTC/USDT:2026-01-01T20:54:00+00:00",
-      "fee_quote": "3.039099603494",
+      "fee_quote": "3.044194364186",
       "filled_at": "2026-01-01T20:54:00+00:00",
       "price_quote": "128.557303262965",
-      "quantity_base": "23.640038538126",
+      "quantity_base": "23.679668808541",
       "side": "sell"
     },
     {
       "client_order_id": "ord-trend_following:BTC/USDT:2026-01-01T23:11:00+00:00",
-      "fee_quote": "2.656727620822",
+      "fee_quote": "2.661181371346",
       "filled_at": "2026-01-01T23:11:00+00:00",
       "price_quote": "121.400530090080",
-      "quantity_base": "21.883986987950",
+      "quantity_base": "21.920673405389",
       "side": "buy"
     },
     {
-      "client_order_id": "ord-trend_following:BTC/USDT:2026-01-01T23:35:00+00:00",
-      "fee_quote": "2.581750921580",
-      "filled_at": "2026-01-01T23:35:00+00:00",
-      "price_quote": "117.974431395940",
-      "quantity_base": "21.883986987950",
+      "client_order_id": "stop-ord-trend_following:BTC/USDT:2026-01-01T23:11:00+00:00",
+      "fee_quote": "2.610448524793",
+      "filled_at": "2026-01-01T23:34:00+00:00",
+      "price_quote": "119.086146511853",
+      "quantity_base": "21.920673405389",
       "side": "sell"
     },
     {
       "client_order_id": "ord-trend_following:BTC/USDT:2026-01-02T00:51:00+00:00",
-      "fee_quote": "2.636663799478",
+      "fee_quote": "2.647173251674",
       "filled_at": "2026-01-02T00:51:00+00:00",
       "price_quote": "117.934599460815",
-      "quantity_base": "22.356999655171",
+      "quantity_base": "22.446112199274",
       "side": "buy"
     }
   ],
-  "final_equity_quote": "10538.12303926877368404099132",
-  "realized_pnl_quote": "541.384505660175833731975695",
+  "final_equity_quote": "10580.12683980456182331912765",
+  "realized_pnl_quote": "583.401306042639879515415965",
   "report": {
     "buy_and_hold_return_fraction": "0.178802902451",
-    "max_drawdown_fraction": "0.019646904686",
+    "max_drawdown_fraction": "0.017386582663",
     "round_trips": 6,
-    "total_fees_quote": "33.645632550040",
-    "total_return_fraction": "0.053812303927",
+    "total_fees_quote": "33.715611878898",
+    "total_return_fraction": "0.058012683980",
     "winning_round_trips": 2
   }
 }

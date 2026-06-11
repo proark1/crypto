@@ -506,7 +506,37 @@ class Worker:
             restored += 1
         if restored:
             logger.info("restored %d open orders into their adapters", restored)
+        await self._reconcile_position_protection()
         return len(fills)
+
+    async def _reconcile_position_protection(self) -> None:
+        """Re-arm protective stops a crash may have separated from positions.
+
+        Normally the stop is journaled and restored like any other open
+        order; this covers the window where the entry fill was journaled
+        but the process died before the stop was placed (or its journal
+        write was lost). A position with no working SELL order gets its
+        stop rebuilt from the entry's persisted exit plan — and if even
+        that is missing, the gap is loud, never silent.
+        """
+        for symbol, position in self.portfolio.positions.items():
+            engine = self.engines.get(symbol)
+            if engine is None:
+                logger.warning(
+                    "open position in %s has no active engine; protection unverifiable", symbol
+                )
+                continue
+            if engine.has_resting_exit():
+                continue
+            entry = await self.order_store.latest_filled_entry_with_plan(symbol)
+            if entry is None:
+                logger.warning(
+                    "position in %s has no resting stop and no journaled exit plan; "
+                    "running unprotected until the strategy exits",
+                    symbol,
+                )
+                continue
+            await engine.arm_protective_stop(entry, position.quantity_base)
 
     async def run(self) -> None:
         """Start the bot (and the control API, if configured) until stopped."""

@@ -430,7 +430,10 @@ class TestOrderJournal:
 
         await engine.process_candle(make_candle(next_index, CLOSES[next_index]))
         assert [f.side for f in engine.fills] == [Side.BUY]
-        assert await order_store.fetch_open("BTC/USDT") == []  # filled, not restorable
+        # The entry's row closed out on its fill; the protective stop it
+        # armed is now the one restorable order.
+        (stop,) = await order_store.fetch_open("BTC/USDT")
+        assert stop.order.client_order_id.startswith("stop-")
 
     async def test_restart_restores_pending_order_which_then_fills(
         self, database: Database
@@ -453,7 +456,10 @@ class TestOrderJournal:
         await second_run.process_candle(make_candle(next_index, CLOSES[next_index]))
         assert [f.side for f in second_run.fills] == [Side.BUY]
         assert portfolio.position("BTC/USDT") is not None
-        assert await order_store.fetch_open("BTC/USDT") == []
+        # The restored entry armed its protective stop on filling, exactly
+        # as it would have without the restart in between.
+        (stop,) = await order_store.fetch_open("BTC/USDT")
+        assert stop.order.client_order_id.startswith("stop-")
 
     async def test_kill_journals_the_cancellation(self, database: Database) -> None:
         order_store = OrderStore(database)
@@ -520,6 +526,70 @@ class TestOrderJournal:
         (fill,) = second_run.fills
         assert fill.price_quote == Decimal("94")
         assert await order_store.fetch_open("BTC/USDT") == []
+
+
+class TestProtectiveStops:
+    """Entry fills arm a resting stop; closing the position always disarms it."""
+
+    async def test_entry_fill_arms_a_stop_sized_to_the_fill(self) -> None:
+        portfolio = Portfolio(INITIAL_BALANCE)
+        engine = make_engine(portfolio)
+        next_index = await drive_until_order_submitted(engine)
+        await engine.process_candle(make_candle(next_index, CLOSES[next_index]))
+
+        (entry_fill,) = engine.fills
+        (stop,) = engine.open_orders()
+        assert stop.order_type == OrderType.STOP_LIMIT
+        assert stop.side == Side.SELL
+        assert stop.quantity_base == entry_fill.quantity_base
+        assert stop.stop_price_quote is not None and stop.limit_price_quote is not None
+        assert stop.limit_price_quote < stop.stop_price_quote
+
+    async def test_stop_out_flattens_without_a_strategy_exit(self) -> None:
+        portfolio = Portfolio(INITIAL_BALANCE)
+        engine = make_engine(portfolio)
+        next_index = await drive_until_order_submitted(engine)
+        await engine.process_candle(make_candle(next_index, CLOSES[next_index]))
+        (stop,) = engine.open_orders()
+        assert stop.stop_price_quote is not None and stop.limit_price_quote is not None
+
+        # One candle whose low crosses the trigger while opening above the
+        # limit floor: the stop fills at its limit, no strategy involved.
+        crash_close = float(stop.stop_price_quote + Decimal("0.4"))
+        await engine.process_candle(make_candle(next_index + 1, crash_close))
+
+        assert portfolio.position("BTC/USDT") is None
+        stop_fill = engine.fills[-1]
+        assert stop_fill.client_order_id.startswith("stop-")
+        assert stop_fill.price_quote == stop.limit_price_quote
+        assert engine.open_orders() == ()  # nothing left armed once flat
+
+    async def test_position_close_never_double_sells(self) -> None:
+        """Stop and strategy exit both SELL the position; only one may fill."""
+        portfolio = Portfolio(INITIAL_BALANCE)
+        engine = make_engine(portfolio)
+        for index, close in enumerate(CLOSES):
+            await engine.process_candle(make_candle(index, close))
+
+        sells = [fill for fill in engine.fills if fill.side == Side.SELL]
+        assert len(sells) == 1
+        assert portfolio.position("BTC/USDT") is None
+        assert engine.open_orders() == ()
+
+    async def test_kill_disarms_the_stop_before_flattening(self) -> None:
+        portfolio = Portfolio(INITIAL_BALANCE)
+        engine = make_engine(portfolio)
+        next_index = await drive_until_order_submitted(engine)
+        await engine.process_candle(make_candle(next_index, CLOSES[next_index]))
+        assert engine.open_orders() != ()  # the stop is armed
+
+        await engine.kill()
+        # Only the kill exit remains; with the stop gone it cannot double-sell.
+        (exit_order,) = engine.open_orders()
+        assert exit_order.order_type == OrderType.MARKET
+        await engine.process_candle(make_candle(next_index + 1, CLOSES[next_index + 1]))
+        assert portfolio.position("BTC/USDT") is None
+        assert engine.open_orders() == ()
 
 
 class TestParityWithBacktest:

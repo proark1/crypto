@@ -11,6 +11,7 @@ from tradebot.core.models import (
     Fill,
     Order,
     OrderType,
+    ProtectiveExitPlan,
     Side,
 )
 from tradebot.persistence import (
@@ -295,6 +296,46 @@ class TestOrderStore:
         await FillStore(database).append(make_fill("ord-1"))  # status still "open"
 
         assert await store.fetch_open() == []
+
+    async def test_protective_exit_plan_round_trips(self, database: Database) -> None:
+        store = OrderStore(database)
+        planned = make_order().model_copy(
+            update={
+                "protective_exit": ProtectiveExitPlan(
+                    stop_price_quote=Decimal("95.000000000001"),
+                    limit_price_quote=Decimal("94.525"),
+                )
+            }
+        )
+        await store.record_submitted(planned)
+
+        (loaded,) = await store.fetch_open()
+        assert loaded.order == planned  # plan included, Decimal-exact
+
+    async def test_latest_filled_entry_with_plan_finds_the_recovery_source(
+        self, database: Database
+    ) -> None:
+        store = OrderStore(database)
+        plan = ProtectiveExitPlan(stop_price_quote=Decimal("95"), limit_price_quote=Decimal("94"))
+
+        def planned_entry(order_id: str, minute: int) -> Order:
+            return make_order(order_id, minute=minute).model_copy(
+                update={"side": Side.BUY, "protective_exit": plan}
+            )
+
+        await store.record_submitted(planned_entry("ord-old", 0))
+        await store.record_submitted(planned_entry("ord-new", 1))
+        await store.record_submitted(planned_entry("ord-unfilled", 2))
+        planless = make_order("ord-planless", minute=3).model_copy(update={"side": Side.BUY})
+        await store.record_submitted(planless)
+        await store.mark_filled("ord-old", BASE_TIME + timedelta(minutes=4))
+        await store.mark_filled("ord-new", BASE_TIME + timedelta(minutes=5))
+        await store.mark_filled("ord-planless", BASE_TIME + timedelta(minutes=6))
+
+        entry = await store.latest_filled_entry_with_plan("BTC/USDT")
+        assert entry is not None
+        assert entry.client_order_id == "ord-new"  # newest filled, plan-bearing
+        assert await store.latest_filled_entry_with_plan("ETH/USDT") is None
 
     async def test_symbol_filter_and_oldest_first_order(self, database: Database) -> None:
         store = OrderStore(database)

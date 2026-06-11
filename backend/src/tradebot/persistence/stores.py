@@ -17,7 +17,15 @@ from sqlalchemy import Numeric, func, select
 from sqlalchemy.dialects.postgresql import ARRAY, aggregate_order_by
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from tradebot.core.models import Candle, CandleInterval, Decision, Fill, Order, OrderStatus
+from tradebot.core.models import (
+    Candle,
+    CandleInterval,
+    Decision,
+    Fill,
+    Order,
+    OrderStatus,
+    Side,
+)
 from tradebot.persistence.database import (
     Database,
     candles_table,
@@ -285,6 +293,15 @@ class FillStore:
         return [Fill.model_validate(dict(row)) for row in rows]
 
 
+def _order_from_row(row: dict[str, Any]) -> Order:
+    """Rebuild an ``Order`` from its row, folding the flattened exit plan."""
+    stop = row.pop("protective_stop_price_quote")
+    limit = row.pop("protective_limit_price_quote")
+    if stop is not None:
+        row["protective_exit"] = {"stop_price_quote": stop, "limit_price_quote": limit}
+    return Order.model_validate(row)
+
+
 class OpenOrder(BaseModel):
     """One restorable order: the intent plus its stop-trigger latch."""
 
@@ -316,7 +333,10 @@ class OrderStore:
         that ever filled is kept out of restoration by :meth:`fetch_open`'s
         fill-journal guard, not by refusing the write here.
         """
-        row = order.model_dump()
+        row = order.model_dump(exclude={"protective_exit"})
+        plan = order.protective_exit
+        row["protective_stop_price_quote"] = None if plan is None else plan.stop_price_quote
+        row["protective_limit_price_quote"] = None if plan is None else plan.limit_price_quote
         row["status"] = OrderStatus.OPEN.value
         row["triggered"] = False
         row["status_at"] = order.created_at
@@ -387,9 +407,30 @@ class OrderStore:
         async with self._database.engine.connect() as connection:
             rows = (await connection.execute(statement)).mappings().all()
         return [
-            OpenOrder(order=Order.model_validate(dict(row)), triggered=row["triggered"])
-            for row in rows
+            OpenOrder(order=_order_from_row(dict(row)), triggered=row["triggered"]) for row in rows
         ]
+
+    async def latest_filled_entry_with_plan(self, symbol: str) -> Order | None:
+        """Return the newest filled entry that planned a protective exit, if any.
+
+        The recovery source for an unprotected position: if a crash landed
+        between the entry fill and the stop placement, the plan persisted
+        with this row is what the worker re-arms the stop from.
+        """
+        statement = (
+            select(orders_table)
+            .where(
+                orders_table.c.symbol == symbol,
+                orders_table.c.side == Side.BUY.value,
+                orders_table.c.status == OrderStatus.FILLED.value,
+                orders_table.c.protective_stop_price_quote.is_not(None),
+            )
+            .order_by(orders_table.c.status_at.desc(), orders_table.c.created_at.desc())
+            .limit(1)
+        )
+        async with self._database.engine.connect() as connection:
+            row = (await connection.execute(statement)).mappings().first()
+        return None if row is None else _order_from_row(dict(row))
 
 
 class DecisionStore:

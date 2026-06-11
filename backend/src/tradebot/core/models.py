@@ -153,6 +153,27 @@ class Signal(BaseModel):
     created_at: UtcDatetime = Field(default_factory=utc_now)
 
 
+class ProtectiveExitPlan(BaseModel):
+    """How the position opened by an entry order will be protected.
+
+    Deliberately separate from ``Signal.stop_price_quote`` (the *risk
+    invalidation* level used for sizing and evaluation grading): this is the
+    *exchange order* — a stop-limit whose trigger is the invalidation level
+    and whose limit price sits below it by a configured offset, bounding how
+    far a fast market can fill past the stop. Keeping the three meanings of
+    "stop" (invalidation, resting exchange order, evaluation reference) in
+    distinct places stops them drifting apart silently.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    stop_price_quote: PositiveAmount
+    """Trigger level — the signal's risk-invalidation price."""
+
+    limit_price_quote: PositiveAmount
+    """Limit floor of the stop-limit order, below the trigger."""
+
+
 class Order(BaseModel):
     """A risk-approved instruction for the execution engine.
 
@@ -161,6 +182,11 @@ class Order(BaseModel):
     and gate decisions that produced it. ``client_order_id`` is deterministic
     per intent at the call site, making resubmission after a disconnect
     idempotent.
+
+    ``protective_exit`` rides on entry orders only: when the entry fills, the
+    engine arms the planned stop-limit through the risk manager. It persists
+    with the order so a restart between submission and fill (or between fill
+    and stop placement) can still protect the position.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -173,6 +199,7 @@ class Order(BaseModel):
     quantity_base: PositiveAmount
     limit_price_quote: PositiveAmount | None = None
     stop_price_quote: PositiveAmount | None = None
+    protective_exit: ProtectiveExitPlan | None = None
     created_at: UtcDatetime = Field(default_factory=utc_now)
 
 

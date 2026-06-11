@@ -70,6 +70,8 @@ orders_table = Table(
     Column("quantity_base", Numeric, nullable=False),
     Column("limit_price_quote", Numeric, nullable=True),
     Column("stop_price_quote", Numeric, nullable=True),
+    Column("protective_stop_price_quote", Numeric, nullable=True),
+    Column("protective_limit_price_quote", Numeric, nullable=True),
     Column("created_at", DateTime(timezone=True), nullable=False),
     Column("status", Text, nullable=False),
     Column("triggered", Boolean, nullable=False),
@@ -82,7 +84,9 @@ Keyed by ``client_order_id``: ids are deterministic per intent, so the same
 intent resubmitted after a cancel reopens its row rather than duplicating it.
 ``triggered`` latches a stop-limit whose stop has crossed (the order behaves
 as a plain limit from then on, exactly like a real exchange), so a restart
-cannot un-trigger a stop."""
+cannot un-trigger a stop. The ``protective_*`` pair flattens an entry's
+``ProtectiveExitPlan`` so a position can be re-protected from the journal
+even if the crash landed between the entry fill and the stop placement."""
 
 decisions_table = Table(
     "decisions",

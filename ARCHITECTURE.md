@@ -15,7 +15,7 @@ This document is the target design. Implementation status as of June 2026
 | Strategies: trend-following EMA crossover (§4.2) | **Done** — EMA cross with ATR stops plus an optional anti-chase entry-extension filter as a sweepable knob; the pluggable registry is the pattern, more families pending |
 | Backtester: runner, pessimistic fill simulator, golden test (§5) | **Done** — walk-forward splitting feeds the parameter sweeps (§12.5) |
 | Risk manager: sizing, per-trade limits, circuit breakers (§4.3) | **Done** — daily-loss + drawdown trips (human reset), loss-streak cooldown, daily entry cap, account-wide exposure cap (open positions treated as one fully correlated block; per-coin caps alone understate crypto risk) |
-| Execution: simulated adapter (backtest + paper) (§4.4) | **Done for paper** — live adapter, exchange-native stops, partial-fill handling are Phase 3 (see LIVE_TRADING_CHECKLIST.md) |
+| Execution: simulated adapter (backtest + paper) (§4.4) | **Done for paper** — protective stop lifecycle enforced in all modes (armed on entry fill from the order's exit plan, cancelled before any exit, boot reconciliation re-arms after crashes); live adapter, exchange-native stop placement, partial-fill handling are Phase 3 (see LIVE_TRADING_CHECKLIST.md) |
 | Portfolio + persistence: positions, PnL, Postgres journal (§4.5) | **Done** — journal-replay restart recovery (fills rebuild positions; the order journal re-arms submitted-but-unfilled orders, stop-trigger latches included); nightly backups missing |
 | Trading engine + worker (§4.2, §7.1) | **Done** — single symbol, paper mode only by hard guard |
 | Control API: status, pause/resume, kill, data endpoints (§6.4) | **Done** — bearer auth, public /health, CORS; SSE/WS push missing (dashboard polls) |
@@ -144,6 +144,14 @@ operational pain with zero benefit.
   The bot manages (trails, replaces) these resting orders rather than watching prices
   and reacting — bot-side stop logic is the fallback only where native stops are
   unavailable.
+  The lifecycle is mode-independent: entry orders carry a `ProtectiveExitPlan`
+  (trigger = the signal's invalidation level the position was sized against, so
+  enforced risk equals sized risk; limit floor a configured offset below the
+  trigger). When the entry fills, the engine arms the planned stop-limit; a
+  strategy exit or the kill switch cancels it before selling (never two SELLs
+  working one position); startup reconciliation re-arms any stop the journal
+  shows missing. In backtest and paper the same resting order lives in the fill
+  simulator, so gap-through risk shows up in research results too.
 
 ### 4.5 Portfolio / State Manager
 - Single source of truth for positions, balances, open orders, realized/unrealized PnL.

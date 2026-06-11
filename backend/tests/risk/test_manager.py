@@ -1,6 +1,8 @@
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
+import pytest
+
 from tradebot.core.models import Candle, CandleInterval, Fill, OrderType, Side, Signal
 from tradebot.portfolio import Portfolio
 from tradebot.risk import BreakerConfig, RiskConfig, RiskManager
@@ -362,3 +364,58 @@ class TestExits:
     def test_exit_without_position_is_dropped(self) -> None:
         manager, _ = make_manager()
         assert manager.evaluate(make_signal(Side.SELL, stop="100"), Decimal("100")) is None
+
+
+class TestProtectiveExitPlanning:
+    """The exchange-stop plan is derived from, not equal to, the sizing stop."""
+
+    def test_entry_orders_carry_a_plan_anchored_at_the_invalidation_level(self) -> None:
+        manager, _ = make_manager()
+        order = manager.evaluate(make_signal(Side.BUY, stop="95"), Decimal("100"))
+        assert order is not None
+        assert order.protective_exit is not None
+        # Enforced risk equals sized risk: the trigger is the sizing stop.
+        assert order.protective_exit.stop_price_quote == Decimal("95")
+        assert order.protective_exit.limit_price_quote < Decimal("95")
+
+    def test_exit_orders_carry_no_plan(self) -> None:
+        manager, portfolio = make_manager()
+        open_position(portfolio, "100", "2")
+        order = manager.evaluate(make_signal(Side.SELL, stop="95"), Decimal("100"))
+        assert order is not None
+        assert order.protective_exit is None
+
+    def test_limit_floor_sits_below_the_trigger_for_any_stop_property(self) -> None:
+        """The stop-limit must always be marketable when its trigger crosses."""
+        manager, _ = make_manager(balance="1000000")
+        for stop in ("0.00000001", "0.49", "95", "12345.678901", "99999"):
+            order = manager.evaluate(
+                make_signal(Side.BUY, stop=stop), Decimal(stop) * Decimal("1.05")
+            )
+            if order is None:
+                continue
+            plan = order.protective_exit
+            assert plan is not None
+            assert Decimal(0) < plan.limit_price_quote < plan.stop_price_quote
+
+    def test_protective_exit_order_is_a_sized_stop_limit_sell(self) -> None:
+        manager, _ = make_manager()
+        entry = manager.evaluate(make_signal(Side.BUY, stop="95"), Decimal("100"))
+        assert entry is not None
+
+        stop_order = manager.protective_exit_order(entry, Decimal("1.5"), SIGNAL_TIME)
+        assert stop_order.order_type == OrderType.STOP_LIMIT
+        assert stop_order.side == Side.SELL
+        assert stop_order.quantity_base == Decimal("1.5")
+        assert stop_order.stop_price_quote == Decimal("95")
+        assert stop_order.client_order_id == f"stop-{entry.client_order_id}"
+        assert stop_order.signal_id == entry.signal_id  # lineage carried through
+
+    def test_protective_exit_order_without_a_plan_is_loud(self) -> None:
+        manager, portfolio = make_manager()
+        open_position(portfolio, "100", "2")
+        exit_order = manager.evaluate(make_signal(Side.SELL, stop="95"), Decimal("100"))
+        assert exit_order is not None
+
+        with pytest.raises(ValueError, match="no protective exit plan"):
+            manager.protective_exit_order(exit_order, Decimal("1"), SIGNAL_TIME)

@@ -15,6 +15,7 @@ proved out, because it is the same code):
 from __future__ import annotations
 
 import logging
+from decimal import Decimal
 
 from tradebot.authorization import ProposalQueue
 from tradebot.core.events import CandleClosed, EventBus, FillRecorded, ProposalCreated
@@ -26,6 +27,7 @@ from tradebot.core.models import (
     DecisionOutcome,
     Fill,
     Order,
+    OrderType,
     Proposal,
     ProposalStatus,
     Side,
@@ -86,6 +88,10 @@ class TradingEngine:
         # Stop-trigger latches already journaled, so each transition is
         # written once; restored triggered orders seed this set.
         self._journaled_triggered: set[str] = set()
+        # Entry orders awaiting their fill, keyed by client_order_id: the
+        # fill handler arms each one's protective exit plan. Restored
+        # pending entries are re-registered by restore_order.
+        self._submitted_entries: dict[str, Order] = {}
         self._autonomy_mode = autonomy_mode
         self._proposal_queue = proposal_queue
         self._entry_gates = entry_gates
@@ -174,6 +180,7 @@ class TradingEngine:
                     await self._order_store.mark_cancelled(order.client_order_id, utc_now())
                 await self._adapter.cancel(order.client_order_id)
                 self._journaled_triggered.discard(order.client_order_id)
+                self._submitted_entries.pop(order.client_order_id, None)
                 logger.warning("kill switch cancelled open order %s", order.client_order_id)
             except Exception:
                 logger.exception("kill switch failed to cancel order %s", order.client_order_id)
@@ -316,6 +323,11 @@ class TradingEngine:
             order.symbol,
             order.signal_id,
         )
+        if order.side == Side.SELL:
+            # The strategy exit replaces the protective stop: both SELL the
+            # full position, so leaving the stop armed while the exit is in
+            # flight could fill twice and go short.
+            await self._cancel_protective_stops()
         await self._submit(order)
         await self._record_decision(signal, DecisionOutcome.SUBMITTED)
 
@@ -330,6 +342,49 @@ class TradingEngine:
         if self._order_store is not None:
             await self._order_store.record_submitted(order)
         await self._adapter.submit(order)
+        if order.protective_exit is not None:
+            self._submitted_entries[order.client_order_id] = order
+
+    def _resting_protective_stops(self) -> tuple[Order, ...]:
+        """Return the resting stop-limit exits (at most one with single positions)."""
+        return tuple(
+            order
+            for order in self._adapter.open_orders()
+            if order.order_type == OrderType.STOP_LIMIT and order.side == Side.SELL
+        )
+
+    async def _cancel_protective_stops(self) -> None:
+        """Cancel resting protective stops, journal-first like the kill path."""
+        for stop in self._resting_protective_stops():
+            if self._order_store is not None:
+                await self._order_store.mark_cancelled(stop.client_order_id, utc_now())
+            await self._adapter.cancel(stop.client_order_id)
+            self._journaled_triggered.discard(stop.client_order_id)
+            logger.info("protective stop %s cancelled ahead of exit", stop.client_order_id)
+
+    def has_resting_exit(self) -> bool:
+        """Whether any SELL order (protective stop or exit) is working.
+
+        Restart reconciliation re-protects a position only when nothing is:
+        re-arming a stop next to a restored exit order would double-sell.
+        """
+        return any(order.side == Side.SELL for order in self._adapter.open_orders())
+
+    async def arm_protective_stop(self, entry: Order, quantity_base: Decimal) -> None:
+        """Re-protect an open position from its entry's persisted plan.
+
+        Recovery path for the crash window between an entry fill and its
+        stop placement; the normal path arms the stop inside the fill
+        handler. Idempotent via the stop's deterministic client_order_id.
+        """
+        stop_order = self._risk_manager.protective_exit_order(entry, quantity_base, utc_now())
+        await self._submit(stop_order)
+        logger.warning(
+            "re-armed protective stop %s for %s at %s",
+            stop_order.client_order_id,
+            stop_order.symbol,
+            stop_order.stop_price_quote,
+        )
 
     def restore_order(self, open_order: OpenOrder) -> None:
         """Re-arm one persisted open order after a restart (recovery only).
@@ -341,6 +396,9 @@ class TradingEngine:
         self._adapter.restore_order(open_order.order, triggered=open_order.triggered)
         if open_order.triggered:
             self._journaled_triggered.add(open_order.order.client_order_id)
+        if open_order.order.protective_exit is not None:
+            # A restored pending entry must still arm its stop when it fills.
+            self._submitted_entries[open_order.order.client_order_id] = open_order.order
         logger.info(
             "restored open order %s: %s %s %s",
             open_order.order.client_order_id,
@@ -483,6 +541,23 @@ class TradingEngine:
             # restoration — the fill record outranks the order row.
             await self._order_store.mark_filled(fill.client_order_id, fill.filled_at)
         self._journaled_triggered.discard(fill.client_order_id)
+        entry = self._submitted_entries.pop(fill.client_order_id, None)
+        if entry is not None:
+            # The position exists from this fill on; its protection goes to
+            # the venue immediately (CLAUDE.md invariant 5) — sized to the
+            # filled quantity, active from the next candle. A crash from
+            # here is covered by the worker's boot reconciliation.
+            stop_order = self._risk_manager.protective_exit_order(
+                entry, fill.quantity_base, fill.filled_at
+            )
+            await self._submit(stop_order)
+            logger.info(
+                "protective stop %s armed for %s: trigger %s, limit %s",
+                stop_order.client_order_id,
+                fill.symbol,
+                stop_order.stop_price_quote,
+                stop_order.limit_price_quote,
+            )
         self._portfolio.apply_fill(fill)
         self._risk_manager.on_fill(fill)
         self._fills.append(fill)
