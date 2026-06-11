@@ -490,3 +490,65 @@ class TestVenueFilters:
         filters = SymbolFilters(price_tick_quote=Decimal("0.01"))
         assert filters.align_price_down(Decimal("0.004")) == Decimal("0.01")
         assert filters.align_price_down(Decimal("0.05")) == Decimal("0.05")
+
+
+class TestCommittedEntryBalance:
+    """Submitted-but-unfilled entries claim exposure and balance immediately."""
+
+    def test_same_candle_entries_cannot_both_take_the_full_budget(self) -> None:
+        # Risk sizing large enough that the position cap binds: the first
+        # entry consumes the entire account exposure budget.
+        manager, _ = make_manager(risk_fraction="0.05", max_total_exposure_fraction="0.25")
+        first = manager.evaluate(make_signal(Side.BUY, stop="95"), Decimal("100"))
+        assert first is not None  # took the whole exposure budget
+
+        second = manager.evaluate(
+            make_signal(Side.BUY, stop="9.5", symbol="ETH/USDT"), Decimal("10")
+        )
+        assert second is None  # the committed (unfilled) entry already holds it
+
+    def test_fill_moves_the_claim_from_order_to_position(self) -> None:
+        manager, portfolio = make_manager(risk_fraction="0.05", max_total_exposure_fraction="0.25")
+        first = manager.evaluate(make_signal(Side.BUY, stop="95"), Decimal("100"))
+        assert first is not None
+        fill = Fill(
+            client_order_id=first.client_order_id,
+            symbol="BTC/USDT",
+            side=Side.BUY,
+            price_quote=Decimal("100"),
+            quantity_base=first.quantity_base,
+            fee_quote=Decimal("0"),
+            filled_at=SIGNAL_TIME,
+        )
+        portfolio.apply_fill(fill)
+        manager.on_fill(fill)
+        manager.on_candle(make_candle("100"))
+        # Still blocked — but by the position now, not a double count.
+        second = manager.evaluate(
+            make_signal(Side.BUY, stop="9.5", symbol="ETH/USDT"), Decimal("10")
+        )
+        assert second is None
+
+    def test_cancellation_releases_the_claim(self) -> None:
+        manager, _ = make_manager(risk_fraction="0.05", max_total_exposure_fraction="0.25")
+        first = manager.evaluate(make_signal(Side.BUY, stop="95"), Decimal("100"))
+        assert first is not None
+        manager.on_order_cancelled(first.client_order_id)
+
+        second = manager.evaluate(
+            make_signal(Side.BUY, stop="9.5", symbol="ETH/USDT"), Decimal("10")
+        )
+        assert second is not None  # the budget is free again
+
+    def test_spendable_balance_subtracts_committed_entries(self) -> None:
+        # Generous caps: only the cash constraint binds.
+        manager, _ = make_manager(
+            risk_fraction="1", max_position_fraction="1", max_total_exposure_fraction="2"
+        )
+        first = manager.evaluate(make_signal(Side.BUY, stop="50"), Decimal("100"))
+        assert first is not None  # spent (almost) the whole balance
+        second = manager.evaluate(make_signal(Side.BUY, stop="5", symbol="ETH/USDT"), Decimal("10"))
+        # Only the uncommitted sliver of cash remains spendable: ~50 quote
+        # of 10000, the rest already claimed by the unfilled first entry.
+        assert second is not None
+        assert second.quantity_base * Decimal("10") <= Decimal("50")

@@ -42,6 +42,8 @@ from tradebot.execution import FillSimulatorConfig
 from tradebot.marketdata import aggregate_candles
 from tradebot.persistence import CandleStore, EvaluationStore
 from tradebot.strategies import (
+    BreakoutConfig,
+    BreakoutStrategy,
     MeanReversionConfig,
     MeanReversionStrategy,
     Strategy,
@@ -64,10 +66,14 @@ default of 100 yielded 3-4 trades per candidate — every sweep ended
 STRATEGY_FAMILIES: Mapping[str, tuple[type[BaseModel], Callable[..., Strategy]]] = {
     "trend_following": (TrendFollowingConfig, TrendFollowingStrategy),
     "mean_reversion": (MeanReversionConfig, MeanReversionStrategy),
+    "breakout": (BreakoutConfig, BreakoutStrategy),
 }
 """Sweepable families: name -> (config model, strategy constructor). A
 candidate names its family, so one sweep can pit families against each
-other on identical scenarios."""
+other on identical scenarios. ``breakout`` is research-only for now:
+sweeps and evaluation can grade it, but production routing (which regime
+activates it, at whose expense) is a pending human decision — the worker
+refuses to promote it until then."""
 
 
 def validate_family_params(family: str, params: Mapping[str, Any]) -> None:

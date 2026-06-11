@@ -336,3 +336,59 @@ class TestOrderManagement:
         await adapter.process_candle(candle)
 
         assert collector.fills[0].filled_at == candle.close_time
+
+
+class TestExecutionFidelity:
+    """Opt-in realism: partial fills, volume impact, latency. Defaults off."""
+
+    async def test_volume_cap_splits_a_market_order_across_candles(self) -> None:
+        adapter, collector = make_adapter(
+            FillSimulatorConfig(
+                maker_fee_bps=Decimal(0),
+                taker_fee_bps=Decimal(0),
+                market_slippage_bps=Decimal(0),
+                max_volume_fraction=Decimal("0.4"),
+            )
+        )
+        await adapter.submit(make_order(quantity="6"))  # candle volume is 10
+        await adapter.process_candle(make_candle())
+        await adapter.process_candle(make_candle(minutes_after_base=1, open_quote="101"))
+
+        assert [f.quantity_base for f in collector.fills] == [Decimal("4"), Decimal("2")]
+        assert [f.price_quote for f in collector.fills] == [Decimal("100"), Decimal("101")]
+        assert adapter.open_orders() == ()  # done after the remainder
+
+    async def test_zero_volume_candle_fills_nothing(self) -> None:
+        adapter, collector = make_adapter(FillSimulatorConfig(max_volume_fraction=Decimal("0.5")))
+        await adapter.submit(make_order())
+        dead = make_candle().model_copy(update={"volume_base": Decimal(0)})
+        await adapter.process_candle(dead)
+
+        assert collector.fills == []  # an outage candle trades nothing
+        assert len(adapter.open_orders()) == 1  # the order waits, not vanishes
+
+    async def test_volume_impact_scales_slippage_with_consumed_share(self) -> None:
+        adapter, collector = make_adapter(
+            FillSimulatorConfig(
+                maker_fee_bps=Decimal(0),
+                taker_fee_bps=Decimal(0),
+                market_slippage_bps=Decimal(0),
+                volume_impact_bps=Decimal(100),  # 1% per whole candle consumed
+            )
+        )
+        await adapter.submit(make_order(quantity="5"))  # half the 10 volume
+        await adapter.process_candle(make_candle())
+
+        (fill,) = collector.fills
+        assert fill.price_quote == Decimal("100.5")  # 100 x (1 + 0.01 x 0.5)
+
+    async def test_latency_delays_activation_by_n_candles(self) -> None:
+        adapter, collector = make_adapter(FillSimulatorConfig(submit_latency_candles=2))
+        await adapter.submit(make_order())
+        await adapter.process_candle(make_candle())
+        await adapter.process_candle(make_candle(minutes_after_base=1))
+        assert collector.fills == []  # two candles of latency pass first
+
+        await adapter.process_candle(make_candle(minutes_after_base=2, open_quote="103"))
+        (fill,) = collector.fills
+        assert fill.filled_at == BASE_TIME + timedelta(minutes=2)

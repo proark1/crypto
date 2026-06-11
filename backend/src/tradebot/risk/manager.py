@@ -86,10 +86,9 @@ class RiskManager:
     Venue rules (lot step, minimum quantity/notional, price tick) are
     applied here, at order construction — the one gate every order passes
     (CLAUDE.md invariant 4) — from the per-symbol filters the worker fills
-    out of the exchange catalog. One known extension arrives with live
-    trading and is deliberately not faked: balance committed to resting
-    orders will be subtracted from spendable once exchange reconciliation
-    exists.
+    out of the exchange catalog. Notional committed to submitted-but-
+    unfilled entries counts against exposure and spendable balance, so two
+    same-candle entries can never both claim the same headroom.
     """
 
     def __init__(
@@ -113,6 +112,10 @@ class RiskManager:
         self._breakers = CircuitBreakers(config.breakers)
         self._observed_realized_pnl: dict[str, Decimal] = {}
         self._open_round_trip_pnl: dict[str, Decimal] = {}
+        # Notional committed to submitted-but-unfilled entries, keyed by
+        # client_order_id: counted against exposure and spendable balance
+        # so two same-candle entries cannot both claim the same headroom.
+        self._committed_entries_quote: dict[str, Decimal] = {}
         self._last_price_quote: dict[str, Decimal] = {}
 
     @property
@@ -160,8 +163,15 @@ class RiskManager:
             marks[symbol] = price
         return marks
 
+    def on_order_cancelled(self, client_order_id: str) -> None:
+        """Release the committed notional of a cancelled entry (kill switch)."""
+        self._committed_entries_quote.pop(client_order_id, None)
+
     def on_fill(self, fill: Fill) -> None:
         """Feed one applied fill to the loss-streak tracker.
+
+        A buy fill also releases its entry's committed notional: from the
+        fill on, the exposure lives in the position, not the order.
 
         Sells realize PnL, but one exit order can fill in several parts — a
         round trip is only complete (and only counts once toward the loss
@@ -169,6 +179,7 @@ class RiskManager:
         losing exit can never be miscounted as a streak of losses.
         """
         if fill.side != Side.SELL:
+            self._committed_entries_quote.pop(fill.client_order_id, None)
             return
         realized = self._portfolio.realized_pnl_quote(fill.symbol)
         delta = realized - self._observed_realized_pnl.get(fill.symbol, Decimal(0))
@@ -249,7 +260,7 @@ class RiskManager:
                 for symbol, position in self._portfolio.positions.items()
             ),
             Decimal(0),
-        )
+        ) + sum(self._committed_entries_quote.values(), Decimal(0))
         exposure_headroom_quote = (
             equity * self._config.max_total_exposure_fraction - open_notional_quote
         )
@@ -263,7 +274,16 @@ class RiskManager:
             return None
         quantity = min(quantity, exposure_headroom_quote / current_price_quote)
 
-        spendable = self._portfolio.quote_balance * (1 - self._config.fee_buffer_fraction)
+        committed = sum(self._committed_entries_quote.values(), Decimal(0))
+        spendable = (self._portfolio.quote_balance - committed) * (
+            1 - self._config.fee_buffer_fraction
+        )
+        if spendable <= 0:
+            logger.warning(
+                "entry vetoed for %s: balance fully committed to unfilled entries",
+                signal.symbol,
+            )
+            return None
         quantity = min(quantity, spendable / current_price_quote)
 
         quantity = quantity.quantize(ACCOUNTING_RESOLUTION, rounding=ROUND_DOWN)
@@ -280,6 +300,10 @@ class RiskManager:
                 return None
         if quantity <= 0:
             return None
+        # Commit the notional the moment the order exists: the engine
+        # always submits an approved order, and a same-candle entry on
+        # another coin must see this one's claim on the account.
+        self._committed_entries_quote[f"ord-{signal.signal_id}"] = quantity * current_price_quote
         return Order(
             client_order_id=f"ord-{signal.signal_id}",
             signal_id=signal.signal_id,

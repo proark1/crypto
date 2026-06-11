@@ -9,6 +9,7 @@ import httpx
 import pytest
 
 from tradebot.api import create_app, create_health_only_app
+from tradebot.backtest.parity import DivergenceReport, compare_fills
 from tradebot.core.config import AppConfig, TradingMode
 from tradebot.core.metrics import MetricsCollector
 from tradebot.core.models import (
@@ -72,6 +73,7 @@ class StubBot:
             symbol: self._build_engine(symbol) for symbol in self.config.symbol_list()
         }
         self.engine = self.engines[self.config.symbol_list()[0]]
+        self.risk_state_persists = 0
         self.evaluation_store = EvaluationStore(database)
         self.strategy_settings_store = StrategySettingsStore(database)
         self.metrics = MetricsCollector()
@@ -151,6 +153,19 @@ class StubBot:
         if len(self.engines) == 1:
             raise RuntimeError("cannot remove the last coin; pause the bot instead")
         del self.engines[symbol]
+
+    async def persist_risk_state(self) -> None:
+        """Count synchronous persists (pause/resume/kill must call this)."""
+        self.risk_state_persists += 1
+
+    async def divergence_report(
+        self, symbol: str, window_hours: int = 24, window_end: datetime | None = None
+    ) -> DivergenceReport:
+        """Scripted §10 metric: zero divergence for traded coins."""
+        if symbol not in self.engines:
+            raise KeyError(f"{symbol} is not being traded")
+        end = window_end if window_end is not None else BASE_TIME
+        return compare_fills([], [], end - timedelta(hours=window_hours), end)
 
     def replace_first_engine(self, engine: TradingEngine) -> None:
         """Swap the first symbol's engine (for co-pilot test setups)."""
@@ -1144,3 +1159,35 @@ class TestWallet:
         assert btc["quantity"] == "2"
         assert btc["value_quote"] is None
         assert body["equity_quote"] is None
+
+
+class TestRiskStatePersistsOnCommands:
+    async def test_pause_resume_kill_persist_synchronously(self, database: Database) -> None:
+        """A halt must reach Postgres before the command returns."""
+        bot = StubBot(database)
+        async with make_client(bot) as client:
+            await client.post("/pause")
+            await client.post("/resume")
+            await client.post("/kill")
+        assert bot.risk_state_persists == 3
+
+
+class TestDivergenceEndpoint:
+    async def test_report_for_a_traded_coin(self, database: Database) -> None:
+        async with make_client(StubBot(database)) as client:
+            response = await client.get("/coins/BTC/USDT/divergence", params={"hours": 12})
+        assert response.status_code == 200
+        body = response.json()
+        assert body["divergence_fraction"] == 0.0
+        assert body["mismatches"] == []
+
+    async def test_untraded_coin_is_404(self, database: Database) -> None:
+        async with make_client(StubBot(database)) as client:
+            response = await client.get("/coins/DOGE/USDT/divergence")
+        assert response.status_code == 404
+
+    async def test_status_carries_the_protective_stop_level(self, database: Database) -> None:
+        async with make_client(StubBot(database)) as client:
+            response = await client.get("/status")
+        assert response.status_code == 200
+        assert "protective_stop_quote" in response.json()

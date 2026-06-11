@@ -7,11 +7,14 @@ all of that belongs to the risk manager.
 """
 
 from tradebot.strategies.base import Strategy
+from tradebot.strategies.breakout import BreakoutConfig, BreakoutStrategy
 from tradebot.strategies.mean_reversion import MeanReversionConfig, MeanReversionStrategy
 from tradebot.strategies.router import RegimeStrategyRouter
 from tradebot.strategies.trend_following import TrendFollowingConfig, TrendFollowingStrategy
 
 __all__ = [
+    "BreakoutConfig",
+    "BreakoutStrategy",
     "MeanReversionConfig",
     "MeanReversionStrategy",
     "RegimeStrategyRouter",

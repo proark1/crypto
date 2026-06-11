@@ -21,6 +21,8 @@ export interface BreakersResponse {
 export interface StatusResponse {
   mode: string;
   paused: boolean;
+  /** Armed protective stop level, or null while flat/unarmed. */
+  protective_stop_quote: string | null;
   symbol: string;
   symbols: string[];
   exchange_id: string;
@@ -42,6 +44,17 @@ export interface FillResponse {
   quantity_base: string;
   fee_quote: string;
   filled_at: string;
+}
+
+export interface DivergenceReportResponse {
+  window_start: string;
+  window_end: string;
+  live_fill_count: number;
+  replay_fill_count: number;
+  matched_count: number;
+  /** 0 = every fill matched both ways; 1 = nothing matched. */
+  divergence_fraction: number;
+  mismatches: string[];
 }
 
 export interface CommandResponse {

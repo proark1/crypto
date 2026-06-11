@@ -7,12 +7,14 @@ schema stops churning; revisit after Phase 2 settles.
 
 from __future__ import annotations
 
+import logging
 from types import TracebackType
 
 from sqlalchemy import (
     BigInteger,
     Boolean,
     Column,
+    Connection,
     Date,
     DateTime,
     Float,
@@ -22,9 +24,14 @@ from sqlalchemy import (
     Numeric,
     Table,
     Text,
+    inspect,
+    text,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+from sqlalchemy.schema import CreateColumn
+
+logger = logging.getLogger(__name__)
 
 metadata = MetaData()
 
@@ -261,6 +268,32 @@ overfit / baseline best). ``motivating_finding_ids`` is the lineage link from
 accepted findings to the config change they motivated."""
 
 
+def _add_missing_columns(connection: Connection, schema_metadata: MetaData = metadata) -> None:
+    """Issue ``ADD COLUMN IF NOT EXISTS`` for columns the live DB lacks.
+
+    Runs inside ``create_schema``'s transaction. New columns must be
+    nullable or carry a ``server_default``: a NOT NULL column without one
+    cannot be added to a populated table, and discovering that at deploy
+    time (here, with a clear message) beats discovering it as a crashed
+    INSERT mid-trade.
+    """
+    inspector = inspect(connection)
+    for table in schema_metadata.tables.values():
+        existing = {column["name"] for column in inspector.get_columns(table.name)}
+        for column in table.columns:
+            if column.name in existing:
+                continue
+            if not column.nullable and column.server_default is None:
+                raise RuntimeError(
+                    f"cannot add NOT NULL column {table.name}.{column.name} without a "
+                    "server_default: existing rows would violate it. Make it nullable, "
+                    "give it a server_default, or adopt real migrations."
+                )
+            ddl = CreateColumn(column).compile(dialect=connection.dialect)
+            connection.execute(text(f'ALTER TABLE "{table.name}" ADD COLUMN IF NOT EXISTS {ddl}'))
+            logger.warning("schema sync: added column %s.%s", table.name, column.name)
+
+
 _SYNC_SCHEME_PREFIXES = (
     "postgres://",
     "postgresql://",
@@ -310,9 +343,20 @@ class Database:
         return self._engine
 
     async def create_schema(self) -> None:
-        """Create all tables if they do not exist (idempotent)."""
+        """Create missing tables AND missing columns (additive sync).
+
+        ``create_all`` only creates absent tables — a column added to a
+        table that already shipped would silently never reach the deployed
+        database, and the first INSERT naming it would crash the worker.
+        This sync closes that gap for the only schema evolution this
+        project allows: **additive** changes (new tables, new nullable or
+        server-defaulted columns). Anything destructive — drops, renames,
+        type changes, NOT NULL without a server default — is refused
+        loudly and means it is time to adopt real migrations (Alembic).
+        """
         async with self._engine.begin() as connection:
             await connection.run_sync(metadata.create_all)
+            await connection.run_sync(_add_missing_columns)
 
     async def __aenter__(self) -> Database:
         """Enter context: the engine connects lazily, nothing to do yet."""

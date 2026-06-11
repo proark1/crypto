@@ -81,6 +81,11 @@ if TYPE_CHECKING:  # runtime import stays local to its start method
 
 logger = logging.getLogger(__name__)
 
+PRODUCTION_FAMILIES = frozenset({"trend_following", "mean_reversion"})
+"""Families the worker's router actually trades. Sweeps may grade more
+(e.g. ``breakout``); routing a new family is an explicit architecture
+decision, never a side effect of a promotion."""
+
 STRATEGY_PRIME_CANDLES = 1000
 """Stored 1m candles fed through a freshly promoted strategy before it
 goes live: comfortably past the slowest indicator's warm-up (a 90-period
@@ -281,6 +286,13 @@ class Worker:
         family or parameter.
         """
         validate_family_params(family, dict(params))
+        if family not in PRODUCTION_FAMILIES:
+            # Sweepable but not yet routed: silently "promoting" parameters
+            # the router never trades would be a lie in the journal.
+            raise ValueError(
+                f"{family} is research-only: it has no production route yet, so its "
+                "parameters cannot be promoted (sweep it via the research API instead)"
+            )
         version = await self.strategy_settings_store.record(
             family, params, datetime.now(UTC), source_sweep_id, note
         )
@@ -620,13 +632,19 @@ class Worker:
         self._saved_risk_state = (state, paused_symbols)
 
     async def _persist_risk_state(self, event: CandleClosed) -> None:
-        """Save the brake/pause snapshot when it changed (checked per candle).
+        """Bus hook: persist the brake/pause snapshot once per closed candle."""
+        await self.persist_risk_state()
 
-        Bus-driven, so a change persists within one candle of happening;
-        an operator pause/kill on a market with no flowing candles persists
-        on the next candle of any traded symbol. Write failures are logged
-        and retried implicitly on the next candle — risk persistence must
-        not break trading, only restarts can be stale.
+    async def persist_risk_state(self) -> None:
+        """Save the brake/pause snapshot if it changed since the last save.
+
+        Called per closed candle by the bus hook, and synchronously by the
+        pause/resume/kill API endpoints — an operator halt must reach
+        Postgres before the command returns, not a candle later (a crash
+        inside that window would otherwise resume a killed bot). Write
+        failures are logged and retried implicitly on the next candle —
+        risk persistence must not break trading, only restarts can be
+        stale.
         """
         snapshot = self.risk_manager.breakers.snapshot()
         paused = tuple(symbol for symbol, engine in self.engines.items() if engine.paused)

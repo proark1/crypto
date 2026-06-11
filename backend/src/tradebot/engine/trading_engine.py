@@ -192,6 +192,7 @@ class TradingEngine:
                 await self._adapter.cancel(order.client_order_id)
                 self._journaled_triggered.discard(order.client_order_id)
                 self._submitted_entries.pop(order.client_order_id, None)
+                self._risk_manager.on_order_cancelled(order.client_order_id)
                 logger.warning("kill switch cancelled open order %s", order.client_order_id)
             except Exception:
                 logger.exception("kill switch failed to cancel order %s", order.client_order_id)
@@ -708,41 +709,54 @@ class TradingEngine:
         # is silent divergence.
         if self._fill_store is not None:
             await self._fill_store.append(fill)
-        if self._order_store is not None:
+        # An order still held by the adapter filled only partially; its row
+        # stays open (with the fill journal recording the filled part) so a
+        # restart restores exactly the remainder.
+        completed = all(
+            open_order.client_order_id != fill.client_order_id
+            for open_order in self._adapter.open_orders()
+        )
+        if self._order_store is not None and completed:
             # After the fill journal on purpose: if this write is lost, the
-            # fill-journal guard in fetch_open still keeps the order out of
-            # restoration — the fill record outranks the order row.
+            # quantity-aware guard in fetch_open still keeps a fully filled
+            # order out of restoration — fills outrank the order row.
             await self._order_store.mark_filled(fill.client_order_id, fill.filled_at)
         self._journaled_triggered.discard(fill.client_order_id)
-        entry = self._submitted_entries.pop(fill.client_order_id, None)
-        plan = None if entry is None else entry.protective_exit
-        if entry is not None and plan is not None:
-            # The position exists from this fill on; its protection goes to
-            # the venue immediately (CLAUDE.md invariant 5) — a resting
-            # stop-limit sized to the filled quantity, active from the next
-            # candle — and the in-memory ratchet that manages its level. A
-            # crash from here is covered by the worker's boot reconciliation.
-            stop_order = self._risk_manager.protective_exit_order(
-                entry, fill.quantity_base, fill.filled_at
-            )
-            await self._submit(stop_order)
-            self._managed_stop = ManagedStop(
-                entry_price_quote=fill.price_quote,
-                initial_stop_quote=plan.stop_price_quote,
-                breakeven_at_r=plan.breakeven_at_r,
-                trail_distance_quote=plan.trail_distance_quote,
-            )
-            self._armed_entry = entry
-            logger.info(
-                "protective stop %s armed for %s: trigger %s, limit %s",
-                stop_order.client_order_id,
-                fill.symbol,
-                stop_order.stop_price_quote,
-                stop_order.limit_price_quote,
-            )
+        entry = self._submitted_entries.get(fill.client_order_id)
+        if completed:
+            self._submitted_entries.pop(fill.client_order_id, None)
         self._portfolio.apply_fill(fill)
         self._risk_manager.on_fill(fill)
         self._fills.append(fill)
+        plan = None if entry is None else entry.protective_exit
+        if entry is not None and plan is not None:
+            position = self._portfolio.position(fill.symbol)
+            if position is not None:
+                # The position exists from this fill on; its protection goes
+                # to the venue immediately (CLAUDE.md invariant 5), sized to
+                # the whole position so each partial fill re-arms the stop
+                # with the cumulative quantity at the true average entry. A
+                # crash from here is covered by boot reconciliation.
+                await self._cancel_protective_stops()
+                stop_order = self._risk_manager.protective_exit_order(
+                    entry, position.quantity_base, fill.filled_at
+                )
+                await self._submit(stop_order)
+                self._managed_stop = ManagedStop(
+                    entry_price_quote=position.average_entry_price_quote,
+                    initial_stop_quote=plan.stop_price_quote,
+                    breakeven_at_r=plan.breakeven_at_r,
+                    trail_distance_quote=plan.trail_distance_quote,
+                )
+                self._armed_entry = entry
+                logger.info(
+                    "protective stop %s armed for %s: trigger %s, limit %s, quantity %s",
+                    stop_order.client_order_id,
+                    fill.symbol,
+                    stop_order.stop_price_quote,
+                    stop_order.limit_price_quote,
+                    stop_order.quantity_base,
+                )
         if fill.side == Side.SELL:
             if fill.client_order_id == self._pending_exit_order:
                 self._pending_exit_order = None
