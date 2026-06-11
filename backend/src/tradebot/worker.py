@@ -27,7 +27,7 @@ import httpx
 
 from tradebot.authorization import ProposalQueue
 from tradebot.core.config import AppConfig, TradingMode, validate_symbol_quote
-from tradebot.core.events import EventBus
+from tradebot.core.events import CandleClosed, EventBus
 from tradebot.core.metrics import MetricsCollector
 from tradebot.core.models import CandleInterval
 from tradebot.engine import TradingEngine
@@ -53,10 +53,11 @@ from tradebot.persistence import (
     EvaluationStore,
     FillStore,
     OrderStore,
+    RiskStateStore,
     StrategySettingsStore,
 )
 from tradebot.portfolio import Portfolio
-from tradebot.risk import ManagedStop, RiskConfig, RiskManager
+from tradebot.risk import BreakerState, ManagedStop, RiskConfig, RiskManager
 from tradebot.signals import (
     EntryGate,
     MarketRegimeDetector,
@@ -118,6 +119,8 @@ class Worker:
         self.fill_store = FillStore(database)
         self.decision_store = DecisionStore(database)
         self.order_store = OrderStore(database)
+        self.risk_state_store = RiskStateStore(database)
+        self._saved_risk_state: tuple[BreakerState, tuple[str, ...]] | None = None
         self.coin_store = CoinStore(database)
         self.evaluation_store = EvaluationStore(database)
         self.strategy_settings_store = StrategySettingsStore(database)
@@ -420,8 +423,12 @@ class Worker:
                 self.regime_detector.symbol,
                 self.regime_detector.regime.label,
             )
+        await self._restore_risk_state()
         replayed = await self.replay_journal()
         await self._rearm_protective_stops()
+        # Subscribed after restore on purpose: the persister must never
+        # write boot-time defaults over the state it was about to load.
+        self.bus.subscribe(CandleClosed, self._persist_risk_state)
         return replayed
 
     async def add_coin(self, symbol: str) -> None:
@@ -481,6 +488,48 @@ class Worker:
         engine.detach_from(self.bus)
         del self.engines[symbol]
         logger.info("coin removed at runtime: %s", symbol)
+
+    async def _restore_risk_state(self) -> None:
+        """Adopt the persisted brakes and pause flags before trading resumes.
+
+        A deploy must never silently release a tripped breaker, reset the
+        daily-loss anchor, forget a cooldown, or resume a killed bot — the
+        operator actions those states wait for did not happen just because
+        the process restarted.
+        """
+        loaded = await self.risk_state_store.load()
+        if loaded is None:
+            return
+        state, paused_symbols = loaded
+        self.risk_manager.breakers.restore(state)
+        for symbol in paused_symbols:
+            engine = self.engines.get(symbol)
+            if engine is None:
+                logger.warning("paused symbol %s is no longer traded; flag dropped", symbol)
+                continue
+            engine.pause()
+            logger.warning("restored paused state for %s (operator resume required)", symbol)
+        self._saved_risk_state = (state, paused_symbols)
+
+    async def _persist_risk_state(self, event: CandleClosed) -> None:
+        """Save the brake/pause snapshot when it changed (checked per candle).
+
+        Bus-driven, so a change persists within one candle of happening;
+        an operator pause/kill on a market with no flowing candles persists
+        on the next candle of any traded symbol. Write failures are logged
+        and retried implicitly on the next candle — risk persistence must
+        not break trading, only restarts can be stale.
+        """
+        snapshot = self.risk_manager.breakers.snapshot()
+        paused = tuple(symbol for symbol, engine in self.engines.items() if engine.paused)
+        if self._saved_risk_state == (snapshot, paused):
+            return
+        try:
+            await self.risk_state_store.save(snapshot, paused, datetime.now(UTC))
+        except Exception:
+            logger.exception("failed to persist risk state; will retry next candle")
+            return
+        self._saved_risk_state = (snapshot, paused)
 
     async def _rearm_protective_stops(self) -> None:
         """Rebuild each replayed position's protection after a restart.

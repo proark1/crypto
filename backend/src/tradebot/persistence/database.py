@@ -13,6 +13,7 @@ from sqlalchemy import (
     BigInteger,
     Boolean,
     Column,
+    Date,
     DateTime,
     Float,
     ForeignKey,
@@ -91,6 +92,25 @@ cannot un-trigger a stop. The ``protective_*`` columns flatten an entry's
 ``ProtectiveExitPlan`` (initial level, limit floor, ratchet policy) so a
 position can be re-protected from the journal — exactly, policy included —
 even if the crash landed between the entry fill and the stop placement."""
+
+risk_state_table = Table(
+    "risk_state",
+    metadata,
+    Column("id", Integer, primary_key=True),
+    Column("tripped_reason", Text, nullable=True),
+    Column("day", Date, nullable=True),
+    Column("day_start_equity_quote", Numeric, nullable=True),
+    Column("entries_today", Integer, nullable=False),
+    Column("peak_equity_quote", Numeric, nullable=True),
+    Column("consecutive_losses", Integer, nullable=False),
+    Column("cooldown_until", DateTime(timezone=True), nullable=True),
+    Column("last_observed_time", DateTime(timezone=True), nullable=True),
+    Column("paused_symbols", ARRAY(Text), nullable=False),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
+)
+"""One row (id=1): the account-level brake state and which engines were
+paused/halted. Persisted so a deploy cannot silently release a tripped
+breaker, reset a daily loss anchor, or resume a killed bot."""
 
 decisions_table = Table(
     "decisions",

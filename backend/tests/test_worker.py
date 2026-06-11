@@ -620,3 +620,47 @@ class TestStrategyPromotion:
             await worker.apply_strategy_params("trend_following", {"fast_ema_perod": 1})
         with pytest.raises(KeyError, match="no strategy settings version"):
             await worker.revert_strategy_version(9999)
+
+
+class TestRiskStatePersistence:
+    async def test_trip_and_pause_survive_restart(self, database: Database) -> None:
+        """A deploy must not release a tripped breaker or resume a killed bot."""
+        from tradebot.persistence import RiskStateStore
+        from tradebot.risk import BreakerState
+
+        await RiskStateStore(database).save(
+            BreakerState(
+                tripped_reason="drawdown limit",
+                entries_today=4,
+                peak_equity_quote=Decimal("11000"),
+                last_observed_time=BASE_TIME,
+            ),
+            ["BTC/USDT"],
+            BASE_TIME,
+        )
+
+        worker = Worker(make_config(), database, ScriptedExchange([]))
+        await worker.initialize()
+
+        assert worker.risk_manager.breakers.tripped_reason == "drawdown limit"
+        assert worker.risk_manager.breakers.entries_today == 4
+        assert worker.engines["BTC/USDT"].paused is True
+
+    async def test_breaker_trip_is_persisted_during_the_run(self, database: Database) -> None:
+        """The bus-driven persister writes the trip within a candle."""
+        exchange = ScriptedExchange(CLOSES[:5])
+        config = make_config(api_port=8907)
+        worker = Worker(config, database, exchange)
+        # Trip through the public surface before candles flow: a >3% drop
+        # against the default daily-loss limit latches the hard trip.
+        worker.risk_manager.breakers.observe(BASE_TIME, Decimal("10000"))
+        worker.risk_manager.breakers.observe(BASE_TIME, Decimal("9000"))
+        assert worker.risk_manager.breakers.tripped_reason is not None
+        exchange.worker = worker
+        await worker.run()
+
+        from tradebot.persistence import RiskStateStore
+
+        loaded = await RiskStateStore(database).load()
+        assert loaded is not None
+        assert loaded[0].tripped_reason is not None  # the trip reached Postgres
