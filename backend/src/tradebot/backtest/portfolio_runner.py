@@ -20,6 +20,12 @@ from datetime import datetime
 from decimal import Decimal
 
 from tradebot.backtest.runner import BacktestResult
+from tradebot.core.models import Candle
+from tradebot.engine import TradingEngine
+from tradebot.execution import FillSimulatorConfig, SimulatedExecutionAdapter
+from tradebot.portfolio import Portfolio
+from tradebot.risk import RiskManager
+from tradebot.strategies import Strategy
 
 
 class PortfolioBacktestResult(BacktestResult):
@@ -31,14 +37,6 @@ class PortfolioBacktestResult(BacktestResult):
 
     realized_pnl_by_symbol: dict[str, Decimal]
     """Net realized PnL per traded symbol (fees included)."""
-
-
-from tradebot.core.models import Candle
-from tradebot.engine import TradingEngine
-from tradebot.execution import FillSimulatorConfig, SimulatedExecutionAdapter
-from tradebot.portfolio import Portfolio
-from tradebot.risk import RiskManager
-from tradebot.strategies import Strategy
 
 
 class PortfolioBacktestRunner:
