@@ -49,6 +49,14 @@ export function StatusCard(props: { status: StatusResponse }) {
             regime: {status.regime.label.replace("_", " ")}
           </span>
         )}
+        {!status.data_health.healthy && (
+          <span
+            title={status.data_health.reason ?? "market data is degraded"}
+            className="rounded bg-red-500/20 px-2 py-0.5 text-xs font-bold uppercase text-red-600 dark:text-red-400"
+          >
+            data degraded
+          </span>
+        )}
         <span className="w-full text-sm text-zinc-500 sm:ml-auto sm:w-auto sm:text-right">
           {status.exchange_id} · last candle {formatTime(status.last_candle_close_time)}
         </span>
@@ -88,6 +96,18 @@ export function StatusCard(props: { status: StatusResponse }) {
         <div className="mt-4 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-700 dark:text-amber-300">
           <span className="font-bold uppercase">loss-streak cooldown</span> — entries blocked
           until {formatTime(status.breakers.cooldown_until)}
+        </div>
+      )}
+      {!status.data_health.healthy && (
+        <div className="mt-4 rounded-lg border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-700 dark:text-red-300">
+          <span className="font-bold uppercase">market data degraded</span> — new entries paused
+          until the feed recovers
+          {status.data_health.reason !== null ? ` (${status.data_health.reason})` : ""}
+        </div>
+      )}
+      {status.regime.reason !== null && (
+        <div className="mt-4 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-700 dark:text-amber-300">
+          <span className="font-bold uppercase">regime gate off</span> — {status.regime.reason}
         </div>
       )}
       <div className="mt-4 border-t border-zinc-200 dark:border-zinc-800 pt-4">

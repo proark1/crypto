@@ -13,7 +13,9 @@ const FLAT_STATUS: StatusResponse = {
     symbol: "BTC/USDT",
     label: "trending",
     reasons: ["ADX 31 above 25"],
+    reason: null,
   },
+  data_health: { healthy: true, reason: null },
   symbol: "BTC/USDT",
   symbols: ["BTC/USDT"],
   exchange_id: "binance",
@@ -76,5 +78,38 @@ describe("StatusCard", () => {
       />,
     );
     expect(screen.getByText("loss-streak cooldown")).toBeDefined();
+  });
+
+  it("warns when the market-data feed is degraded", () => {
+    render(
+      <StatusCard
+        status={{
+          ...FLAT_STATUS,
+          data_health: { healthy: false, reason: "backfill failed: ConnectionError" },
+        }}
+      />,
+    );
+    expect(screen.getByText("data degraded")).toBeDefined();
+    expect(screen.getByText("market data degraded")).toBeDefined();
+    expect(screen.getByText(/backfill failed/)).toBeDefined();
+  });
+
+  it("explains an ungated regime gate when its reference is missing", () => {
+    render(
+      <StatusCard
+        status={{
+          ...FLAT_STATUS,
+          regime: {
+            enabled: false,
+            symbol: null,
+            label: null,
+            reasons: [],
+            reason: "reference market BTC/USDT is not among the traded coins",
+          },
+        }}
+      />,
+    );
+    expect(screen.getByText("regime gate off")).toBeDefined();
+    expect(screen.getByText(/not among the traded coins/)).toBeDefined();
   });
 });

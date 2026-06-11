@@ -420,6 +420,9 @@ class TestWorker:
         )
         await worker.initialize()
         assert worker.regime_detector is None  # BTC/USDT is not among the coins
+        # The surprising "ungated" state is recorded for /status, not silent.
+        assert worker.regime_disabled_reason is not None
+        assert "BTC/USDT" in worker.regime_disabled_reason
 
     async def test_sentiment_thresholds_flow_from_env_config(self, database: Database) -> None:
         """The operator's tuned thresholds must reach the gate, not the defaults."""

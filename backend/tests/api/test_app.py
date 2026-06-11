@@ -60,6 +60,22 @@ async def database() -> AsyncIterator[Database]:
         yield db
 
 
+class _StubFeedHealth:
+    """A feed's health latch (FeedHealth) for the app factory's /status tests."""
+
+    def __init__(self, healthy: bool, reason: str | None) -> None:
+        self._healthy = healthy
+        self._reason = reason
+
+    @property
+    def healthy(self) -> bool:
+        return self._healthy
+
+    @property
+    def health_reason(self) -> str | None:
+        return self._reason
+
+
 class StubBot:
     """Minimal BotState for the app factory."""
 
@@ -78,6 +94,8 @@ class StubBot:
         self.engine = self.engines[self.config.symbol_list()[0]]
         self.risk_state_persists = 0
         self.regime_detector = None
+        self.regime_disabled_reason: str | None = None
+        self.feed_healths: dict[str, _StubFeedHealth] = {}
         self.evaluation_store = EvaluationStore(database)
         self.strategy_settings_store = StrategySettingsStore(database)
         self.metrics = MetricsCollector()
@@ -92,6 +110,10 @@ class StubBot:
 
     def all_engines(self) -> Iterator[TradingEngine]:
         yield from self.engines.values()
+
+    def feed_health(self, symbol: str) -> "_StubFeedHealth":
+        # Healthy by default; individual tests flip it to exercise /status.
+        return self.feed_healths.get(symbol, _StubFeedHealth(True, None))
 
     def _snapshot_row(self, bot_id: str, label: str, description: str, kind: str) -> dict[str, Any]:
         initial = self.config.paper_initial_balance_quote
@@ -1418,7 +1440,39 @@ class TestRegimeVisibility:
         async with make_client(StubBot(database)) as client:
             response = await client.get("/status")
         regime = response.json()["regime"]
-        assert regime == {"enabled": False, "symbol": None, "label": None, "reasons": []}
+        assert regime == {
+            "enabled": False,
+            "symbol": None,
+            "label": None,
+            "reasons": [],
+            "reason": None,
+        }
+
+    async def test_status_explains_an_ungated_gate_when_reference_is_missing(
+        self, database: Database
+    ) -> None:
+        bot = StubBot(database)
+        bot.regime_disabled_reason = "reference market BTC/USDT is not among the traded coins"
+        async with make_client(bot) as client:
+            regime = (await client.get("/status")).json()["regime"]
+        assert regime["enabled"] is False
+        assert regime["reason"] == "reference market BTC/USDT is not among the traded coins"
+
+
+class TestDataHealthVisibility:
+    async def test_status_reports_a_healthy_feed_by_default(self, database: Database) -> None:
+        async with make_client(StubBot(database)) as client:
+            health = (await client.get("/status")).json()["data_health"]
+        assert health == {"healthy": True, "reason": None}
+
+    async def test_status_surfaces_a_degraded_feed_with_its_reason(
+        self, database: Database
+    ) -> None:
+        bot = StubBot(database)
+        bot.feed_healths["BTC/USDT"] = _StubFeedHealth(False, "backfill failed: ConnectionError")
+        async with make_client(bot) as client:
+            health = (await client.get("/status")).json()["data_health"]
+        assert health == {"healthy": False, "reason": "backfill failed: ConnectionError"}
 
 
 class TestCompetitionEndpoint:
