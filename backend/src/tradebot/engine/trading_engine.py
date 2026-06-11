@@ -67,12 +67,20 @@ class TradingEngine:
         autonomy_mode: AutonomyMode = AutonomyMode.AUTONOMOUS,
         proposal_queue: ProposalQueue | None = None,
         entry_gates: tuple[EntryGate, ...] = (),
+        signal_id_scope: str = "",
     ) -> None:
         """Wire the components; ``symbol=None`` binds to the first candle seen.
 
         ``entry_gates`` run on BUY signals only, in order, before
         authorization and risk sizing (the §5.2 pipeline). Exits are never
         gated: protective actions must not sit behind a filter.
+
+        ``signal_id_scope`` prefixes the signal ids this engine synthesizes
+        itself (kill switch, stop backstop). Strategy signals are scoped by
+        the strategy; without this, two competition accounts stopping out
+        on the same candle would mint the same order id and collide in the
+        shared order journal. Empty for the production bot, whose id
+        streams predate the competition.
         """
         if autonomy_mode == AutonomyMode.COPILOT and proposal_queue is None:
             raise ValueError("co-pilot mode requires a proposal queue")
@@ -95,6 +103,7 @@ class TradingEngine:
         self._autonomy_mode = autonomy_mode
         self._proposal_queue = proposal_queue
         self._entry_gates = entry_gates
+        self._signal_id_scope = signal_id_scope
         self._fills: list[Fill] = []
         self._paused = False
         self._last_candle: Candle | None = None
@@ -211,7 +220,10 @@ class TradingEngine:
             return True
         last_close = self._last_candle.close_quote
         signal = Signal(
-            signal_id=f"kill:{self._symbol}:{self._last_candle.close_time.isoformat()}",
+            signal_id=(
+                f"{self._signal_id_scope}kill:{self._symbol}:"
+                f"{self._last_candle.close_time.isoformat()}"
+            ),
             strategy_name="kill_switch",
             symbol=self._symbol,
             side=Side.SELL,
@@ -639,7 +651,7 @@ class TradingEngine:
         The exit goes through the risk manager like every order.
         """
         signal = Signal(
-            signal_id=f"stop:{self._symbol}:{candle.close_time.isoformat()}",
+            signal_id=f"{self._signal_id_scope}stop:{self._symbol}:{candle.close_time.isoformat()}",
             strategy_name="protective_stop",
             symbol=self._symbol or candle.symbol,
             side=Side.SELL,

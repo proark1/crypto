@@ -144,7 +144,7 @@ class TestBuildCandidateStrategy:
 
     def test_unknown_family_raises_with_the_known_ones(self) -> None:
         with pytest.raises(ValueError, match="unknown strategy family"):
-            SweepCandidate(name="bad", family="momentum", params={})
+            SweepCandidate(name="bad", family="martingale", params={})
 
     def test_each_family_builds_its_own_strategy(self) -> None:
         trend = build_candidate_strategy(

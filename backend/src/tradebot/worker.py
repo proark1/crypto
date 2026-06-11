@@ -18,7 +18,8 @@ import contextlib
 import logging
 import os
 import signal
-from collections.abc import Coroutine, Mapping
+from collections.abc import Coroutine, Iterator, Mapping
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Protocol
@@ -27,10 +28,18 @@ import httpx
 
 from tradebot.authorization import ProposalQueue
 from tradebot.backtest.parity import DivergenceReport
+from tradebot.competition import (
+    LINEUP,
+    PRODUCTION_BOT_ID,
+    CompetitorSpec,
+    build_challenger_strategy,
+    build_scenario_strategy,
+    spec_for,
+)
 from tradebot.core.config import AppConfig, TradingMode, validate_symbol_quote
 from tradebot.core.events import CandleClosed, EventBus
 from tradebot.core.metrics import MetricsCollector
-from tradebot.core.models import CandleInterval, Fill, SymbolFilters
+from tradebot.core.models import AutonomyMode, CandleInterval, Fill, SymbolFilters
 from tradebot.engine import TradingEngine
 from tradebot.evaluation import ScenarioEvaluator
 from tradebot.evaluation.improve import AutoImprover
@@ -143,6 +152,30 @@ class TradingVenue(OhlcvExchange, Protocol):
         ...
 
 
+@dataclass
+class CompetitorRuntime:
+    """One challenger's complete paper account inside the worker.
+
+    Mirrors the production bot's wiring one-for-one — own portfolio, own
+    risk manager (account-level brakes must judge each account's equity,
+    not the incumbent's), own journal-scoped stores, one engine per
+    symbol — so the only difference between competitors is the strategy.
+    """
+
+    spec: CompetitorSpec
+    portfolio: Portfolio
+    risk_manager: RiskManager
+    fill_store: FillStore
+    order_store: OrderStore
+    decision_store: DecisionStore
+    risk_state_store: RiskStateStore
+    engines: dict[str, TradingEngine] = field(default_factory=dict)
+    # Where each symbol's boot gap-replay starts for this account: the
+    # earliest restored open order's decision time.
+    gap_replay_from: dict[str, datetime] = field(default_factory=dict)
+    saved_risk_state: tuple[BreakerState, tuple[str, ...]] | None = None
+
+
 class Worker:
     """N symbols, one strategy each, one account, paper fills — the Phase 2 bot.
 
@@ -191,6 +224,26 @@ class Worker:
         # pair of eyes (engines and feeds are per-symbol).
         self.risk_manager = RiskManager(RiskConfig(), self.portfolio, self.symbol_filters)
         self.engines: dict[str, TradingEngine] = {}
+        # The strategy competition's challenger accounts (ARCHITECTURE.md
+        # §13): each trades one family solo from its own paper balance and
+        # journal scope. The production bot competes as itself.
+        self.challengers: dict[str, CompetitorRuntime] = {}
+        if config.competition_enabled:
+            for spec in LINEUP:
+                if spec.bot_id == PRODUCTION_BOT_ID:
+                    continue
+                challenger_portfolio = Portfolio(config.paper_initial_balance_quote)
+                self.challengers[spec.bot_id] = CompetitorRuntime(
+                    spec=spec,
+                    portfolio=challenger_portfolio,
+                    risk_manager=RiskManager(
+                        RiskConfig(), challenger_portfolio, self.symbol_filters
+                    ),
+                    fill_store=FillStore(database, bot_id=spec.bot_id),
+                    order_store=OrderStore(database, bot_id=spec.bot_id),
+                    decision_store=DecisionStore(database, bot_id=spec.bot_id),
+                    risk_state_store=RiskStateStore(database, row_id=spec.risk_state_row_id),
+                )
         self._feeds: dict[str, LiveMarketDataFeed] = {}
         self._feed_tasks: dict[str, asyncio.Task[None]] = {}
         self._task_group: asyncio.TaskGroup | None = None
@@ -201,11 +254,12 @@ class Worker:
             EvaluationRunner(
                 self.candle_store,
                 self.evaluation_store,
-                # Bound method, read per scenario: evaluation must grade the
-                # strategy shape production trades right now (router with
-                # the regime gate on, bare trend without), not a snapshot
-                # of the wiring at boot.
-                ScenarioEvaluator(self._scenario_strategy),
+                # Bound method, resolved per run: a run grades whichever
+                # lineup entry its config names, with the wiring and active
+                # parameters as they are right then — production's shape
+                # (router with the regime gate on, bare trend without) is
+                # just the default entry, never a snapshot from boot.
+                self._scenario_evaluator_for,
             ),
             self.evaluation_store,
             code_version=os.environ.get("RAILWAY_GIT_COMMIT_SHA", "unknown"),
@@ -258,6 +312,15 @@ class Worker:
         """Start a blind walk-forward evaluation run (one at a time)."""
         return await self.evaluations.start(config)
 
+    async def start_comparison(self, config: EvaluationRunConfig) -> list[int]:
+        """Grade the whole competition lineup on identical scenarios.
+
+        One run per lineup entry, sequential, sharing a frozen window and
+        seed — the research counterpart of the live leaderboard. Returns
+        the run ids in lineup order.
+        """
+        return await self.evaluations.start_comparison(config, [spec.bot_id for spec in LINEUP])
+
     def cancel_evaluation(self, run_id: int) -> bool:
         """Cancel the in-flight evaluation run, if it is this one."""
         return self.evaluations.cancel(run_id)
@@ -274,6 +337,77 @@ class Worker:
     def symbols(self) -> tuple[str, ...]:
         """The actively traded pairs, in the order they were added."""
         return tuple(self.engines)
+
+    def all_engines(self) -> Iterator[TradingEngine]:
+        """Every engine across every competition account.
+
+        Operator commands (pause/resume/kill) act through this: "I halted
+        the bot" must mean every account, not "except the challengers".
+        """
+        yield from self.engines.values()
+        for runtime in self.challengers.values():
+            yield from runtime.engines.values()
+
+    async def competition_snapshot(self) -> list[dict[str, Any]]:
+        """One leaderboard row per competitor, best equity first.
+
+        Marks come from the newest stored 1m closes, gathered once and
+        applied to every account so no competitor is priced at a different
+        moment. A bot holding a coin with no stored candle yet reports
+        equity ``None`` (unknown beats wrong); rows with unknown equity
+        rank last. Amounts are ``Decimal`` end to end — the API boundary
+        stringifies them.
+        """
+        marks: dict[str, Decimal] = {}
+        for symbol in self.symbols:
+            candle = await self.candle_store.latest_candle(symbol, CandleInterval.M1)
+            if candle is not None:
+                marks[symbol] = candle.close_quote
+        initial = self.config.paper_initial_balance_quote
+        rows: list[dict[str, Any]] = []
+        for spec in LINEUP:
+            if spec.bot_id == PRODUCTION_BOT_ID:
+                portfolio, fill_store = self.portfolio, self.fill_store
+                breakers = self.risk_manager.breakers
+            elif spec.bot_id in self.challengers:
+                runtime = self.challengers[spec.bot_id]
+                portfolio, fill_store = runtime.portfolio, runtime.fill_store
+                breakers = runtime.risk_manager.breakers
+            else:
+                continue  # competition disabled: the incumbent trades alone
+            positions = portfolio.positions
+            unrealized = Decimal(0)
+            all_marked = True
+            for symbol, position in positions.items():
+                mark = marks.get(symbol)
+                if mark is None:
+                    all_marked = False
+                    break
+                unrealized += position.unrealized_pnl_quote(mark)
+            equity = portfolio.equity_quote(marks) if all_marked else None
+            fill_counts = await fill_store.count_by_side()
+            rows.append(
+                {
+                    "bot_id": spec.bot_id,
+                    "label": spec.label,
+                    "description": spec.description,
+                    "is_production": spec.bot_id == PRODUCTION_BOT_ID,
+                    "equity_quote": equity,
+                    "initial_balance_quote": initial,
+                    "return_fraction": (
+                        (equity - initial) / initial if equity is not None and initial > 0 else None
+                    ),
+                    "quote_balance": portfolio.quote_balance,
+                    "realized_pnl_quote": portfolio.realized_pnl_quote(),
+                    "unrealized_pnl_quote": unrealized if all_marked else None,
+                    "open_positions": len(positions),
+                    "entry_fills": fill_counts.get("buy", 0),
+                    "exit_fills": fill_counts.get("sell", 0),
+                    "breaker_tripped_reason": breakers.tripped_reason,
+                }
+            )
+        rows.sort(key=lambda row: (row["equity_quote"] is None, -(row["equity_quote"] or 0)))
+        return rows
 
     async def apply_strategy_params(
         self,
@@ -337,6 +471,10 @@ class Worker:
         outputs discarded) so the EMAs/RSI/ATR are formed before the swap;
         the swap itself is a single assignment on the event loop, and the
         engine's position, orders, and risk state are untouched.
+
+        Challengers are rebuilt too: each tracks its family's *active*
+        parameters, so a promotion improves every account that trades the
+        family — the competition compares strategies, not parameter ages.
         """
         for symbol, engine in self.engines.items():
             strategy = self._build_strategy()
@@ -346,6 +484,15 @@ class Worker:
             for candle in stored:
                 strategy.on_candle(candle, None)
             engine.replace_strategy(strategy)
+        for runtime in self.challengers.values():
+            for symbol, engine in runtime.engines.items():
+                strategy = build_challenger_strategy(runtime.spec, self.strategy_params)
+                stored = await self.candle_store.fetch_recent(
+                    symbol, CandleInterval.M1, STRATEGY_PRIME_CANDLES
+                )
+                for candle in stored:
+                    strategy.on_candle(candle, None)
+                engine.replace_strategy(strategy)
 
     async def _notify(self, text: str) -> None:
         """Send a Telegram alert when configured; silently skip otherwise."""
@@ -359,17 +506,23 @@ class Worker:
             gates += (RegimeGate(self.regime_detector, self.sentiment),)
         return (*gates, NewsGate(self.news_flags, self.news_calendar))
 
-    def _scenario_strategy(self) -> Strategy:
-        """One fresh scenario strategy, shaped like :meth:`_build_strategy`.
+    def _scenario_evaluator_for(self, strategy_id: str) -> ScenarioEvaluator:
+        """One evaluator grading the named lineup entry on fresh instances.
 
-        Scenarios self-classify the regime from their own candles instead
-        of reading the live detector (whose wall-clock state would leak
-        the present into a historical decision); see
+        Scenario strategies self-classify the regime from their own candles
+        instead of reading the live detector (whose wall-clock state would
+        leak the present into a historical decision); see
         ``tradebot.evaluation.strategy`` for the documented divergence.
+        ``ValueError`` for an unknown id — a typo'd run must fail before a
+        row exists, never silently grade the wrong strategy.
         """
-        return build_traded_strategy(
-            regime_routed=self.regime_detector is not None,
-            params_by_family=self.strategy_params,
+        spec = spec_for(strategy_id)
+        return ScenarioEvaluator(
+            lambda: build_scenario_strategy(
+                spec,
+                self.strategy_params,
+                regime_routed=self.regime_detector is not None,
+            )
         )
 
     def _build_strategy(self) -> Strategy:
@@ -395,7 +548,12 @@ class Worker:
         )
 
     def _activate(self, symbol: str) -> None:
-        """Build and wire one coin's engine and feed; start the feed if running."""
+        """Build and wire one coin's engines and feed; start the feed if running.
+
+        One feed per symbol fans out to every competitor's engine through
+        the bus — the competition multiplies accounts, never market-data
+        connections (the exchange rate budget is shared).
+        """
         engine = TradingEngine(
             self._build_strategy(),
             self.risk_manager,
@@ -413,6 +571,25 @@ class Worker:
             entry_gates=self._entry_gates(),
         )
         engine.attach_to(self.bus)
+        for runtime in self.challengers.values():
+            # Same gates, same candles, own account. Always autonomous: a
+            # challenger exists to show what its strategy does unattended;
+            # co-pilot approval queues are the operator's bot's concern.
+            challenger_engine = TradingEngine(
+                build_challenger_strategy(runtime.spec, self.strategy_params),
+                runtime.risk_manager,
+                runtime.portfolio,
+                SimulatedExecutionAdapter(FillSimulatorConfig()),
+                symbol=symbol,
+                fill_store=runtime.fill_store,
+                decision_store=runtime.decision_store,
+                order_store=runtime.order_store,
+                autonomy_mode=AutonomyMode.AUTONOMOUS,
+                entry_gates=self._entry_gates(),
+                signal_id_scope=f"{runtime.spec.bot_id}/",
+            )
+            challenger_engine.attach_to(self.bus)
+            runtime.engines[symbol] = challenger_engine
         feed = LiveMarketDataFeed(
             self._exchange,
             symbol,
@@ -561,6 +738,21 @@ class Worker:
             raise RuntimeError(f"{symbol} has open orders; cancel them first (kill)")
         if engine.pending_proposals():
             raise RuntimeError(f"{symbol} has a pending proposal; approve or reject it first")
+        for runtime in self.challengers.values():
+            # Challenger accounts are real journals too: detaching an engine
+            # that holds a position or a resting order would orphan them just
+            # as surely. The kill switch flattens every account.
+            if runtime.portfolio.position(symbol) is not None:
+                raise RuntimeError(
+                    f"{symbol} has an open position in the {runtime.spec.bot_id} "
+                    "competition account; flatten it first (kill)"
+                )
+            challenger_engine = runtime.engines.get(symbol)
+            if challenger_engine is not None and challenger_engine.open_orders():
+                raise RuntimeError(
+                    f"{symbol} has open orders in the {runtime.spec.bot_id} "
+                    "competition account; cancel them first (kill)"
+                )
         await self.coin_store.remove(symbol)
         self._feeds.pop(symbol).stop()
         task = self._feed_tasks.pop(symbol, None)
@@ -570,6 +762,10 @@ class Worker:
             task.cancel()
         engine.detach_from(self.bus)
         del self.engines[symbol]
+        for runtime in self.challengers.values():
+            challenger_engine = runtime.engines.pop(symbol, None)
+            if challenger_engine is not None:
+                challenger_engine.detach_from(self.bus)
         logger.info("coin removed at runtime: %s", symbol)
 
     async def _confirm_promotion(
@@ -624,18 +820,39 @@ class Worker:
         the process restarted.
         """
         loaded = await self.risk_state_store.load()
-        if loaded is None:
-            return
-        state, paused_symbols = loaded
-        self.risk_manager.breakers.restore(state)
-        for symbol in paused_symbols:
-            engine = self.engines.get(symbol)
-            if engine is None:
-                logger.warning("paused symbol %s is no longer traded; flag dropped", symbol)
+        if loaded is not None:
+            state, paused_symbols = loaded
+            self.risk_manager.breakers.restore(state)
+            for symbol in paused_symbols:
+                engine = self.engines.get(symbol)
+                if engine is None:
+                    logger.warning("paused symbol %s is no longer traded; flag dropped", symbol)
+                    continue
+                engine.pause()
+                logger.warning("restored paused state for %s (operator resume required)", symbol)
+            self._saved_risk_state = (state, paused_symbols)
+        for runtime in self.challengers.values():
+            loaded = await runtime.risk_state_store.load()
+            if loaded is None:
                 continue
-            engine.pause()
-            logger.warning("restored paused state for %s (operator resume required)", symbol)
-        self._saved_risk_state = (state, paused_symbols)
+            state, paused_symbols = loaded
+            runtime.risk_manager.breakers.restore(state)
+            for symbol in paused_symbols:
+                engine = runtime.engines.get(symbol)
+                if engine is None:
+                    logger.warning(
+                        "paused symbol %s of %s is no longer traded; flag dropped",
+                        symbol,
+                        runtime.spec.bot_id,
+                    )
+                    continue
+                engine.pause()
+                logger.warning(
+                    "restored paused state for %s of %s (operator resume required)",
+                    symbol,
+                    runtime.spec.bot_id,
+                )
+            runtime.saved_risk_state = (state, paused_symbols)
 
     async def _persist_risk_state(self, event: CandleClosed) -> None:
         """Bus hook: persist the brake/pause snapshot once per closed candle."""
@@ -655,18 +872,34 @@ class Worker:
         snapshot = self.risk_manager.breakers.snapshot()
         paused = tuple(symbol for symbol, engine in self.engines.items() if engine.paused)
         pending = (snapshot, paused)
-        if self._saved_risk_state == pending:
-            return
-        # Claim before the await: per-symbol feeds publish candles
-        # concurrently, and two interleaved handlers must not both write the
-        # same snapshot. Reverted on failure so the retry guarantee holds.
-        previous = self._saved_risk_state
-        self._saved_risk_state = pending
-        try:
-            await self.risk_state_store.save(snapshot, paused, datetime.now(UTC))
-        except Exception:
-            self._saved_risk_state = previous
-            logger.exception("failed to persist risk state; will retry next candle")
+        if self._saved_risk_state != pending:
+            # Claim before the await: per-symbol feeds publish candles
+            # concurrently, and two interleaved handlers must not both write
+            # the same snapshot. Reverted on failure so the retry guarantee
+            # holds.
+            previous = self._saved_risk_state
+            self._saved_risk_state = pending
+            try:
+                await self.risk_state_store.save(snapshot, paused, datetime.now(UTC))
+            except Exception:
+                self._saved_risk_state = previous
+                logger.exception("failed to persist risk state; will retry next candle")
+        for runtime in self.challengers.values():
+            snapshot = runtime.risk_manager.breakers.snapshot()
+            paused = tuple(symbol for symbol, engine in runtime.engines.items() if engine.paused)
+            pending = (snapshot, paused)
+            if runtime.saved_risk_state == pending:
+                continue
+            previous = runtime.saved_risk_state
+            runtime.saved_risk_state = pending
+            try:
+                await runtime.risk_state_store.save(snapshot, paused, datetime.now(UTC))
+            except Exception:
+                runtime.saved_risk_state = previous
+                logger.exception(
+                    "failed to persist %s risk state; will retry next candle",
+                    runtime.spec.bot_id,
+                )
 
     async def divergence_report(
         self, symbol: str, window_hours: int = 24, window_end: datetime | None = None
@@ -742,11 +975,23 @@ class Worker:
         candle live will not fill on it now. A failed backfill degrades to
         the old behavior — the order meets the live stream — loudly.
         """
-        for symbol, replay_from in sorted(self._gap_replay_from.items()):
+        # One backfill per symbol, however many accounts need its candles.
+        pending: dict[str, list[tuple[str, TradingEngine, datetime]]] = {}
+        for symbol, replay_from in self._gap_replay_from.items():
             engine = self.engines.get(symbol)
+            if engine is not None:  # replay_journal already warned about orphans
+                pending.setdefault(symbol, []).append((PRODUCTION_BOT_ID, engine, replay_from))
+        for runtime in self.challengers.values():
+            for symbol, replay_from in runtime.gap_replay_from.items():
+                engine = runtime.engines.get(symbol)
+                if engine is not None:
+                    pending.setdefault(symbol, []).append(
+                        (runtime.spec.bot_id, engine, replay_from)
+                    )
+        for symbol in sorted(pending):
             feed = self._feeds.get(symbol)
-            if engine is None or feed is None:
-                continue  # replay_journal already warned about the orphan
+            if feed is None:
+                continue
             try:
                 await feed.backfill()
             except Exception:
@@ -757,23 +1002,43 @@ class Worker:
                     exc_info=True,
                 )
                 continue
-            candles = await self.candle_store.fetch_range(
-                symbol, CandleInterval.M1, replay_from, datetime.now(UTC)
-            )
-            fills_before = len(engine.fills)
-            for candle in candles:
-                await engine.replay_gap_candle(candle)
-            logger.info(
-                "gap replay for %s: %d candles from %s, %d fills",
-                symbol,
-                len(candles),
-                replay_from.isoformat(),
-                len(engine.fills) - fills_before,
-            )
+            for bot_id, engine, replay_from in pending[symbol]:
+                candles = await self.candle_store.fetch_range(
+                    symbol, CandleInterval.M1, replay_from, datetime.now(UTC)
+                )
+                fills_before = len(engine.fills)
+                for candle in candles:
+                    await engine.replay_gap_candle(candle)
+                logger.info(
+                    "gap replay for %s of %s: %d candles from %s, %d fills",
+                    symbol,
+                    bot_id,
+                    len(candles),
+                    replay_from.isoformat(),
+                    len(engine.fills) - fills_before,
+                )
         self._gap_replay_from.clear()
+        for runtime in self.challengers.values():
+            runtime.gap_replay_from.clear()
 
     async def _rearm_protective_stops(self) -> None:
-        """Rebuild each replayed position's protection after a restart.
+        """Rebuild every account's replayed-position protection after a restart."""
+        await self._rearm_protective_stops_for(
+            PRODUCTION_BOT_ID, self.portfolio, self.order_store, self.engines
+        )
+        for runtime in self.challengers.values():
+            await self._rearm_protective_stops_for(
+                runtime.spec.bot_id, runtime.portfolio, runtime.order_store, runtime.engines
+            )
+
+    async def _rearm_protective_stops_for(
+        self,
+        bot_id: str,
+        portfolio: Portfolio,
+        order_store: OrderStore,
+        engines: Mapping[str, TradingEngine],
+    ) -> None:
+        """Rebuild one account's replayed-position protection after a restart.
 
         The resting stop order itself is restored from the order journal;
         what a restart loses is the in-memory ratchet (ManagedStop). With
@@ -791,14 +1056,16 @@ class Worker:
         from tradebot.indicators import Atr
 
         trend = TrendFollowingConfig(**self.strategy_params.get("trend_following", {}))
-        for symbol, position in self.portfolio.positions.items():
-            engine = self.engines.get(symbol)
+        for symbol, position in portfolio.positions.items():
+            engine = engines.get(symbol)
             if engine is None:
                 logger.warning(
-                    "open position in %s has no active engine; protection unverifiable", symbol
+                    "open position in %s of %s has no active engine; protection unverifiable",
+                    symbol,
+                    bot_id,
                 )
                 continue
-            entry = await self.order_store.latest_filled_entry_with_plan(symbol)
+            entry = await order_store.latest_filled_entry_with_plan(symbol)
             plan = None if entry is None else entry.protective_exit
             if entry is not None and plan is not None:
                 resting = engine.resting_protective_stop()
@@ -900,6 +1167,28 @@ class Worker:
             created_at = open_order.order.created_at
             if symbol not in self._gap_replay_from or created_at < self._gap_replay_from[symbol]:
                 self._gap_replay_from[symbol] = created_at
+        for runtime in self.challengers.values():
+            challenger_fills = await runtime.fill_store.fetch_all()
+            for fill in challenger_fills:
+                runtime.portfolio.apply_fill(fill)
+            runtime.risk_manager.rebase_realized_pnl()
+            for open_order in await runtime.order_store.fetch_open():
+                engine = runtime.engines.get(open_order.order.symbol)
+                if engine is None:
+                    logger.warning(
+                        "open order %s for %s of %s has no active engine; left unrestored",
+                        open_order.order.client_order_id,
+                        open_order.order.symbol,
+                        runtime.spec.bot_id,
+                    )
+                    continue
+                engine.restore_order(open_order)
+                restored += 1
+                symbol = open_order.order.symbol
+                created_at = open_order.order.created_at
+                replay_from = runtime.gap_replay_from.get(symbol)
+                if replay_from is None or created_at < replay_from:
+                    runtime.gap_replay_from[symbol] = created_at
         if restored:
             logger.info("restored %d open orders into their adapters", restored)
         return len(fills)

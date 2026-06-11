@@ -11,8 +11,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable, Coroutine
-from datetime import timedelta
+from collections.abc import Callable, Coroutine, Sequence
+from datetime import datetime, timedelta
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -48,6 +48,15 @@ class EvaluationRunConfig(BaseModel):
     horizon_candles: int = Field(default=60, gt=0)
     seed: int = 7
 
+    strategy: str = "production"
+    """Which competition lineup entry the run grades. The default is the
+    incumbent — the shape production trades right now."""
+
+    window_end: datetime | None = None
+    """Freeze the history window's end instead of using "now". Comparison
+    runs share one frozen end so every strategy faces byte-identical
+    scenarios; ``None`` (the default) keeps the historical behavior."""
+
     def intervals(self) -> tuple[CandleInterval, ...]:
         """Parse timeframes; raises ``ValueError`` on unknown ones."""
         return tuple(CandleInterval(timeframe) for timeframe in self.timeframes)
@@ -60,12 +69,18 @@ class EvaluationRunner:
         self,
         candle_store: CandleStore,
         evaluation_store: EvaluationStore,
-        evaluator: ScenarioEvaluator,
+        evaluator_for: Callable[[str], ScenarioEvaluator],
     ) -> None:
-        """Bind the data sources and the (strategy-carrying) evaluator."""
+        """Bind the data sources and the per-strategy evaluator factory.
+
+        ``evaluator_for`` maps a run config's ``strategy`` id to a fresh
+        evaluator grading that lineup entry; it raises ``ValueError`` for
+        an unknown id, which fails the run loudly rather than grading the
+        wrong strategy.
+        """
         self._candles = candle_store
         self._store = evaluation_store
-        self._evaluator = evaluator
+        self._evaluator_for = evaluator_for
 
     async def execute(self, run_id: int, config: EvaluationRunConfig) -> None:
         """Drive ``run_id`` to a terminal status; never raises except on cancel."""
@@ -107,10 +122,11 @@ class EvaluationRunner:
     ) -> list[tuple[Scenario, ScenarioResult]]:
         records: list[tuple[Scenario, ScenarioResult]] = []
         done = 0
-        now = utc_now()
-        start = now - timedelta(days=config.history_days)
+        evaluator = self._evaluator_for(config.strategy)
+        end = config.window_end if config.window_end is not None else utc_now()
+        start = end - timedelta(days=config.history_days)
         for symbol in config.symbols:
-            base = await self._candles.fetch_range(symbol, CandleInterval.M1, start, now)
+            base = await self._candles.fetch_range(symbol, CandleInterval.M1, start, end)
             for interval in config.intervals():
                 series = (
                     base if interval == CandleInterval.M1 else aggregate_candles(base, interval)
@@ -134,7 +150,7 @@ class EvaluationRunner:
                     )
                     continue
                 for spec, conditions in specs:
-                    outcome = self._evaluator.evaluate(series, spec)
+                    outcome = evaluator.evaluate(series, spec)
                     scenario = Scenario(
                         run_id=run_id,
                         symbol=symbol,
@@ -191,7 +207,26 @@ class EvaluationManager:
         self._code_version = code_version
         self._spawn = spawn
         self._task: asyncio.Task[None] | None = None
-        self._current_run_id: int | None = None
+        # Every run id owned by the in-flight task: one for a single run, N
+        # for a comparison batch (cancel must reconcile all of them).
+        self._batch_run_ids: tuple[int, ...] = ()
+
+    async def _create_run(self, config: EvaluationRunConfig, comparison_group: int | None) -> int:
+        return await self._store.create_run(
+            symbols=list(config.symbols),
+            timeframes=list(config.timeframes),
+            config=config.model_dump(mode="json"),
+            code_version=self._code_version,
+            progress_total=config.scenario_count * len(config.symbols) * len(config.timeframes),
+            created_at=utc_now(),
+            strategy=config.strategy,
+            comparison_group=comparison_group,
+        )
+
+    def _require_idle(self) -> None:
+        if self._task is not None and not self._task.done():
+            in_flight = ", ".join(str(run_id) for run_id in self._batch_run_ids)
+            raise RuntimeError(f"evaluation run(s) {in_flight} already in progress")
 
     async def start(self, config: EvaluationRunConfig) -> int:
         """Create the run row and launch it; one run at a time, on purpose.
@@ -200,31 +235,73 @@ class EvaluationManager:
         worker's CPU with live trading) and ``ValueError`` for bad config.
         """
         config.intervals()  # validate timeframes before any row exists
-        if self._task is not None and not self._task.done():
-            raise RuntimeError(f"evaluation run {self._current_run_id} is already in progress")
-        run_id = await self._store.create_run(
-            symbols=list(config.symbols),
-            timeframes=list(config.timeframes),
-            config=config.model_dump(),
-            code_version=self._code_version,
-            progress_total=config.scenario_count * len(config.symbols) * len(config.timeframes),
-            created_at=utc_now(),
-        )
-        self._current_run_id = run_id
+        self._require_idle()
+        run_id = await self._create_run(config, comparison_group=None)
+        self._batch_run_ids = (run_id,)
         self._task = self._spawn(self._runner.execute(run_id, config))
-        logger.info("evaluation run %d started", run_id)
+        logger.info("evaluation run %d started (%s)", run_id, config.strategy)
         return run_id
 
+    async def start_comparison(
+        self, config: EvaluationRunConfig, strategies: Sequence[str]
+    ) -> list[int]:
+        """Grade every strategy in ``strategies`` on identical scenarios.
+
+        One run row per strategy, all sharing a ``comparison_group`` (the
+        lead run's id) and one frozen ``window_end`` — same candles, same
+        seed, same scenario coordinates, so the summaries differ only by
+        strategy. Runs execute sequentially in one background task (the
+        single-flight rule protects the live candle loop, comparison or
+        not). Returns the run ids in lineup order; raises ``RuntimeError``
+        when a run is already in flight, ``ValueError`` for bad config or
+        an empty lineup.
+        """
+        config.intervals()
+        if not strategies:
+            raise ValueError("a comparison needs at least one strategy")
+        self._require_idle()
+        frozen_end = config.window_end if config.window_end is not None else utc_now()
+        run_configs: list[EvaluationRunConfig] = [
+            config.model_copy(update={"strategy": strategy, "window_end": frozen_end})
+            for strategy in strategies
+        ]
+        lead_id = await self._create_run(run_configs[0], comparison_group=None)
+        # The group id is the lead run's id — knowable only after the first
+        # insert, so the lead row is tagged retroactively.
+        await self._store.set_comparison_group(lead_id, lead_id)
+        run_ids = [lead_id]
+        for run_config in run_configs[1:]:
+            run_ids.append(await self._create_run(run_config, comparison_group=lead_id))
+        self._batch_run_ids = tuple(run_ids)
+
+        async def execute_batch() -> None:
+            for run_id, run_config in zip(run_ids, run_configs, strict=True):
+                await self._runner.execute(run_id, run_config)
+
+        self._task = self._spawn(execute_batch())
+        logger.info(
+            "comparison %d started: runs %s grading %s",
+            lead_id,
+            run_ids,
+            ", ".join(strategies),
+        )
+        return run_ids
+
     def cancel(self, run_id: int) -> bool:
-        """Cancel the in-flight run; returns whether anything was cancelled."""
-        if self._current_run_id != run_id or self._task is None or self._task.done():
+        """Cancel the in-flight run or batch; returns whether anything was.
+
+        Cancelling any member of a comparison cancels the whole batch —
+        half a comparison cannot answer the question the batch asked.
+        """
+        if run_id not in self._batch_run_ids or self._task is None or self._task.done():
             return False
         self._task.cancel()
         # A task cancelled before it ever ran never executes a line of
         # ``execute`` — including its own INTERRUPTED write — so the run
         # would sit "pending" forever. Reconcile from here; idempotent if
         # ``execute`` got there first.
-        self._spawn(self._mark_interrupted_if_not_terminal(run_id))
+        for batch_run_id in self._batch_run_ids:
+            self._spawn(self._mark_interrupted_if_not_terminal(batch_run_id))
         return True
 
     async def _mark_interrupted_if_not_terminal(self, run_id: int) -> None:

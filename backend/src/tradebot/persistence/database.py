@@ -57,6 +57,7 @@ fills_table = Table(
     "fills",
     metadata,
     Column("id", BigInteger, primary_key=True, autoincrement=True),
+    Column("bot_id", Text, nullable=False, server_default="production", index=True),
     Column("client_order_id", Text, nullable=False, index=True),
     Column("symbol", Text, nullable=False, index=True),
     Column("side", Text, nullable=False),
@@ -66,12 +67,15 @@ fills_table = Table(
     Column("filled_at", DateTime(timezone=True), nullable=False),
 )
 """Append-only: fills are facts. A surrogate id because one order can fill
-in several parts with identical timestamps."""
+in several parts with identical timestamps. ``bot_id`` namespaces the
+strategy competition's paper accounts; rows that predate the competition
+default to ``production`` — they always belonged to the production bot."""
 
 orders_table = Table(
     "orders",
     metadata,
     Column("client_order_id", Text, primary_key=True),
+    Column("bot_id", Text, nullable=False, server_default="production", index=True),
     Column("signal_id", Text, nullable=False),
     Column("symbol", Text, nullable=False, index=True),
     Column("side", Text, nullable=False),
@@ -123,6 +127,7 @@ decisions_table = Table(
     "decisions",
     metadata,
     Column("id", BigInteger, primary_key=True, autoincrement=True),
+    Column("bot_id", Text, nullable=False, server_default="production", index=True),
     Column("signal_id", Text, nullable=False),
     Column("strategy_name", Text, nullable=False),
     Column("symbol", Text, nullable=False, index=True),
@@ -168,6 +173,8 @@ evaluation_runs_table = Table(
     Column("id", BigInteger, primary_key=True, autoincrement=True),
     Column("created_at", DateTime(timezone=True), nullable=False),
     Column("status", Text, nullable=False),
+    Column("strategy", Text, nullable=False, server_default="production"),
+    Column("comparison_group", BigInteger, nullable=True, index=True),
     Column("symbols", ARRAY(Text), nullable=False),
     Column("timeframes", ARRAY(Text), nullable=False),
     Column("config", JSONB, nullable=False),
@@ -179,7 +186,10 @@ evaluation_runs_table = Table(
 """One blind walk-forward evaluation run (ARCHITECTURE.md section 12).
 ``config`` snapshots the full run + strategy configuration so results are
 never orphaned from the rules that produced them; old runs are never
-overwritten or rescored."""
+overwritten or rescored. ``strategy`` names the competition lineup entry
+the run graded (runs that predate the competition graded the production
+shape); runs sharing a ``comparison_group`` were generated over identical
+scenario sets, so their summaries compare strategies directly."""
 
 scenarios_table = Table(
     "scenarios",

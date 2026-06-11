@@ -101,6 +101,15 @@ class AppConfig(BaseSettings):
     paper_initial_balance_quote: Decimal = Decimal("10000")
     """Starting paper balance in the quote currency."""
 
+    competition_enabled: bool = True
+    """Run the strategy competition: alongside the production bot, four
+    challenger paper accounts (trend following, mean reversion, breakout,
+    momentum solo) trade the same coins through the same gates, each from
+    its own journal-backed balance, so the leaderboard can say who is
+    best. Paper-scoped by construction — the worker refuses any other
+    mode — and challengers never notify, never propose, and are never
+    promoted to production routing by winning."""
+
     regime_gate_enabled: bool = True
     """Gate every coin's entries on the reference market's regime
     (ARCHITECTURE.md 5.2). On by default — the fail-safe direction for a

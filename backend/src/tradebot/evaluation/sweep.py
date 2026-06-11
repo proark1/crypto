@@ -46,6 +46,8 @@ from tradebot.strategies import (
     BreakoutStrategy,
     MeanReversionConfig,
     MeanReversionStrategy,
+    MomentumConfig,
+    MomentumStrategy,
     Strategy,
     TrendFollowingConfig,
     TrendFollowingStrategy,
@@ -70,13 +72,15 @@ STRATEGY_FAMILIES: Mapping[str, tuple[type[BaseModel], Callable[..., Strategy]]]
     "trend_following": (TrendFollowingConfig, TrendFollowingStrategy),
     "mean_reversion": (MeanReversionConfig, MeanReversionStrategy),
     "breakout": (BreakoutConfig, BreakoutStrategy),
+    "momentum": (MomentumConfig, MomentumStrategy),
 }
 """Sweepable families: name -> (config model, strategy constructor). A
 candidate names its family, so one sweep can pit families against each
-other on identical scenarios. ``breakout`` is research-only for now:
-sweeps and evaluation can grade it, but production routing (which regime
-activates it, at whose expense) is a pending human decision — the worker
-refuses to promote it until then."""
+other on identical scenarios. ``breakout`` and ``momentum`` are
+research-only for now: sweeps, evaluation, and the strategy competition
+can grade them, but production routing (which regime activates them, at
+whose expense) is a pending human decision — the worker refuses to
+promote them until then."""
 
 
 def validate_family_params(family: str, params: Mapping[str, Any]) -> None:

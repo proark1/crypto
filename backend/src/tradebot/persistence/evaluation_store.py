@@ -53,6 +53,8 @@ class EvaluationStore:
         code_version: str,
         progress_total: int,
         created_at: datetime,
+        strategy: str = "production",
+        comparison_group: int | None = None,
     ) -> int:
         """Create a pending run; returns its id.
 
@@ -61,6 +63,8 @@ class EvaluationStore:
         Decimal values (risk fractions, balances) are stringified on the way
         in: JSONB cannot encode Decimal, and silently coercing to float
         would betray the exactness the snapshot exists to preserve.
+        ``strategy`` names the competition lineup entry being graded;
+        ``comparison_group`` ties runs generated over identical scenarios.
         """
         _require_aware(created_at)
         encodable_config = json.loads(json.dumps(config, default=str))
@@ -69,6 +73,8 @@ class EvaluationStore:
             .values(
                 created_at=created_at,
                 status=RunStatus.PENDING.value,
+                strategy=strategy,
+                comparison_group=comparison_group,
                 symbols=list(symbols),
                 timeframes=list(timeframes),
                 config=encodable_config,
@@ -81,6 +87,49 @@ class EvaluationStore:
         async with self._database.engine.begin() as connection:
             run_id: int = (await connection.execute(statement)).scalar_one()
         return run_id
+
+    async def set_comparison_group(self, run_id: int, comparison_group: int) -> None:
+        """Tag ``run_id`` as part of a comparison (the lead run, retroactively).
+
+        The group id is the lead run's own id, which exists only after its
+        insert — every other member is created with the group set.
+        """
+        statement = (
+            update(evaluation_runs_table)
+            .where(evaluation_runs_table.c.id == run_id)
+            .values(comparison_group=comparison_group)
+        )
+        async with self._database.engine.begin() as connection:
+            await connection.execute(statement)
+
+    async def list_comparisons(self, limit: int = 10) -> list[list[dict[str, Any]]]:
+        """Return recent comparison batches, newest first.
+
+        Each batch is its member runs in creation order (the lineup order
+        they were started in), so callers can lay summaries side by side
+        without re-deriving the grouping.
+        """
+        groups_statement = (
+            select(evaluation_runs_table.c.comparison_group)
+            .where(evaluation_runs_table.c.comparison_group.is_not(None))
+            .group_by(evaluation_runs_table.c.comparison_group)
+            .order_by(evaluation_runs_table.c.comparison_group.desc())
+            .limit(limit)
+        )
+        async with self._database.engine.connect() as connection:
+            group_ids = [row[0] for row in (await connection.execute(groups_statement)).all()]
+            if not group_ids:
+                return []
+            runs_statement = (
+                select(evaluation_runs_table)
+                .where(evaluation_runs_table.c.comparison_group.in_(group_ids))
+                .order_by(evaluation_runs_table.c.id)
+            )
+            rows = (await connection.execute(runs_statement)).mappings().all()
+        batches: dict[int, list[dict[str, Any]]] = {group_id: [] for group_id in group_ids}
+        for row in rows:
+            batches[row["comparison_group"]].append(dict(row))
+        return [batches[group_id] for group_id in group_ids]
 
     async def set_run_status(self, run_id: int, status: RunStatus) -> None:
         """Advance the run's lifecycle (pending → running → terminal)."""
