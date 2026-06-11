@@ -5,6 +5,7 @@ import {
   ApiError,
   approveProposal,
   fetchCandles,
+  fetchCompetition,
   fetchDecisions,
   fetchFills,
   fetchProposals,
@@ -21,6 +22,7 @@ import {
 import type {
   CandleResponse,
   ChartInterval,
+  CompetitionResponse,
   DecisionResponse,
   FillResponse,
   ProposalResponse,
@@ -32,6 +34,7 @@ import { IntervalSwitcher } from "../components/IntervalSwitcher";
 import { toTradeMarkers } from "../lib/chart";
 import { ResearchScreen } from "./ResearchScreen";
 import { CoinManager } from "../components/CoinManager";
+import { CompetitionCard } from "../components/CompetitionCard";
 import { CoinTabs } from "../components/CoinTabs";
 import { Controls } from "../components/Controls";
 import { DecisionsPanel } from "../components/DecisionsPanel";
@@ -49,6 +52,7 @@ export function OverviewScreen() {
   const [candles, setCandles] = useState<CandleResponse[]>([]);
   const [proposals, setProposals] = useState<ProposalResponse[]>([]);
   const [wallet, setWallet] = useState<WalletResponse | null>(null);
+  const [competition, setCompetition] = useState<CompetitionResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [needsToken, setNeedsToken] = useState(getStoredToken() === "");
   const [tokenDraft, setTokenDraft] = useState("");
@@ -69,15 +73,23 @@ export function OverviewScreen() {
     try {
       // Decisions are explainability, not safety: their endpoint failing
       // must never take down status/fills or the kill switch with it.
-      const [nextStatus, nextFills, nextDecisions, nextCandles, nextProposals, nextWallet] =
-        await Promise.all([
-          fetchStatus(symbol),
-          fetchFills(),
-          fetchDecisions(symbol).catch(() => null),
-          fetchCandles(symbol, chartInterval).catch(() => null),
-          fetchProposals().catch(() => null),
-          fetchWallet().catch(() => null),
-        ]);
+      const [
+        nextStatus,
+        nextFills,
+        nextDecisions,
+        nextCandles,
+        nextProposals,
+        nextWallet,
+        nextCompetition,
+      ] = await Promise.all([
+        fetchStatus(symbol),
+        fetchFills(),
+        fetchDecisions(symbol).catch(() => null),
+        fetchCandles(symbol, chartInterval).catch(() => null),
+        fetchProposals().catch(() => null),
+        fetchWallet().catch(() => null),
+        fetchCompetition().catch(() => null),
+      ]);
       if (requestId !== requestIdRef.current) {
         return;
       }
@@ -94,6 +106,9 @@ export function OverviewScreen() {
       }
       if (nextWallet !== null) {
         setWallet(nextWallet);
+      }
+      if (nextCompetition !== null) {
+        setCompetition(nextCompetition);
       }
       setError(null);
       setNeedsToken(false);
@@ -274,6 +289,7 @@ export function OverviewScreen() {
           <div className="text-sm text-zinc-500">loading…</div>
         ))}
       {screen === "trade" && <WalletCard wallet={wallet} />}
+      {screen === "trade" && <CompetitionCard competition={competition} />}
       {screen === "trade" && (
         <>
           <ProposalsPanel

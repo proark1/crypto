@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { signClass, trimAmount, truncateAmount } from "./format";
+import { formatFractionPercent, signClass, trimAmount, truncateAmount } from "./format";
 
 describe("trimAmount", () => {
   it("removes trailing zeros without rounding", () => {
@@ -27,6 +27,19 @@ describe("signClass", () => {
   it("keeps zero and unknown neutral", () => {
     expect(signClass("0.00")).toContain("zinc");
     expect(signClass(null)).toContain("zinc");
+  });
+});
+
+describe("formatFractionPercent", () => {
+  it("renders a fraction as a signed percentage", () => {
+    expect(formatFractionPercent("0.0123")).toBe("+1.23%");
+    expect(formatFractionPercent("-0.05")).toBe("-5.00%");
+    expect(formatFractionPercent("0")).toBe("0.00%");
+  });
+
+  it("shows a dash for unknown or unparsable values", () => {
+    expect(formatFractionPercent(null)).toBe("—");
+    expect(formatFractionPercent("not-a-number")).toBe("—");
   });
 });
 

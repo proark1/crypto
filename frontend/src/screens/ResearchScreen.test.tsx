@@ -13,6 +13,8 @@ const RUN: EvaluationRunResponse = {
   progress_done: 10,
   progress_total: 10,
   config: {},
+  strategy: "production",
+  comparison_group: null,
   summary: {
     scenario_count: 10,
     trade_count: 4,
