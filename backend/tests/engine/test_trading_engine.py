@@ -777,3 +777,41 @@ class TestProtectiveStop:
         )
 
         assert engine.protective_stop_quote is not None  # promotion never disarms
+
+
+class TestPartialFills:
+    async def test_partial_entry_rearms_the_stop_cumulatively(self, database: Database) -> None:
+        """Each partial re-protects the whole position, and the order's
+        journal row stays open until the remainder fills."""
+        order_store = OrderStore(database)
+        portfolio = Portfolio(INITIAL_BALANCE)
+        strategy = TrendFollowingStrategy(
+            TrendFollowingConfig(fast_ema_period=3, slow_ema_period=6, atr_period=3)
+        )
+        engine = TradingEngine(
+            strategy,
+            RiskManager(RiskConfig(), portfolio),
+            portfolio,
+            SimulatedExecutionAdapter(FillSimulatorConfig(max_volume_fraction=Decimal("0.6"))),
+            symbol="BTC/USDT",
+            fill_store=FillStore(database),
+            order_store=order_store,
+        )
+        next_index = await drive_until_order_submitted(engine)
+        (pending,) = engine.open_orders()
+        # Candle volume 10 caps each fill at 6: the sized entry (~20 units)
+        # fills across candles.
+        await engine.process_candle(make_candle(next_index, CLOSES[next_index]))
+
+        first_fill = engine.fills[0]
+        assert first_fill.quantity_base < pending.quantity_base  # genuinely partial
+        position = portfolio.position("BTC/USDT")
+        assert position is not None
+        stops = [o for o in engine.open_orders() if o.client_order_id.startswith("stop-")]
+        assert len(stops) == 1
+        assert stops[0].quantity_base == position.quantity_base  # cumulative
+        # The entry row is still restorable for exactly the remainder.
+        open_rows = await order_store.fetch_open("BTC/USDT")
+        entry_rows = [o for o in open_rows if o.order.client_order_id == pending.client_order_id]
+        assert len(entry_rows) == 1
+        assert entry_rows[0].order.quantity_base == pending.quantity_base - first_fill.quantity_base

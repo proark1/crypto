@@ -15,8 +15,19 @@ Fill assumptions err against the strategy on purpose (ARCHITECTURE.md §8,
   as on a real exchange: a gapped-through stop remains an active limit order
   and fills if price later returns to its limit.
 
-Partial fills are not modeled here; the fault-injection mock exchange covers
-them when the live adapter lands.
+Three optional fidelity knobs, all **off by default** so the golden
+backtest and existing paper behavior are bit-identical until a config opts
+in:
+
+- ``max_volume_fraction`` caps how much of a candle's volume one market
+  order may consume; the remainder stays pending and fills on later candles
+  (**partial fills**). A zero-volume candle fills nothing — outage and
+  missed-candle behavior falls out of the data.
+- ``volume_impact_bps`` adds slippage proportional to the share of the
+  candle's volume the fill consumes (**volume-aware slippage**) — large
+  orders in thin candles pay for it.
+- ``submit_latency_candles`` keeps a new order inactive for N candles of
+  its symbol (**latency**): decisions do not reach the venue instantly.
 """
 
 from __future__ import annotations
@@ -40,6 +51,18 @@ class FillSimulatorConfig(BaseModel):
     taker_fee_bps: Decimal = Decimal(10)
     market_slippage_bps: Decimal = Decimal(5)
 
+    max_volume_fraction: Decimal = Decimal(0)
+    """Max share of one candle's volume a market order may fill; 0 = off
+    (whole orders fill in one candle, the pre-partial-fill behavior)."""
+
+    volume_impact_bps: Decimal = Decimal(0)
+    """Extra slippage per 100% of candle volume consumed by the fill;
+    0 = off (flat ``market_slippage_bps`` only)."""
+
+    submit_latency_candles: int = 0
+    """Candles of the order's symbol that pass before it becomes active;
+    0 = off (active from the next candle, as before)."""
+
 
 class SimulatedExecutionAdapter:
     """``ExecutionAdapter`` implementation driven by replayed candles.
@@ -55,6 +78,10 @@ class SimulatedExecutionAdapter:
         self._pending_market: dict[str, Order] = {}
         self._resting: dict[str, Order] = {}
         self._triggered: set[str] = set()
+        # Partial-fill remainder per market order; absent = untouched.
+        self._remaining: dict[str, Decimal] = {}
+        # Candles of the order's symbol still to pass before it activates.
+        self._delay: dict[str, int] = {}
         self._fill_handler: FillHandler | None = None
 
     def set_fill_handler(self, handler: FillHandler) -> None:
@@ -87,6 +114,8 @@ class SimulatedExecutionAdapter:
     def _accept(self, order: Order) -> None:
         if order.client_order_id in self._pending_market or order.client_order_id in self._resting:
             raise ValueError(f"duplicate client_order_id {order.client_order_id!r}")
+        if self._config.submit_latency_candles > 0:
+            self._delay[order.client_order_id] = self._config.submit_latency_candles
         if order.order_type == OrderType.MARKET:
             self._pending_market[order.client_order_id] = order
             return
@@ -99,9 +128,12 @@ class SimulatedExecutionAdapter:
     async def cancel(self, client_order_id: str) -> None:
         """Remove a not-yet-filled order; unknown ids are an upstream bug."""
         if self._pending_market.pop(client_order_id, None) is not None:
+            self._remaining.pop(client_order_id, None)
+            self._delay.pop(client_order_id, None)
             return
         if self._resting.pop(client_order_id, None) is not None:
             self._triggered.discard(client_order_id)
+            self._delay.pop(client_order_id, None)
             return
         raise ValueError(f"cannot cancel unknown order {client_order_id!r}")
 
@@ -115,10 +147,16 @@ class SimulatedExecutionAdapter:
         for order in list(self._pending_market.values()):
             if order.symbol != candle.symbol:
                 continue
-            del self._pending_market[order.client_order_id]
-            fills.append(self._fill_market(order, candle))
+            if self._tick_delay(order.client_order_id):
+                continue
+            fill = self._fill_market(order, candle)
+            if fill is None:
+                continue  # zero tradable volume this candle; keep waiting
+            fills.append(fill)
         for order in list(self._resting.values()):
             if order.symbol != candle.symbol:
+                continue
+            if self._tick_delay(order.client_order_id):
                 continue
             fill = self._try_fill_resting(order, candle)
             if fill is not None:
@@ -132,14 +170,43 @@ class SimulatedExecutionAdapter:
         for fill in fills:
             await self._fill_handler(fill)
 
-    def _fill_market(self, order: Order, candle: Candle) -> Fill:
+    def _tick_delay(self, client_order_id: str) -> bool:
+        """Advance the order's latency clock; True while it is still inactive."""
+        delay = self._delay.get(client_order_id, 0)
+        if delay <= 0:
+            return False
+        self._delay[client_order_id] = delay - 1
+        return True
+
+    def _fill_market(self, order: Order, candle: Candle) -> Fill | None:
+        order_id = order.client_order_id
+        remaining = self._remaining.get(order_id, order.quantity_base)
+        quantity = remaining
+        if self._config.max_volume_fraction > 0:
+            tradable = candle.volume_base * self._config.max_volume_fraction
+            quantity = min(remaining, tradable)
+            if quantity <= 0:
+                return None  # no volume this candle: nothing can fill
         slip = self._config.market_slippage_bps / _BPS_DIVISOR
+        if self._config.volume_impact_bps > 0 and candle.volume_base > 0:
+            # Impact scales with the share of the candle this fill consumes:
+            # the same order pays more in a thin candle than a thick one.
+            slip += (self._config.volume_impact_bps / _BPS_DIVISOR) * (
+                quantity / candle.volume_base
+            )
         direction = 1 if order.side == Side.BUY else -1
         price = (candle.open_quote * (1 + direction * slip)).quantize(
             ACCOUNTING_RESOLUTION, rounding=ROUND_HALF_EVEN
         )
+        if quantity >= remaining:
+            del self._pending_market[order_id]
+            self._remaining.pop(order_id, None)
+        else:
+            self._remaining[order_id] = remaining - quantity
         # Market orders fill at the candle's open, so that is the fill time.
-        return self._make_fill(order, price, self._config.taker_fee_bps, candle, at_open=True)
+        return self._make_fill(
+            order, price, self._config.taker_fee_bps, candle, at_open=True, quantity=quantity
+        )
 
     def _try_fill_resting(self, order: Order, candle: Candle) -> Fill | None:
         assert order.limit_price_quote is not None  # validated at submit
@@ -187,8 +254,10 @@ class SimulatedExecutionAdapter:
         candle: Candle,
         *,
         at_open: bool = False,
+        quantity: Decimal | None = None,
     ) -> Fill:
-        fee = (price_quote * order.quantity_base * fee_bps / _BPS_DIVISOR).quantize(
+        filled_quantity = order.quantity_base if quantity is None else quantity
+        fee = (price_quote * filled_quantity * fee_bps / _BPS_DIVISOR).quantize(
             ACCOUNTING_RESOLUTION, rounding=ROUND_HALF_EVEN
         )
         # Intracandle fills are only *known* once the candle closes, so they
@@ -198,7 +267,7 @@ class SimulatedExecutionAdapter:
             symbol=order.symbol,
             side=order.side,
             price_quote=price_quote,
-            quantity_base=order.quantity_base,
+            quantity_base=filled_quantity,
             fee_quote=fee,
             filled_at=candle.open_time if at_open else candle.close_time,
         )

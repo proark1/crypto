@@ -400,28 +400,49 @@ class OrderStore:
     async def fetch_open(self, symbol: str | None = None) -> list[OpenOrder]:
         """Return open orders (optionally for one symbol), oldest first.
 
-        Guarded against a crash between the fill-journal write and the
-        status update: any order with a journaled fill is excluded even if
-        its row still says open, because restoring it would double-fill —
-        the fill journal outranks this table wherever they disagree.
+        Quantity-aware against partial fills and crashes alike: the fill
+        journal outranks this table, so an order whose journaled fills
+        already cover its quantity is excluded even if its row still says
+        open (a crash between the fill write and the status update), and a
+        partially filled order is returned with only the *remainder* —
+        restoring the full quantity would double-fill the filled part.
         """
-        has_fill = (
-            select(fills_table.c.id)
-            .where(fills_table.c.client_order_id == orders_table.c.client_order_id)
-            .exists()
+        filled = (
+            select(
+                fills_table.c.client_order_id,
+                func.sum(fills_table.c.quantity_base).label("filled_base"),
+            )
+            .group_by(fills_table.c.client_order_id)
+            .subquery()
         )
         statement = (
-            select(orders_table)
-            .where(orders_table.c.status == OrderStatus.OPEN.value, ~has_fill)
+            select(orders_table, filled.c.filled_base)
+            .join(
+                filled,
+                orders_table.c.client_order_id == filled.c.client_order_id,
+                isouter=True,
+            )
+            .where(
+                orders_table.c.status == OrderStatus.OPEN.value,
+                func.coalesce(filled.c.filled_base, 0) < orders_table.c.quantity_base,
+            )
             .order_by(orders_table.c.created_at, orders_table.c.client_order_id)
         )
         if symbol is not None:
             statement = statement.where(orders_table.c.symbol == symbol)
         async with self._database.engine.connect() as connection:
             rows = (await connection.execute(statement)).mappings().all()
-        return [
-            OpenOrder(order=_order_from_row(dict(row)), triggered=row["triggered"]) for row in rows
-        ]
+        open_orders = []
+        for row in rows:
+            data = dict(row)
+            already_filled = data.pop("filled_base") or Decimal(0)
+            order = _order_from_row(data)
+            if already_filled > 0:
+                order = order.model_copy(
+                    update={"quantity_base": order.quantity_base - already_filled}
+                )
+            open_orders.append(OpenOrder(order=order, triggered=row["triggered"]))
+        return open_orders
 
     async def latest_filled_entry_with_plan(self, symbol: str) -> Order | None:
         """Return the newest filled entry that planned a protective exit, if any.
