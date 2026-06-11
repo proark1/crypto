@@ -3,8 +3,25 @@ from decimal import Decimal
 
 import pytest
 
-from tradebot.core.models import Candle, CandleInterval, Decision, DecisionOutcome, Fill, Side
-from tradebot.persistence import CandleStore, CoinStore, Database, DecisionStore, FillStore
+from tradebot.core.models import (
+    Candle,
+    CandleInterval,
+    Decision,
+    DecisionOutcome,
+    Fill,
+    Order,
+    OrderType,
+    ProtectiveExitPlan,
+    Side,
+)
+from tradebot.persistence import (
+    CandleStore,
+    CoinStore,
+    Database,
+    DecisionStore,
+    FillStore,
+    OrderStore,
+)
 from tradebot.persistence.database import coerce_async_dsn
 
 BASE_TIME = datetime(2026, 1, 2, 0, 0, tzinfo=UTC)
@@ -209,6 +226,126 @@ class TestFillStore:
         await store.append(other)
 
         assert len(await store.fetch_all("ETH/USDT")) == 1
+
+
+def make_order(
+    order_id: str = "ord-1",
+    symbol: str = "BTC/USDT",
+    order_type: OrderType = OrderType.MARKET,
+    minute: int = 0,
+) -> Order:
+    is_resting = order_type != OrderType.MARKET
+    return Order(
+        client_order_id=order_id,
+        signal_id=f"sig-{order_id}",
+        symbol=symbol,
+        side=Side.SELL,
+        order_type=order_type,
+        quantity_base=Decimal("0.00012345"),
+        limit_price_quote=Decimal("94.123456789012") if is_resting else None,
+        stop_price_quote=Decimal("95") if order_type == OrderType.STOP_LIMIT else None,
+        created_at=BASE_TIME + timedelta(minutes=minute),
+    )
+
+
+class TestOrderStore:
+    async def test_round_trip_preserves_exact_values(self, database: Database) -> None:
+        store = OrderStore(database)
+        original = make_order(order_type=OrderType.STOP_LIMIT)
+        await store.record_submitted(original)
+
+        (loaded,) = await store.fetch_open()
+        assert loaded.order == original  # Decimal-exact, field-for-field
+        assert loaded.triggered is False
+
+    async def test_terminal_orders_are_not_restorable(self, database: Database) -> None:
+        store = OrderStore(database)
+        await store.record_submitted(make_order("ord-filled"))
+        await store.record_submitted(make_order("ord-cancelled"))
+        await store.record_submitted(make_order("ord-open"))
+        await store.mark_filled("ord-filled", BASE_TIME + timedelta(minutes=1))
+        await store.mark_cancelled("ord-cancelled", BASE_TIME + timedelta(minutes=1))
+
+        open_orders = await store.fetch_open()
+        assert [o.order.client_order_id for o in open_orders] == ["ord-open"]
+
+    async def test_resubmitted_intent_reopens_its_row(self, database: Database) -> None:
+        """Deterministic ids: the same intent after a cancel is open again."""
+        store = OrderStore(database)
+        await store.record_submitted(make_order())
+        await store.mark_cancelled("ord-1", BASE_TIME + timedelta(minutes=1))
+        assert await store.fetch_open() == []
+
+        await store.record_submitted(make_order())
+        (reopened,) = await store.fetch_open()
+        assert reopened.order.client_order_id == "ord-1"
+        assert reopened.triggered is False  # the latch never survives a reopen
+
+    async def test_trigger_latch_round_trips(self, database: Database) -> None:
+        store = OrderStore(database)
+        await store.record_submitted(make_order(order_type=OrderType.STOP_LIMIT))
+        await store.mark_triggered("ord-1")
+
+        (loaded,) = await store.fetch_open()
+        assert loaded.triggered is True  # still open, but latched
+
+    async def test_fill_journal_outranks_a_stale_open_row(self, database: Database) -> None:
+        """Crash between the fill write and the status update: never restore."""
+        store = OrderStore(database)
+        await store.record_submitted(make_order())
+        await FillStore(database).append(make_fill("ord-1"))  # status still "open"
+
+        assert await store.fetch_open() == []
+
+    async def test_protective_exit_plan_round_trips(self, database: Database) -> None:
+        store = OrderStore(database)
+        planned = make_order().model_copy(
+            update={
+                "protective_exit": ProtectiveExitPlan(
+                    stop_price_quote=Decimal("95.000000000001"),
+                    limit_price_quote=Decimal("94.525"),
+                )
+            }
+        )
+        await store.record_submitted(planned)
+
+        (loaded,) = await store.fetch_open()
+        assert loaded.order == planned  # plan included, Decimal-exact
+
+    async def test_latest_filled_entry_with_plan_finds_the_recovery_source(
+        self, database: Database
+    ) -> None:
+        store = OrderStore(database)
+        plan = ProtectiveExitPlan(stop_price_quote=Decimal("95"), limit_price_quote=Decimal("94"))
+
+        def planned_entry(order_id: str, minute: int) -> Order:
+            return make_order(order_id, minute=minute).model_copy(
+                update={"side": Side.BUY, "protective_exit": plan}
+            )
+
+        await store.record_submitted(planned_entry("ord-old", 0))
+        await store.record_submitted(planned_entry("ord-new", 1))
+        await store.record_submitted(planned_entry("ord-unfilled", 2))
+        planless = make_order("ord-planless", minute=3).model_copy(update={"side": Side.BUY})
+        await store.record_submitted(planless)
+        await store.mark_filled("ord-old", BASE_TIME + timedelta(minutes=4))
+        await store.mark_filled("ord-new", BASE_TIME + timedelta(minutes=5))
+        await store.mark_filled("ord-planless", BASE_TIME + timedelta(minutes=6))
+
+        entry = await store.latest_filled_entry_with_plan("BTC/USDT")
+        assert entry is not None
+        assert entry.client_order_id == "ord-new"  # newest filled, plan-bearing
+        assert await store.latest_filled_entry_with_plan("ETH/USDT") is None
+
+    async def test_symbol_filter_and_oldest_first_order(self, database: Database) -> None:
+        store = OrderStore(database)
+        await store.record_submitted(make_order("ord-newer", minute=2))
+        await store.record_submitted(make_order("ord-older", minute=1))
+        await store.record_submitted(make_order("ord-eth", symbol="ETH/USDT"))
+
+        btc = await store.fetch_open("BTC/USDT")
+        assert [o.order.client_order_id for o in btc] == ["ord-older", "ord-newer"]
+        assert len(await store.fetch_open()) == 3
 
 
 def make_decision(signal_id: str, outcome: DecisionOutcome) -> Decision:

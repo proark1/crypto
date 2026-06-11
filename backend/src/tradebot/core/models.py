@@ -162,6 +162,37 @@ class Signal(BaseModel):
     created_at: UtcDatetime = Field(default_factory=utc_now)
 
 
+class ProtectiveExitPlan(BaseModel):
+    """How the position opened by an entry order will be protected.
+
+    Deliberately separate from ``Signal.stop_price_quote`` (the *risk
+    invalidation* level used for sizing and evaluation grading): this is the
+    *exchange order* — a stop-limit whose trigger starts at the invalidation
+    level and whose limit price sits below it by a configured offset,
+    bounding how far a fast market can fill past the stop. The ratchet
+    policy (breakeven, trail) is carried here too, so the whole protection
+    plan survives restarts with the entry order. Keeping the three meanings
+    of "stop" (invalidation, resting exchange order, evaluation reference)
+    in distinct places stops them drifting apart silently.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    stop_price_quote: PositiveAmount
+    """Initial trigger level — the signal's risk-invalidation price."""
+
+    limit_price_quote: PositiveAmount
+    """Limit floor of the stop-limit order, below the trigger."""
+
+    breakeven_at_r: float = 0.0
+    """Ratchet policy, copied from the signal: lock the stop to the entry
+    price once the trade has earned this many R. ``0`` disables."""
+
+    trail_distance_quote: PositiveAmount | None = None
+    """Ratchet policy, copied from the signal: trail the stop this far
+    below the highest high since entry. ``None`` disables."""
+
+
 class Order(BaseModel):
     """A risk-approved instruction for the execution engine.
 
@@ -170,6 +201,11 @@ class Order(BaseModel):
     and gate decisions that produced it. ``client_order_id`` is deterministic
     per intent at the call site, making resubmission after a disconnect
     idempotent.
+
+    ``protective_exit`` rides on entry orders only: when the entry fills, the
+    engine arms the planned stop-limit through the risk manager. It persists
+    with the order so a restart between submission and fill (or between fill
+    and stop placement) can still protect the position.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -182,7 +218,23 @@ class Order(BaseModel):
     quantity_base: PositiveAmount
     limit_price_quote: PositiveAmount | None = None
     stop_price_quote: PositiveAmount | None = None
+    protective_exit: ProtectiveExitPlan | None = None
     created_at: UtcDatetime = Field(default_factory=utc_now)
+
+
+class OrderStatus(enum.StrEnum):
+    """Lifecycle of a journaled order intent (paper-mode order journal).
+
+    ``OPEN`` covers both pending market orders and resting limit/stop-limit
+    orders; ``FILLED`` and ``CANCELLED`` are terminal. There is no partial
+    state today because the simulator fills whole orders only — when partial
+    fills arrive, remaining quantity becomes a property of the fill journal,
+    not a new status.
+    """
+
+    OPEN = "open"
+    FILLED = "filled"
+    CANCELLED = "cancelled"
 
 
 class Fill(BaseModel):

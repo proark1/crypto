@@ -52,6 +52,7 @@ from tradebot.persistence import (
     DecisionStore,
     EvaluationStore,
     FillStore,
+    OrderStore,
     StrategySettingsStore,
 )
 from tradebot.portfolio import Portfolio
@@ -116,6 +117,7 @@ class Worker:
         self.candle_store = CandleStore(database)
         self.fill_store = FillStore(database)
         self.decision_store = DecisionStore(database)
+        self.order_store = OrderStore(database)
         self.coin_store = CoinStore(database)
         self.evaluation_store = EvaluationStore(database)
         self.strategy_settings_store = StrategySettingsStore(database)
@@ -331,6 +333,7 @@ class Worker:
             symbol=symbol,
             fill_store=self.fill_store,
             decision_store=self.decision_store,
+            order_store=self.order_store,
             autonomy_mode=self.config.autonomy_mode,
             proposal_queue=ProposalQueue(
                 ttl=timedelta(seconds=self.config.proposal_ttl_seconds),
@@ -461,6 +464,11 @@ class Worker:
             )
         if self.portfolio.position(symbol) is not None:
             raise RuntimeError(f"{symbol} has an open position; flatten it first (kill or exit)")
+        if engine.open_orders():
+            # Discarding the engine would orphan its journaled-open orders:
+            # nothing could fill or cancel them until a restart restored
+            # them into a re-added coin's adapter.
+            raise RuntimeError(f"{symbol} has open orders; cancel them first (kill)")
         if engine.pending_proposals():
             raise RuntimeError(f"{symbol} has a pending proposal; approve or reject it first")
         await self.coin_store.remove(symbol)
@@ -475,14 +483,20 @@ class Worker:
         logger.info("coin removed at runtime: %s", symbol)
 
     async def _rearm_protective_stops(self) -> None:
-        """Give every replayed position a fresh protective stop.
+        """Rebuild each replayed position's protection after a restart.
 
-        Restart recovery: the journal restores positions but the in-memory
-        managed stop is gone, and an unprotected position is the exact
-        failure the stop exists to prevent. The re-armed level is an
-        approximation — average entry minus the active trend multiple of
-        the current ATR — because the original signal's stop did not
-        survive the restart; better an approximate stop than none.
+        The resting stop order itself is restored from the order journal;
+        what a restart loses is the in-memory ratchet (ManagedStop). With
+        the entry's persisted exit plan the ratchet is rebuilt exactly —
+        seeded with the restored order's trigger so ratchet progress is
+        kept — and a missing resting order (crash between the entry fill
+        and the stop placement) is resubmitted from the same plan.
+
+        Positions with no journaled plan (history predating the order
+        journal) fall back to an approximate ATR-derived level enforced by
+        the engine's market-exit backstop; better an approximate stop than
+        none. A position that cannot be protected at all is loud, never
+        silent.
         """
         from tradebot.indicators import Atr
 
@@ -490,7 +504,38 @@ class Worker:
         for symbol, position in self.portfolio.positions.items():
             engine = self.engines.get(symbol)
             if engine is None:
-                continue  # position on a coin no longer traded; kill handles it
+                logger.warning(
+                    "open position in %s has no active engine; protection unverifiable", symbol
+                )
+                continue
+            entry = await self.order_store.latest_filled_entry_with_plan(symbol)
+            plan = None if entry is None else entry.protective_exit
+            if entry is not None and plan is not None:
+                resting = engine.resting_protective_stop()
+                level = (
+                    plan.stop_price_quote
+                    if resting is None or resting.stop_price_quote is None
+                    else resting.stop_price_quote
+                )
+                engine.arm_managed_stop(
+                    ManagedStop(
+                        entry_price_quote=position.average_entry_price_quote,
+                        initial_stop_quote=level,
+                        breakeven_at_r=plan.breakeven_at_r,
+                        trail_distance_quote=plan.trail_distance_quote,
+                    ),
+                    entry,
+                )
+                if resting is None and not engine.has_resting_exit():
+                    # The crash window: the entry fill was journaled but its
+                    # stop never reached the books.
+                    await engine.submit_protective_stop(entry, position.quantity_base)
+                logger.info(
+                    "protective stop re-armed for %s at %s (from journaled plan)", symbol, level
+                )
+                continue
+            # Plan-less position: approximate the level from current ATR and
+            # let the engine's market-exit backstop enforce it.
             stored = await self.candle_store.fetch_recent(
                 symbol, CandleInterval.M1, 5 * trend.atr_period
             )
@@ -507,14 +552,14 @@ class Worker:
                     symbol,
                 )
                 continue
-            entry = position.average_entry_price_quote
-            stop_price = entry - Decimal(str(trend.atr_stop_multiple * atr_value))
+            entry_price = position.average_entry_price_quote
+            stop_price = entry_price - Decimal(str(trend.atr_stop_multiple * atr_value))
             if stop_price <= 0:
                 logger.warning("cannot re-arm protective stop for %s: degenerate level", symbol)
                 continue
-            engine.arm_protective_stop(
+            engine.arm_managed_stop(
                 ManagedStop(
-                    entry_price_quote=entry,
+                    entry_price_quote=entry_price,
                     initial_stop_quote=stop_price,
                     breakeven_at_r=trend.breakeven_at_r,
                     trail_distance_quote=(
@@ -524,8 +569,11 @@ class Worker:
                     ),
                 )
             )
-            logger.info(
-                "protective stop re-armed for %s at %s (restart recovery)", symbol, stop_price
+            logger.warning(
+                "protective stop for %s approximated at %s (no journaled plan; "
+                "market-exit backstop enforces it)",
+                symbol,
+                stop_price,
             )
 
     async def replay_journal(self) -> int:
@@ -534,12 +582,32 @@ class Worker:
         Paper-mode reconciliation: the journal is the source of truth across
         restarts (live mode will reconcile against the exchange instead).
         Replayed history is then rebased out of the loss-streak tracker —
-        an old losing streak must not start a new cooldown at boot.
+        an old losing streak must not start a new cooldown at boot. Finally,
+        orders that were open when the process died are re-armed in their
+        engines' adapters, so a restart never silently drops an in-flight
+        order.
         """
         fills = await self.fill_store.fetch_all()
         for fill in fills:
             self.portfolio.apply_fill(fill)
         self.risk_manager.rebase_realized_pnl()
+        restored = 0
+        for open_order in await self.order_store.fetch_open():
+            engine = self.engines.get(open_order.order.symbol)
+            if engine is None:
+                # A coin removed while an order rested (or a journal from an
+                # older coin set): nothing can fill it, so leave the row
+                # alone and say so instead of guessing.
+                logger.warning(
+                    "open order %s for %s has no active engine; left unrestored",
+                    open_order.order.client_order_id,
+                    open_order.order.symbol,
+                )
+                continue
+            engine.restore_order(open_order)
+            restored += 1
+        if restored:
+            logger.info("restored %d open orders into their adapters", restored)
         return len(fills)
 
     async def run(self) -> None:

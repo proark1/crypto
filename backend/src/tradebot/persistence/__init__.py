@@ -15,6 +15,8 @@ from tradebot.persistence.stores import (
     CoinStore,
     DecisionStore,
     FillStore,
+    OpenOrder,
+    OrderStore,
     StrategySettingsStore,
 )
 
@@ -27,5 +29,7 @@ __all__ = [
     "DecisionStore",
     "EvaluationStore",
     "FillStore",
+    "OpenOrder",
+    "OrderStore",
     "StrategySettingsStore",
 ]

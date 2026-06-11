@@ -12,9 +12,17 @@ import pytest
 
 from tradebot.core.config import AppConfig, TradingMode
 from tradebot.core.events import CandleClosed
-from tradebot.core.models import Candle, CandleInterval, Fill, Side
+from tradebot.core.models import (
+    Candle,
+    CandleInterval,
+    Fill,
+    Order,
+    OrderType,
+    ProtectiveExitPlan,
+    Side,
+)
 from tradebot.marketdata.live_feed import OhlcvRow
-from tradebot.persistence import Database, FillStore
+from tradebot.persistence import Database, FillStore, OrderStore
 from tradebot.persistence.database import metadata
 from tradebot.worker import Worker
 
@@ -198,6 +206,77 @@ class TestWorker:
         assert position is not None
         assert position.quantity_base == Decimal("2")
         assert worker.portfolio.quote_balance == Decimal("9799.8")
+
+    async def test_restart_restores_open_orders_into_their_engines(
+        self, database: Database
+    ) -> None:
+        """Submitted-but-unfilled orders must survive a deploy restart."""
+
+        def make_open_order(order_id: str, symbol: str) -> Order:
+            return Order(
+                client_order_id=order_id,
+                signal_id=f"sig-{order_id}",
+                symbol=symbol,
+                side=Side.BUY,
+                order_type=OrderType.MARKET,
+                quantity_base=Decimal("1"),
+                created_at=BASE_TIME,
+            )
+
+        store = OrderStore(database)
+        await store.record_submitted(make_open_order("ord-btc", "BTC/USDT"))
+        # An orphan: its coin is not traded, so no engine can host it.
+        await store.record_submitted(make_open_order("ord-doge", "DOGE/USDT"))
+
+        worker = Worker(make_config(), database, ScriptedExchange([]))
+        await worker.initialize()
+
+        (restored,) = worker.engines["BTC/USDT"].open_orders()
+        assert restored.client_order_id == "ord-btc"
+        # The orphan is warned about and left journaled open, not dropped.
+        journaled = {o.order.client_order_id for o in await store.fetch_open()}
+        assert journaled == {"ord-btc", "ord-doge"}
+
+    async def test_boot_rearms_a_stop_lost_in_the_crash_window(self, database: Database) -> None:
+        """Entry fill journaled, process died before the stop was placed."""
+        order_store = OrderStore(database)
+        entry = Order(
+            client_order_id="ord-entry",
+            signal_id="sig-entry",
+            symbol="BTC/USDT",
+            side=Side.BUY,
+            order_type=OrderType.MARKET,
+            quantity_base=Decimal("2"),
+            protective_exit=ProtectiveExitPlan(
+                stop_price_quote=Decimal("95"), limit_price_quote=Decimal("94.525")
+            ),
+            created_at=BASE_TIME,
+        )
+        await order_store.record_submitted(entry)
+        await order_store.mark_filled("ord-entry", BASE_TIME)
+        await FillStore(database).append(
+            Fill(
+                client_order_id="ord-entry",
+                symbol="BTC/USDT",
+                side=Side.BUY,
+                price_quote=Decimal("100"),
+                quantity_base=Decimal("2"),
+                fee_quote=Decimal("0"),
+                filled_at=BASE_TIME,
+            )
+        )
+        # Deliberately no stop row: that is the crash window.
+
+        worker = Worker(make_config(), database, ScriptedExchange([]))
+        await worker.initialize()
+
+        (stop,) = worker.engines["BTC/USDT"].open_orders()
+        assert stop.client_order_id == "stop-ord-entry"
+        assert stop.quantity_base == Decimal("2")  # the whole position
+        assert stop.stop_price_quote == Decimal("95")
+        # Journaled too, so the next restart restores it the normal way.
+        journaled = await order_store.fetch_open("BTC/USDT")
+        assert [o.order.client_order_id for o in journaled] == ["stop-ord-entry"]
 
     async def test_removal_survives_restart_despite_env_seed(self, database: Database) -> None:
         """The env var seeds once; a removed coin must stay removed."""

@@ -15,8 +15,8 @@ This document is the target design. Implementation status as of June 2026
 | Strategies: trend-following EMA crossover (§4.2) | **Done** — EMA cross with ATR stops plus sweepable knobs: anti-chase entry-extension filter, breakeven lock, ATR trailing stop; the pluggable registry is the pattern, more families pending |
 | Backtester: runner, pessimistic fill simulator, golden test (§5) | **Done** — walk-forward splitting feeds the parameter sweeps (§12.5) |
 | Risk manager: sizing, per-trade limits, circuit breakers (§4.3) | **Done** — daily-loss + drawdown trips (human reset), loss-streak cooldown, daily entry cap, account-wide exposure cap (open positions treated as one fully correlated block; per-coin caps alone understate crypto risk) |
-| Execution: simulated adapter (backtest + paper) (§4.4) | **Done for paper** — protective stops are now enforced engine-side per candle (one ManagedStop shared with the evaluator: breakeven lock + ATR trail as sweepable knobs; single-exit guard; restart re-arms replayed positions); live adapter, exchange-native resting stops, partial-fill handling remain Phase 3 (see LIVE_TRADING_CHECKLIST.md) |
-| Portfolio + persistence: positions, PnL, Postgres journal (§4.5) | **Done** — journal-replay restart recovery; nightly backups missing |
+| Execution: simulated adapter (backtest + paper) (§4.4) | **Done for paper** — protective stop lifecycle enforced in all modes: a resting stop-limit armed on entry fill from the order's persisted exit plan, its level managed by one ManagedStop shared with the evaluator (breakeven lock + ATR trail as sweepable knobs, resting order cancel/replaced as it ratchets), cancelled before any exit (single-exit guard), boot reconciliation re-arms after crashes (exact from the journaled plan, ATR approximation + market-exit backstop for plan-less history); live adapter, exchange-native stop placement, partial-fill handling are Phase 3 (see LIVE_TRADING_CHECKLIST.md) |
+| Portfolio + persistence: positions, PnL, Postgres journal (§4.5) | **Done** — journal-replay restart recovery (fills rebuild positions; the order journal re-arms submitted-but-unfilled orders, stop-trigger latches and exit plans included); nightly backups missing |
 | Trading engine + worker (§4.2, §7.1) | **Done** — single symbol, paper mode only by hard guard |
 | Control API: status, pause/resume, kill, data endpoints (§6.4) | **Done** — bearer auth, public /health, CORS; SSE/WS push missing (dashboard polls) |
 | Co-pilot mode: proposal queue, approve/reject, TTL + drift guards (§6.3) | **Done** — entries only; exits never wait for approval |
@@ -144,13 +144,27 @@ operational pain with zero benefit.
   The bot manages (trails, replaces) these resting orders rather than watching prices
   and reacting — bot-side stop logic is the fallback only where native stops are
   unavailable.
+  The lifecycle is mode-independent: entry orders carry a `ProtectiveExitPlan`
+  (trigger = the signal's invalidation level the position was sized against, so
+  enforced risk equals sized risk; limit floor a configured offset below the
+  trigger). When the entry fills, the engine arms the planned stop-limit; a
+  strategy exit or the kill switch cancels it before selling (never two SELLs
+  working one position); startup reconciliation re-arms any stop the journal
+  shows missing. In backtest and paper the same resting order lives in the fill
+  simulator, so gap-through risk shows up in research results too.
 
 ### 4.5 Portfolio / State Manager
 - Single source of truth for positions, balances, open orders, realized/unrealized PnL.
 - **All accounting in one configured quote currency (default USDT):** v1 trades only
   pairs quoted in it, so equity, PnL, and risk limits are all directly comparable
   with no FX conversion ambiguity. Multi-quote support is a later, deliberate feature.
-- Persisted in Postgres so the bot resumes cleanly after a restart.
+- Persisted in Postgres so the bot resumes cleanly after a restart. Two journals
+  carry recovery: the append-only **fill journal** rebuilds positions and balances,
+  and the **order journal** records every submitted intent with its latest state
+  (open / filled / cancelled, plus the stop-trigger latch) so orders that were
+  in flight when the process died are re-armed in the adapter instead of silently
+  vanishing. Where the two disagree (crash between writes), the fill journal
+  outranks the order row — an order with a journaled fill is never restored.
 - Emits PnL and exposure metrics consumed by the risk manager and the UI.
 
 ### 4.6 Backtester & Research Loop
