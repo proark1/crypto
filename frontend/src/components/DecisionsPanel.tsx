@@ -8,6 +8,14 @@ const OUTCOME_STYLES: Record<string, string> = {
   paused: "bg-zinc-500/20 text-zinc-400",
 };
 
+/** Hover meaning per outcome chip, in plain words. */
+const OUTCOME_MEANINGS: Record<string, string> = {
+  submitted: "passed every risk check and became an order",
+  vetoed: "blocked by a risk rule — the reasons below say which",
+  gated: "blocked by the market-regime gate (conditions too hostile to enter)",
+  paused: "skipped because trading was paused at the time",
+};
+
 /**
  * The decision pipeline (ARCHITECTURE.md 6.2): every signal the strategy
  * emitted, what happened to it, and the reasons — shown verbatim. This is
@@ -24,8 +32,12 @@ export function DecisionsPanel(props: { decisions: DecisionResponse[] }) {
   }
   return (
     <section className="rounded-xl border border-zinc-800 bg-zinc-900">
-      <h3 className="border-b border-zinc-800 px-4 py-3 text-xs font-bold uppercase tracking-wide text-zinc-500">
-        decisions
+      <h3 className="border-b border-zinc-800 px-4 py-3 text-xs uppercase tracking-wide text-zinc-500">
+        <span className="font-bold">decisions</span>
+        <span className="ml-2 normal-case tracking-normal">
+          — every signal and what the bot did about it, reasons included; hover a chip for its
+          meaning
+        </span>
       </h3>
       <ul>
         {props.decisions.map((decision) => (
@@ -35,6 +47,7 @@ export function DecisionsPanel(props: { decisions: DecisionResponse[] }) {
           >
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
               <span
+                title={OUTCOME_MEANINGS[decision.outcome]}
                 className={`rounded px-2 py-0.5 text-xs font-bold uppercase ${
                   OUTCOME_STYLES[decision.outcome] ?? "bg-zinc-500/20 text-zinc-400"
                 }`}

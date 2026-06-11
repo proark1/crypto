@@ -5,12 +5,18 @@ export function FillsTable(props: { fills: FillResponse[] }) {
   if (props.fills.length === 0) {
     return (
       <section className="rounded-xl border border-zinc-800 bg-zinc-900 p-5 text-sm text-zinc-500">
-        no fills yet
+        no trades yet — executed buys and sells will appear here
       </section>
     );
   }
   return (
     <section className="overflow-x-auto rounded-xl border border-zinc-800 bg-zinc-900">
+      <h3 className="border-b border-zinc-800 px-4 py-3 text-xs uppercase tracking-wide text-zinc-500">
+        <span className="font-bold">trades</span>
+        <span className="ml-2 normal-case tracking-normal">
+          — every executed buy and sell across all coins, newest first
+        </span>
+      </h3>
       <table className="w-full text-left text-sm">
         <thead className="border-b border-zinc-800 text-xs uppercase tracking-wide text-zinc-500">
           <tr>
