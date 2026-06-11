@@ -22,6 +22,7 @@ export function Controls(props: {
         <button
           onClick={props.onResume}
           disabled={disabled}
+          title="let the bot open positions again"
           className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-500 disabled:opacity-50"
         >
           resume
@@ -30,6 +31,7 @@ export function Controls(props: {
         <button
           onClick={props.onPause}
           disabled={disabled}
+          title="stop opening new positions — open positions and their stops stay managed"
           className="rounded-lg bg-zinc-700 px-4 py-2 text-sm font-semibold text-white hover:bg-zinc-600 disabled:opacity-50"
         >
           pause
@@ -63,6 +65,7 @@ export function Controls(props: {
             setConfirmingKill(true);
           }}
           disabled={disabled}
+          title="emergency stop: sell everything at market and halt — asks for confirmation first"
           className="rounded-lg border border-red-600 px-4 py-2 text-sm font-bold text-red-400 hover:bg-red-600/10 disabled:opacity-50"
         >
           kill switch

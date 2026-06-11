@@ -18,8 +18,11 @@ export function ProposalsPanel(props: {
   const disabled = props.disabled ?? false;
   return (
     <section className="rounded-xl border border-amber-700/60 bg-amber-950/20">
-      <h3 className="border-b border-amber-900/40 px-4 py-3 text-xs font-bold uppercase tracking-wide text-amber-400">
-        awaiting your approval
+      <h3 className="border-b border-amber-900/40 px-4 py-3 text-xs uppercase tracking-wide text-amber-400">
+        <span className="font-bold">awaiting your approval</span>
+        <span className="ml-2 normal-case tracking-normal text-amber-500/80">
+          — co-pilot mode: these trades happen only if you approve them before they expire
+        </span>
       </h3>
       <ul>
         {props.proposals.map((proposal) => (
