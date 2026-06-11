@@ -1,6 +1,7 @@
 import { useState } from "react";
 
 import type { SweepResponse } from "../api/types";
+import { Button, Card, SectionHeader } from "../ui";
 
 /**
  * Walk-forward parameter sweeps (ARCHITECTURE.md §12.5). Candidates are
@@ -18,24 +19,20 @@ export function SweepPanel(props: {
   const selected = props.sweeps.find((sweep) => sweep.id === selectedId) ?? props.sweeps[0];
 
   return (
-    <section className="rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900 p-4">
-      <div className="flex flex-wrap items-center gap-3">
-        <h3 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
-          parameter sweeps (walk-forward)
-        </h3>
-        <button
-          type="button"
-          onClick={props.onStart}
-          className="rounded-lg bg-emerald-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-emerald-500"
-        >
-          run sweep
-        </button>
-        <span className="text-xs text-zinc-500">
-          tries variants of the bot&apos;s current settings on old data, then checks the best
-          one on data it never saw — only a &quot;validated&quot; winner changes anything (paper
-          mode only)
-        </span>
-      </div>
+    <Card padding="md">
+      <SectionHeader
+        title="parameter sweeps (walk-forward)"
+        description={
+          "tries variants of the bot's current settings on old data, then checks the best " +
+          'one on data it never saw — only a "validated" winner changes anything (paper mode ' +
+          "only)"
+        }
+        action={
+          <Button size="sm" onClick={props.onStart}>
+            run sweep
+          </Button>
+        }
+      />
 
       {props.sweeps.length > 0 && (
         <div className="mt-3 grid gap-4 lg:grid-cols-[14rem_1fr]">
@@ -75,7 +72,7 @@ export function SweepPanel(props: {
           <div>{selected && <SweepReport sweep={selected} />}</div>
         </div>
       )}
-    </section>
+    </Card>
   );
 }
 

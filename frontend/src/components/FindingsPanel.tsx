@@ -1,4 +1,5 @@
 import type { FindingResponse } from "../api/types";
+import { Badge, Button } from "../ui";
 
 /**
  * Mined mistake patterns from a run, each awaiting the human verdict.
@@ -42,39 +43,32 @@ export function FindingsPanel(props: {
                 {finding.confidence} confidence
               </span>
               {finding.status !== "proposed" && (
-                <span
-                  className={`rounded px-2 py-0.5 text-xs ${
-                    finding.status === "accepted"
-                      ? "bg-emerald-100 dark:bg-emerald-900/60 text-emerald-700 dark:text-emerald-300"
-                      : "bg-zinc-100 dark:bg-zinc-800 text-zinc-500"
-                  }`}
-                >
+                <Badge tone={finding.status === "accepted" ? "emerald" : "zinc"}>
                   {finding.status}
-                </span>
+                </Badge>
               )}
             </div>
             <p className="mt-1 text-zinc-700 dark:text-zinc-300">{finding.suggestion}</p>
             <div className="mt-2 flex flex-wrap items-center gap-2">
               {finding.status === "proposed" && (
                 <>
-                  <button
-                    type="button"
+                  <Button
+                    size="sm"
                     onClick={() => {
                       props.onAccept(finding.id);
                     }}
-                    className="rounded-lg bg-emerald-600 px-3 py-1 text-xs font-semibold text-white hover:bg-emerald-500"
                   >
                     accept
-                  </button>
-                  <button
-                    type="button"
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    size="sm"
                     onClick={() => {
                       props.onReject(finding.id);
                     }}
-                    className="rounded-lg border border-zinc-300 dark:border-zinc-700 px-3 py-1 text-xs text-zinc-700 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800"
                   >
                     reject
-                  </button>
+                  </Button>
                 </>
               )}
               <span className="text-xs text-zinc-500">evidence:</span>

@@ -2,6 +2,7 @@ import { useState } from "react";
 
 import type { ComparisonGroupResponse, EvaluationRunResponse } from "../api/types";
 import { formatFractionPercent, formatMoney, formatTime, signClass } from "../lib/format";
+import { Button, Card } from "../ui";
 
 /** Plain-words names for the competing bot ids; unknown ids fall back to
  * their underscores-stripped form so a new challenger still renders. */
@@ -292,19 +293,14 @@ export function ComparisonPanel(props: {
     props.groups.find((group) => group.group_id === selectedGroupId) ?? props.groups[0];
 
   return (
-    <section className="rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900 p-4">
+    <Card padding="md">
       <div className="flex flex-wrap items-center gap-3">
         <h3 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
           strategy comparison
         </h3>
-        <button
-          type="button"
-          onClick={props.onStart}
-          disabled={props.startDisabled}
-          className="rounded-lg bg-emerald-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-50"
-        >
+        <Button size="sm" onClick={props.onStart} disabled={props.startDisabled}>
           compare all strategies
-        </button>
+        </Button>
         <span className="text-xs text-zinc-500">
           replays the same past moments once per strategy — five columns, identical scenarios,
           so the differences are the strategies&apos; own
@@ -343,6 +339,6 @@ export function ComparisonPanel(props: {
           <ComparisonTable group={selected} />
         </div>
       )}
-    </section>
+    </Card>
   );
 }
