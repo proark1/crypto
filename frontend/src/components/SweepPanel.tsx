@@ -29,7 +29,9 @@ export function SweepPanel(props: {
           run sweep
         </button>
         <span className="text-xs text-zinc-500">
-          tunes on the first part of history, validates on the untouched rest
+          tries variants of the bot&apos;s current settings on old data, then checks the best
+          one on data it never saw — only a &quot;validated&quot; winner changes anything (paper
+          mode only)
         </span>
       </div>
 
@@ -99,6 +101,18 @@ const VERDICT_STYLES: Record<string, string> = {
   insufficient_evidence: "border-amber-800 bg-amber-900/30 text-amber-200",
 };
 
+/** One plain sentence per verdict: what it means for the user and whether
+ * anything changed — the report's explanation says why, this says so what. */
+const VERDICT_GUIDE: Record<string, string> = {
+  validated:
+    "what happens now: the winner becomes the bot's settings (paper mode only) — see automated improvements above to review or revert",
+  overfit:
+    "what happens now: nothing — the variant only looked good on the data it was tuned on, and rejecting that is the system working",
+  baseline_best: "what happens now: nothing — your current settings beat every variant tried",
+  insufficient_evidence:
+    "what happens now: nothing — too few trades to judge honestly; the bot retries on its own schedule, no action needed",
+};
+
 export function SweepReport(props: { sweep: SweepResponse }) {
   const report = props.sweep.report;
   if (!report) {
@@ -118,6 +132,9 @@ export function SweepReport(props: { sweep: SweepResponse }) {
           {verdict.replace(/_/g, " ")}
         </span>
         <p className="mt-1">{text(report.explanation)}</p>
+        {VERDICT_GUIDE[verdict] !== undefined && (
+          <p className="mt-1 text-xs opacity-80">{VERDICT_GUIDE[verdict]}</p>
+        )}
       </div>
       <ScoreTable title="training period" data={asRecord(report.training)} />
       <ScoreTable title="validation period (untouched)" data={asRecord(report.validation)} />

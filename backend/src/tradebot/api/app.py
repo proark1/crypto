@@ -441,7 +441,7 @@ class SweepStartRequest(BaseModel):
 
     symbol: str | None = None
     timeframe: str = "1h"
-    history_days: int = 180
+    history_days: int = 365
     scenario_count: int = DEFAULT_SCENARIO_COUNT
     lookback_candles: int = 200
     horizon_candles: int = 60

@@ -212,13 +212,13 @@ export function fetchSweeps(): Promise<SweepResponse[]> {
   return request<SweepResponse[]>("/sweeps", "GET");
 }
 
-export function startSweep(body: {
-  timeframe: string;
-  history_days: number;
-}): Promise<{ run_id: number; detail: string }> {
-  // Omitting candidates lets the backend derive the grid: variants of the
-  // actively traded parameters plus challengers targeted at the latest
-  // run's findings.
+export function startSweep(
+  body: { timeframe?: string; history_days?: number } = {},
+): Promise<{ run_id: number; detail: string }> {
+  // Omitting fields lets the backend pick unstarved defaults (a year of
+  // history, a scenario budget sized to clear the minimum-trades bar) and
+  // derive the candidate grid: variants of the actively traded parameters
+  // plus challengers targeted at the latest run's findings.
   return request<{ run_id: number; detail: string }>("/sweeps", "POST", body);
 }
 
