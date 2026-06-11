@@ -14,6 +14,7 @@ import logging
 import httpx
 
 from tradebot.core.events import EventBus, FillRecorded, ProposalCreated
+from tradebot.core.logging import log_event
 from tradebot.news import NewsFlagged
 
 logger = logging.getLogger(__name__)
@@ -48,11 +49,15 @@ class TelegramNotifier:
                 self._url, json={"chat_id": self._chat_id, "text": text}
             )
         except Exception:
-            logger.warning("telegram send failed", exc_info=True)
+            log_event(logger, logging.WARNING, "telegram_send_failed", exc_info=True)
             return False
         if response.status_code != 200:
-            logger.warning(
-                "telegram send rejected: %d %s", response.status_code, response.text[:200]
+            log_event(
+                logger,
+                logging.WARNING,
+                "telegram_send_rejected",
+                status_code=response.status_code,
+                body=response.text[:200],
             )
             return False
         return True

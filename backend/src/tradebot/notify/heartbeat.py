@@ -23,6 +23,7 @@ from datetime import UTC, datetime, timedelta
 import httpx
 
 from tradebot.core.events import CandleClosed, EventBus
+from tradebot.core.logging import log_event
 
 logger = logging.getLogger(__name__)
 
@@ -81,23 +82,30 @@ class HeartbeatPinger:
         to the dead-man's monitor.
         """
         if not self.is_healthy():
-            logger.warning("heartbeat suppressed: no fresh candles (feed stalled or starting)")
+            log_event(logger, logging.WARNING, "heartbeat_suppressed_stale_candles")
             return False
         try:
             response = await self._client.get(self._url)
         except Exception:
-            logger.warning("heartbeat ping failed", exc_info=True)
+            log_event(logger, logging.WARNING, "heartbeat_ping_failed", exc_info=True)
             return False
         if response.status_code >= 400:
-            logger.warning("heartbeat ping rejected: %d", response.status_code)
+            log_event(
+                logger,
+                logging.WARNING,
+                "heartbeat_ping_rejected",
+                status_code=response.status_code,
+            )
             return False
         return True
 
     async def run(self) -> None:
         """Ping forever on the interval; cancel the task to stop."""
-        logger.info(
-            "dead-man's switch active: pinging every %ds while candles are fresh",
-            int(self._interval.total_seconds()),
+        log_event(
+            logger,
+            logging.INFO,
+            "deadman_switch_active",
+            interval_seconds=int(self._interval.total_seconds()),
         )
         while True:
             await self.ping_once()
