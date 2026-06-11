@@ -177,10 +177,21 @@ export function OverviewScreen(props: { theme: Theme; onToggleTheme: () => void 
     if (needsToken) {
       return;
     }
-    void refresh();
-    const timer = setInterval(() => void refresh(), POLL_INTERVAL_MS);
+    // Self-scheduling instead of setInterval: each poll waits for the previous
+    // one to settle before the next is queued, so a slow backend can never
+    // stack overlapping requests (the request-id guard above is the backstop).
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const tick = async () => {
+      await refresh();
+      if (!cancelled) {
+        timer = setTimeout(() => void tick(), POLL_INTERVAL_MS);
+      }
+    };
+    void tick();
     return () => {
-      clearInterval(timer);
+      cancelled = true;
+      clearTimeout(timer);
     };
   }, [refresh, needsToken]);
 

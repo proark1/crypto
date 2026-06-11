@@ -28,7 +28,7 @@ import type {
   SuggestedEvaluationResponse,
   SweepResponse,
 } from "../api/types";
-import { formatFractionPercent, formatMoney } from "../lib/format";
+import { formatFractionPercent, formatMoney, formatTime } from "../lib/format";
 import { ComparisonPanel } from "../components/ComparisonPanel";
 import { FindingsPanel } from "../components/FindingsPanel";
 import { ImprovementsPanel } from "../components/ImprovementsPanel";
@@ -307,6 +307,11 @@ export function ResearchScreen() {
   const [suggestions, setSuggestions] = useState<SuggestedEvaluationResponse[]>([]);
   const [comparisons, setComparisons] = useState<ComparisonGroupResponse[]>([]);
   const [comparisonPending, setComparisonPending] = useState(false);
+  // Research deliberately leaves auth/token UX to the overview screen, but a
+  // poll that keeps failing must not look like a quiet, up-to-date screen:
+  // track the last successful refresh so the UI can show it has gone stale.
+  const [lastUpdated, setLastUpdated] = useState<number | null>(null);
+  const [pollStale, setPollStale] = useState(false);
 
   const suggestionsLoaded = useRef(false);
 
@@ -324,16 +329,31 @@ export function ResearchScreen() {
         setSuggestions(await fetchEvaluationSuggestions());
         suggestionsLoaded.current = true;
       }
+      setLastUpdated(Date.now());
+      setPollStale(false);
     } catch {
-      // The overview screen owns auth/error UX; research polls quietly.
+      // Auth/error prompts stay with the overview screen; here we only flag
+      // that the data on screen is no longer being refreshed.
+      setPollStale(true);
     }
   }, []);
 
   useEffect(() => {
-    void refresh();
-    const timer = setInterval(() => void refresh(), POLL_INTERVAL_MS);
+    // Self-scheduling rather than setInterval: the next poll is queued only
+    // after the previous one settles, so slow research endpoints can never
+    // stack overlapping requests.
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const tick = async () => {
+      await refresh();
+      if (!cancelled) {
+        timer = setTimeout(() => void tick(), POLL_INTERVAL_MS);
+      }
+    };
+    void tick();
     return () => {
-      clearInterval(timer);
+      cancelled = true;
+      clearTimeout(timer);
     };
   }, [refresh]);
 
@@ -351,9 +371,14 @@ export function ResearchScreen() {
     if (selectedRunId === null) {
       return;
     }
-    // The overview screen owns auth/error UX; research polls quietly.
-    fetchScenarios(selectedRunId).then(setScenarios, () => undefined);
-    fetchFindings(selectedRunId).then(setFindings, () => undefined);
+    // Auth/error prompts stay with the overview screen; a failure here only
+    // marks the screen stale (see the banner) rather than disappearing silently.
+    fetchScenarios(selectedRunId).then(setScenarios, () => {
+      setPollStale(true);
+    });
+    fetchFindings(selectedRunId).then(setFindings, () => {
+      setPollStale(true);
+    });
   }, [selectedRunId, selectedRunStatus]);
 
   const openReplay = (scenarioId: number) => {
@@ -437,6 +462,16 @@ export function ResearchScreen() {
 
   return (
     <div className="space-y-4">
+      {pollStale && (
+        <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-700 dark:text-amber-300">
+          <span className="font-bold uppercase">not refreshing</span> — the research data below
+          may be out of date
+          {lastUpdated !== null
+            ? ` (last updated ${formatTime(new Date(lastUpdated).toISOString())})`
+            : ""}
+          . If this persists, check the connection on the overview screen.
+        </div>
+      )}
       {suggestions.length > 0 && (
         <section className="rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900 p-4">
           <h3 className="text-xs uppercase tracking-wide text-zinc-500">
