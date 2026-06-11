@@ -20,6 +20,7 @@ import os
 import signal
 from collections.abc import Coroutine, Mapping
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Protocol
 
 import httpx
@@ -55,7 +56,7 @@ from tradebot.persistence import (
     StrategySettingsStore,
 )
 from tradebot.portfolio import Portfolio
-from tradebot.risk import RiskConfig, RiskManager
+from tradebot.risk import ManagedStop, RiskConfig, RiskManager
 from tradebot.signals import (
     EntryGate,
     MarketRegimeDetector,
@@ -419,7 +420,9 @@ class Worker:
                 self.regime_detector.symbol,
                 self.regime_detector.regime.label,
             )
-        return await self.replay_journal()
+        replayed = await self.replay_journal()
+        await self._rearm_protective_stops()
+        return replayed
 
     async def add_coin(self, symbol: str) -> None:
         """Start trading ``symbol``: validate, persist, build, stream.
@@ -461,6 +464,11 @@ class Worker:
             )
         if self.portfolio.position(symbol) is not None:
             raise RuntimeError(f"{symbol} has an open position; flatten it first (kill or exit)")
+        if engine.open_orders():
+            # Discarding the engine would orphan its journaled-open orders:
+            # nothing could fill or cancel them until a restart restored
+            # them into a re-added coin's adapter.
+            raise RuntimeError(f"{symbol} has open orders; cancel them first (kill)")
         if engine.pending_proposals():
             raise RuntimeError(f"{symbol} has a pending proposal; approve or reject it first")
         await self.coin_store.remove(symbol)
@@ -473,6 +481,100 @@ class Worker:
         engine.detach_from(self.bus)
         del self.engines[symbol]
         logger.info("coin removed at runtime: %s", symbol)
+
+    async def _rearm_protective_stops(self) -> None:
+        """Rebuild each replayed position's protection after a restart.
+
+        The resting stop order itself is restored from the order journal;
+        what a restart loses is the in-memory ratchet (ManagedStop). With
+        the entry's persisted exit plan the ratchet is rebuilt exactly —
+        seeded with the restored order's trigger so ratchet progress is
+        kept — and a missing resting order (crash between the entry fill
+        and the stop placement) is resubmitted from the same plan.
+
+        Positions with no journaled plan (history predating the order
+        journal) fall back to an approximate ATR-derived level enforced by
+        the engine's market-exit backstop; better an approximate stop than
+        none. A position that cannot be protected at all is loud, never
+        silent.
+        """
+        from tradebot.indicators import Atr
+
+        trend = TrendFollowingConfig(**self.strategy_params.get("trend_following", {}))
+        for symbol, position in self.portfolio.positions.items():
+            engine = self.engines.get(symbol)
+            if engine is None:
+                logger.warning(
+                    "open position in %s has no active engine; protection unverifiable", symbol
+                )
+                continue
+            entry = await self.order_store.latest_filled_entry_with_plan(symbol)
+            plan = None if entry is None else entry.protective_exit
+            if entry is not None and plan is not None:
+                resting = engine.resting_protective_stop()
+                level = (
+                    plan.stop_price_quote
+                    if resting is None or resting.stop_price_quote is None
+                    else resting.stop_price_quote
+                )
+                engine.arm_managed_stop(
+                    ManagedStop(
+                        entry_price_quote=position.average_entry_price_quote,
+                        initial_stop_quote=level,
+                        breakeven_at_r=plan.breakeven_at_r,
+                        trail_distance_quote=plan.trail_distance_quote,
+                    ),
+                    entry,
+                )
+                if resting is None and not engine.has_resting_exit():
+                    # The crash window: the entry fill was journaled but its
+                    # stop never reached the books.
+                    await engine.submit_protective_stop(entry, position.quantity_base)
+                logger.info(
+                    "protective stop re-armed for %s at %s (from journaled plan)", symbol, level
+                )
+                continue
+            # Plan-less position: approximate the level from current ATR and
+            # let the engine's market-exit backstop enforce it.
+            stored = await self.candle_store.fetch_recent(
+                symbol, CandleInterval.M1, 5 * trend.atr_period
+            )
+            atr = Atr(trend.atr_period)
+            atr_value: float | None = None
+            for candle in stored:
+                atr_value = atr.update(
+                    float(candle.high_quote), float(candle.low_quote), float(candle.close_quote)
+                )
+            if atr_value is None:
+                logger.warning(
+                    "cannot re-arm protective stop for %s: no stored candles to size it; "
+                    "the position trades unprotected until the strategy exits",
+                    symbol,
+                )
+                continue
+            entry_price = position.average_entry_price_quote
+            stop_price = entry_price - Decimal(str(trend.atr_stop_multiple * atr_value))
+            if stop_price <= 0:
+                logger.warning("cannot re-arm protective stop for %s: degenerate level", symbol)
+                continue
+            engine.arm_managed_stop(
+                ManagedStop(
+                    entry_price_quote=entry_price,
+                    initial_stop_quote=stop_price,
+                    breakeven_at_r=trend.breakeven_at_r,
+                    trail_distance_quote=(
+                        Decimal(str(trend.trail_atr_multiple * atr_value))
+                        if trend.trail_atr_multiple > 0
+                        else None
+                    ),
+                )
+            )
+            logger.warning(
+                "protective stop for %s approximated at %s (no journaled plan; "
+                "market-exit backstop enforces it)",
+                symbol,
+                stop_price,
+            )
 
     async def replay_journal(self) -> int:
         """Rebuild portfolio state from persisted fills; returns fills replayed.
@@ -506,37 +608,7 @@ class Worker:
             restored += 1
         if restored:
             logger.info("restored %d open orders into their adapters", restored)
-        await self._reconcile_position_protection()
         return len(fills)
-
-    async def _reconcile_position_protection(self) -> None:
-        """Re-arm protective stops a crash may have separated from positions.
-
-        Normally the stop is journaled and restored like any other open
-        order; this covers the window where the entry fill was journaled
-        but the process died before the stop was placed (or its journal
-        write was lost). A position with no working SELL order gets its
-        stop rebuilt from the entry's persisted exit plan — and if even
-        that is missing, the gap is loud, never silent.
-        """
-        for symbol, position in self.portfolio.positions.items():
-            engine = self.engines.get(symbol)
-            if engine is None:
-                logger.warning(
-                    "open position in %s has no active engine; protection unverifiable", symbol
-                )
-                continue
-            if engine.has_resting_exit():
-                continue
-            entry = await self.order_store.latest_filled_entry_with_plan(symbol)
-            if entry is None:
-                logger.warning(
-                    "position in %s has no resting stop and no journaled exit plan; "
-                    "running unprotected until the strategy exits",
-                    symbol,
-                )
-                continue
-            await engine.arm_protective_stop(entry, position.quantity_base)
 
     async def run(self) -> None:
         """Start the bot (and the control API, if configured) until stopped."""

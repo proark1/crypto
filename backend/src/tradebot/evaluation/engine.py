@@ -24,6 +24,7 @@ from tradebot.evaluation.models import ScenarioClass, TimingLabel, Verdict
 from tradebot.execution import FillSimulatorConfig
 from tradebot.indicators import Atr
 from tradebot.portfolio import Position
+from tradebot.risk import ManagedStop
 from tradebot.strategies import Strategy
 
 _BPS_DIVISOR = Decimal(10_000)
@@ -77,13 +78,31 @@ class EvaluatedDecision(BaseModel):
 
 
 class _OpenTrade(BaseModel):
-    """A simulated unit-quantity long while it is held."""
+    """A simulated unit-quantity long while it is held.
+
+    ``stop_price_quote`` stays the *initial* invalidation point — R is
+    always money over initial risk. ``current_stop_quote`` is the managed
+    (possibly ratcheted) level the trade would actually exit at; the
+    trail's peak memory is embedded in that level, so a ``ManagedStop``
+    rebuilt from it continues exactly where the replay left off.
+    """
 
     model_config = ConfigDict(frozen=True)
 
     entry_price_quote: Amount
     stop_price_quote: Amount
     peak_high_quote: Amount
+    current_stop_quote: Amount
+    breakeven_at_r: float = 0.0
+    trail_distance_quote: Amount | None = None
+
+    def managed_stop(self) -> ManagedStop:
+        return ManagedStop(
+            entry_price_quote=self.entry_price_quote,
+            initial_stop_quote=self.current_stop_quote,
+            breakeven_at_r=self.breakeven_at_r,
+            trail_distance_quote=self.trail_distance_quote,
+        )
 
     def as_position(self, symbol: str) -> Position:
         return Position(
@@ -143,24 +162,37 @@ class ScenarioEvaluator:
     def _replay_window(self, strategy: Strategy, window: Sequence[Candle]) -> _ReplayState:
         """Walk the visible past exactly as the live loop would have."""
         trade: _OpenTrade | None = None
+        managed: ManagedStop | None = None
         pending: Signal | None = None
         for candle in window:
             if pending is not None:
                 if pending.side == Side.BUY and trade is None:
+                    entry = self._slipped(candle.open_quote, buying=True)
                     trade = _OpenTrade(
-                        entry_price_quote=self._slipped(candle.open_quote, buying=True),
+                        entry_price_quote=entry,
                         stop_price_quote=pending.stop_price_quote,
                         peak_high_quote=candle.high_quote,
+                        current_stop_quote=pending.stop_price_quote,
+                        breakeven_at_r=pending.breakeven_at_r,
+                        trail_distance_quote=pending.trail_distance_quote,
                     )
+                    managed = ManagedStop.from_signal(pending, entry)
                 elif pending.side == Side.SELL and trade is not None:
                     trade = None  # exit fills at this open; grading not needed in-window
+                    managed = None
                 pending = None
-            if trade is not None:
-                if candle.low_quote <= trade.stop_price_quote:
+            if trade is not None and managed is not None:
+                # Breach before ratchet, the engine's exact order of ops.
+                if managed.is_breached_by(candle):
                     trade = None  # stopped out inside the window
+                    managed = None
                 else:
+                    managed.ratchet(candle)
                     trade = trade.model_copy(
-                        update={"peak_high_quote": max(trade.peak_high_quote, candle.high_quote)}
+                        update={
+                            "peak_high_quote": max(trade.peak_high_quote, candle.high_quote),
+                            "current_stop_quote": managed.stop_price_quote,
+                        }
                     )
             position = trade.as_position(candle.symbol) if trade is not None else None
             pending = strategy.on_candle(candle, position)
@@ -185,7 +217,7 @@ class ScenarioEvaluator:
             )
 
         exit_price, exit_index, stop_hit, peak, trough = self._simulate_long(
-            strategy, horizon, entry, stop
+            strategy, horizon, entry, stop, managed=ManagedStop.from_signal(signal, entry)
         )
         fees = self._fee(entry) + self._fee(exit_price)
         pnl = exit_price - entry - fees
@@ -295,8 +327,19 @@ class ScenarioEvaluator:
     def _grade_holding_hold(
         self, trade: _OpenTrade, horizon: Sequence[Candle], signal: Signal | None
     ) -> EvaluatedDecision:
-        """Grade keeping the position (wrong hold if the horizon stops it out)."""
-        stop_hit = any(candle.low_quote <= trade.stop_price_quote for candle in horizon)
+        """Grade keeping the position (wrong hold if the horizon stops it out).
+
+        The managed stop keeps ratcheting through the horizon — a trade
+        that breakeven-locked is no longer a -1R wrong hold when it stops
+        out, which is exactly the improvement the policy exists to buy.
+        """
+        managed = trade.managed_stop()
+        stop_hit = False
+        for candle in horizon:
+            if managed.is_breached_by(candle):
+                stop_hit = True
+                break
+            managed.ratchet(candle)
         return EvaluatedDecision(
             scenario_class=ScenarioClass.HOLDING,
             decision="hold",
@@ -313,6 +356,7 @@ class ScenarioEvaluator:
         horizon: Sequence[Candle],
         entry: Decimal,
         stop: Decimal,
+        managed: ManagedStop | None = None,
     ) -> tuple[Decimal, int, bool, Decimal, Decimal]:
         """Walk the horizon holding a unit long.
 
@@ -322,21 +366,26 @@ class ScenarioEvaluator:
         the open, stop touched intra-candle (filled at the stop, minus
         slippage), the strategy's own exit signal (fills next open), or the
         fixed-time exit at the final close. ``strategy=None`` simulates the
-        mechanical reference trade (no strategy exits).
+        mechanical reference trade (no strategy exits); ``managed`` runs
+        the signal's stop policy — the same ``ManagedStop`` the live engine
+        enforces, breach checked before each candle ratchets.
         """
         peak = entry
         trough = entry
         pending_exit = False
         for index, candle in enumerate(horizon):
+            current_stop = managed.stop_price_quote if managed is not None else stop
             if pending_exit:
                 return self._slipped(candle.open_quote, buying=False), index, False, peak, trough
-            if candle.open_quote <= stop:
+            if candle.open_quote <= current_stop:
                 exit_price = self._slipped(candle.open_quote, buying=False)
                 trough = min(trough, candle.open_quote)
                 return exit_price, index, True, peak, trough
-            if candle.low_quote <= stop:
+            if candle.low_quote <= current_stop:
                 trough = min(trough, candle.low_quote)
-                return self._slipped(stop, buying=False), index, True, peak, trough
+                return self._slipped(current_stop, buying=False), index, True, peak, trough
+            if managed is not None:
+                managed.ratchet(candle)
             peak = max(peak, candle.high_quote)
             trough = min(trough, candle.low_quote)
             if strategy is not None:

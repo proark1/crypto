@@ -713,3 +713,67 @@ class TestReplaceStrategy:
         for offset, close in enumerate(CLOSES[14:]):
             await engine.process_candle(make_candle(14 + offset, close))
         assert portfolio.position("BTC/USDT") is None
+
+
+class TestProtectiveStop:
+    """Paper positions now exit at their stop instead of riding through it."""
+
+    @staticmethod
+    def crash_candle(index: int) -> Candle:
+        """A candle that collapses far below any plausible stop."""
+        open_time = BASE_TIME + timedelta(minutes=index)
+        return Candle(
+            symbol="BTC/USDT",
+            interval=CandleInterval.M1,
+            open_time=open_time,
+            close_time=open_time + timedelta(minutes=1),
+            open_quote=Decimal("60"),
+            high_quote=Decimal("61"),
+            low_quote=Decimal("40"),
+            close_quote=Decimal("41"),
+            volume_base=Decimal("10"),
+        )
+
+    async def test_stop_breach_exits_without_a_strategy_signal(self) -> None:
+        portfolio = Portfolio(INITIAL_BALANCE)
+        engine = make_engine(portfolio)
+        # Enter on the rally with the EMA-cross strategy as usual.
+        for index, close in enumerate(CLOSES[:14]):
+            await engine.process_candle(make_candle(index, close))
+        assert portfolio.position("BTC/USDT") is not None
+
+        # A crash through the stop: the exit must not wait for a cross-down.
+        await engine.process_candle(self.crash_candle(14))  # breach -> exit order
+        await engine.process_candle(self.crash_candle(15))  # exit fills here
+
+        assert portfolio.position("BTC/USDT") is None
+        assert engine.fills[-1].side == Side.SELL
+
+    async def test_stop_fires_even_while_paused(self) -> None:
+        """Pausing mutes the strategy, never capital protection."""
+        portfolio = Portfolio(INITIAL_BALANCE)
+        engine = make_engine(portfolio)
+        for index, close in enumerate(CLOSES[:14]):
+            await engine.process_candle(make_candle(index, close))
+        assert portfolio.position("BTC/USDT") is not None
+        engine.pause()
+
+        await engine.process_candle(self.crash_candle(14))
+        await engine.process_candle(self.crash_candle(15))
+
+        assert portfolio.position("BTC/USDT") is None
+
+    async def test_strategy_swap_keeps_the_armed_stop(self) -> None:
+        portfolio = Portfolio(INITIAL_BALANCE)
+        engine = make_engine(portfolio)
+        for index, close in enumerate(CLOSES[:14]):
+            await engine.process_candle(make_candle(index, close))
+        assert engine.protective_stop_quote is not None
+
+        engine.replace_strategy(
+            TrendFollowingStrategy(
+                TrendFollowingConfig(fast_ema_period=4, slow_ema_period=9, atr_period=4)
+            )
+        )
+
+        assert engine.protective_stop_quote is not None  # promotion never disarms

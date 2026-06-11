@@ -297,8 +297,15 @@ def _order_from_row(row: dict[str, Any]) -> Order:
     """Rebuild an ``Order`` from its row, folding the flattened exit plan."""
     stop = row.pop("protective_stop_price_quote")
     limit = row.pop("protective_limit_price_quote")
+    breakeven = row.pop("protective_breakeven_at_r")
+    trail = row.pop("protective_trail_distance_quote")
     if stop is not None:
-        row["protective_exit"] = {"stop_price_quote": stop, "limit_price_quote": limit}
+        row["protective_exit"] = {
+            "stop_price_quote": stop,
+            "limit_price_quote": limit,
+            "breakeven_at_r": 0.0 if breakeven is None else breakeven,
+            "trail_distance_quote": trail,
+        }
     return Order.model_validate(row)
 
 
@@ -337,16 +344,17 @@ class OrderStore:
         plan = order.protective_exit
         row["protective_stop_price_quote"] = None if plan is None else plan.stop_price_quote
         row["protective_limit_price_quote"] = None if plan is None else plan.limit_price_quote
+        row["protective_breakeven_at_r"] = None if plan is None else plan.breakeven_at_r
+        row["protective_trail_distance_quote"] = None if plan is None else plan.trail_distance_quote
         row["status"] = OrderStatus.OPEN.value
         row["triggered"] = False
         row["status_at"] = order.created_at
+        # Refresh every column, not just the status: a ratcheted stop is
+        # resubmitted under the same id at a new level, and the reopened row
+        # must carry the values the adapter is actually working with.
         statement = pg_insert(orders_table).on_conflict_do_update(
             index_elements=["client_order_id"],
-            set_={
-                "status": OrderStatus.OPEN.value,
-                "triggered": False,
-                "status_at": order.created_at,
-            },
+            set_={name: value for name, value in row.items() if name != "client_order_id"},
         )
         async with self._database.engine.begin() as connection:
             await connection.execute(statement, [row])
@@ -417,12 +425,20 @@ class OrderStore:
         between the entry fill and the stop placement, the plan persisted
         with this row is what the worker re-arms the stop from.
         """
+        has_fill = (
+            select(fills_table.c.id)
+            .where(fills_table.c.client_order_id == orders_table.c.client_order_id)
+            .exists()
+        )
         statement = (
             select(orders_table)
             .where(
                 orders_table.c.symbol == symbol,
                 orders_table.c.side == Side.BUY.value,
-                orders_table.c.status == OrderStatus.FILLED.value,
+                # A journaled fill outranks the row's status: the crash may
+                # have landed between the fill write and mark_filled, and
+                # this lookup exists precisely to recover from crashes.
+                (orders_table.c.status == OrderStatus.FILLED.value) | has_fill,
                 orders_table.c.protective_stop_price_quote.is_not(None),
             )
             .order_by(orders_table.c.status_at.desc(), orders_table.c.created_at.desc())

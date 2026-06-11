@@ -288,10 +288,20 @@ class TestFindingsDrivenCandidates:
         unfiltered = next(c for c in candidates if c.name == "unfiltered_reversion")
         assert unfiltered.params["trend_filter_ema_period"] == 0
 
+    def test_a_wrong_hold_finding_adds_the_stop_management_challengers(self) -> None:
+        candidates, motivating = build_improvement_candidates(
+            {}, findings=[(3, "held positions ride into their stops")]
+        )
+        names = [candidate.name for candidate in candidates]
+        assert "breakeven_lock" in names and "atr_trailing" in names
+        assert motivating == (3,)
+        trailing = next(c for c in candidates if c.name == "atr_trailing")
+        assert trailing.params["trail_atr_multiple"] == 2.0  # the active stop width
+
     def test_unrelated_findings_add_no_candidates(self) -> None:
         baseline, _ = build_improvement_candidates({})
         candidates, motivating = build_improvement_candidates(
-            {}, findings=[(3, "held positions ride into their stops")]
+            {}, findings=[(3, "the bot stays flat through moves worth taking")]
         )
         assert len(candidates) == len(baseline)  # no knob exists for it yet
         assert motivating == ()

@@ -168,6 +168,32 @@ def build_improvement_candidates(
                 ).model_dump(),
             )
         )
+    wrong_hold_ids = [
+        finding_id for finding_id, pattern in findings if "ride into their stops" in pattern
+    ]
+    if wrong_hold_ids:
+        motivating += wrong_hold_ids
+        if trend.breakeven_at_r == 0:
+            raw.append(
+                SweepCandidate(
+                    name="breakeven_lock",
+                    params=trend.model_copy(update={"breakeven_at_r": 1.0}).model_dump(),
+                )
+            )
+        else:
+            raw.append(
+                SweepCandidate(
+                    name="no_breakeven",
+                    params=trend.model_copy(update={"breakeven_at_r": 0.0}).model_dump(),
+                )
+            )
+        trail_toggle = trend.atr_stop_multiple if trend.trail_atr_multiple == 0 else 0.0
+        raw.append(
+            SweepCandidate(
+                name="atr_trailing" if trail_toggle else "no_trailing",
+                params=trend.model_copy(update={"trail_atr_multiple": trail_toggle}).model_dump(),
+            )
+        )
     chase_ids = [finding_id for finding_id, pattern in findings if "chase" in pattern]
     if chase_ids:
         motivating += chase_ids

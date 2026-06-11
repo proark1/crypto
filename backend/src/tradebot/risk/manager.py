@@ -258,34 +258,60 @@ class RiskManager:
             side=Side.BUY,
             order_type=OrderType.MARKET,
             quantity_base=quantity,
-            protective_exit=self._plan_protective_exit(signal.stop_price_quote),
+            protective_exit=self._plan_protective_exit(signal),
             created_at=signal.created_at,
         )
 
-    def _plan_protective_exit(self, stop_price_quote: Decimal) -> ProtectiveExitPlan:
+    def _plan_protective_exit(self, signal: Signal) -> ProtectiveExitPlan:
         """Turn the signal's invalidation level into an exchange stop-limit plan.
 
-        The trigger is the invalidation level itself — the same price the
-        position was sized against, so enforced risk equals sized risk. The
-        limit floor sits ``protective_stop_limit_offset_fraction`` below it.
+        The initial trigger is the invalidation level itself — the same
+        price the position was sized against, so enforced risk equals sized
+        risk. The limit floor sits ``protective_stop_limit_offset_fraction``
+        below it, and the signal's ratchet policy (breakeven, trail) rides
+        along so it survives restarts with the entry order.
         """
-        limit = (
-            stop_price_quote * (1 - self._config.protective_stop_limit_offset_fraction)
-        ).quantize(ACCOUNTING_RESOLUTION, rounding=ROUND_DOWN)
-        return ProtectiveExitPlan(stop_price_quote=stop_price_quote, limit_price_quote=limit)
+        return ProtectiveExitPlan(
+            stop_price_quote=signal.stop_price_quote,
+            limit_price_quote=self._stop_limit_floor(signal.stop_price_quote),
+            breakeven_at_r=signal.breakeven_at_r,
+            trail_distance_quote=signal.trail_distance_quote,
+        )
 
-    def protective_exit_order(self, entry: Order, quantity_base: Decimal, at: datetime) -> Order:
+    def _stop_limit_floor(self, trigger_quote: Decimal) -> Decimal:
+        """Return the limit price a stop-limit rests with for a given trigger."""
+        return (trigger_quote * (1 - self._config.protective_stop_limit_offset_fraction)).quantize(
+            ACCOUNTING_RESOLUTION, rounding=ROUND_DOWN
+        )
+
+    def protective_exit_order(
+        self,
+        entry: Order,
+        quantity_base: Decimal,
+        at: datetime,
+        stop_price_quote: Decimal | None = None,
+    ) -> Order:
         """Construct the resting stop-limit that protects ``entry``'s position.
 
         Called by the engine when the entry fills (quantity = the filled
-        amount) and by restart reconciliation when a crash left a position
-        without its stop (quantity = the open position). Deterministic id
-        per entry, so re-arming after a disconnect is idempotent. Raises
+        amount), per ratchet when the managed level moves
+        (``stop_price_quote`` = the new level, limit floor re-derived at the
+        configured offset), and by restart reconciliation when a crash left
+        a position without its stop. Deterministic id per entry, so
+        re-arming or replacing after a disconnect is idempotent. Raises
         ``ValueError`` if the entry carries no plan — silently leaving a
         position unprotected is the failure mode this method exists to end.
         """
         if entry.protective_exit is None:
             raise ValueError(f"entry order {entry.client_order_id!r} has no protective exit plan")
+        trigger = (
+            entry.protective_exit.stop_price_quote if stop_price_quote is None else stop_price_quote
+        )
+        limit = (
+            entry.protective_exit.limit_price_quote
+            if stop_price_quote is None
+            else self._stop_limit_floor(trigger)
+        )
         return Order(
             client_order_id=f"stop-{entry.client_order_id}",
             signal_id=entry.signal_id,
@@ -293,7 +319,7 @@ class RiskManager:
             side=Side.SELL,
             order_type=OrderType.STOP_LIMIT,
             quantity_base=quantity_base,
-            stop_price_quote=entry.protective_exit.stop_price_quote,
-            limit_price_quote=entry.protective_exit.limit_price_quote,
+            stop_price_quote=trigger,
+            limit_price_quote=limit,
             created_at=at,
         )

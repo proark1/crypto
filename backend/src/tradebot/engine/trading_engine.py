@@ -37,7 +37,7 @@ from tradebot.core.models import (
 from tradebot.execution.simulator import SimulatedExecutionAdapter
 from tradebot.persistence import DecisionStore, FillStore, OpenOrder, OrderStore
 from tradebot.portfolio import Portfolio
-from tradebot.risk import CircuitBreakers, RiskManager
+from tradebot.risk import CircuitBreakers, ManagedStop, RiskManager
 from tradebot.signals import EntryGate
 from tradebot.strategies import Strategy
 
@@ -99,6 +99,17 @@ class TradingEngine:
         self._paused = False
         self._last_candle: Candle | None = None
         self._bus: EventBus | None = None
+        # Protective stop state: armed when an entry fills. The ManagedStop
+        # decides the level (breakeven lock, trail); a resting stop-limit in
+        # the adapter enforces it, cancel/replaced as the level ratchets.
+        # Management runs even while paused — capital protection is never
+        # muted. ``_armed_entry`` is the plan-bearing entry order the
+        # replacement orders are rebuilt from.
+        self._managed_stop: ManagedStop | None = None
+        self._armed_entry: Order | None = None
+        # At most one exit order in flight: a stop breach and a strategy
+        # exit on the same candle must not both sell the full position.
+        self._pending_exit_order: str | None = None
         adapter.set_fill_handler(self._on_fill)
 
     @property
@@ -194,6 +205,9 @@ class TradingEngine:
             raise RuntimeError(
                 "kill switch: position open but no candle seen yet; halted but NOT flat"
             )
+        if self._pending_exit_order is not None:
+            logger.warning("kill switch: an exit is already in flight; halted, awaiting its fill")
+            return True
         last_close = self._last_candle.close_quote
         signal = Signal(
             signal_id=f"kill:{self._symbol}:{self._last_candle.close_time.isoformat()}",
@@ -210,6 +224,7 @@ class TradingEngine:
             logger.error("kill switch exit was vetoed; halted unflattened")
             return False
         await self._submit(exit_order)
+        self._pending_exit_order = exit_order.client_order_id
         logger.warning(
             "kill switch submitted exit %s for %s", exit_order.client_order_id, self._symbol
         )
@@ -256,6 +271,7 @@ class TradingEngine:
         # Post-fill equity mark: the breakers must judge the same books the
         # strategy is about to see.
         self._risk_manager.on_candle(candle)
+        await self._manage_protective_stop(candle)
         await self._sweep_proposals(candle)
         # The strategy consumes every candle even when paused so indicators
         # stay warm for resume; only its output is discarded.
@@ -305,6 +321,14 @@ class TradingEngine:
             if self._bus is not None:
                 await self._bus.publish(ProposalCreated(proposal=proposal))
             return
+        if signal.side == Side.SELL and self._pending_exit_order is not None:
+            logger.info(
+                "exit already in flight for %s; %s exit superseded",
+                signal.symbol,
+                signal.strategy_name,
+            )
+            await self._record_decision(signal, DecisionOutcome.SUPERSEDED)
+            return
         order = self._risk_manager.evaluate(signal, candle.close_quote)
         if order is None:
             logger.info(
@@ -329,6 +353,8 @@ class TradingEngine:
             # flight could fill twice and go short.
             await self._cancel_protective_stops()
         await self._submit(order)
+        if order.side == Side.SELL:
+            self._pending_exit_order = order.client_order_id
         await self._record_decision(signal, DecisionOutcome.SUBMITTED)
 
     async def _submit(self, order: Order) -> None:
@@ -362,6 +388,11 @@ class TradingEngine:
             self._journaled_triggered.discard(stop.client_order_id)
             logger.info("protective stop %s cancelled ahead of exit", stop.client_order_id)
 
+    def resting_protective_stop(self) -> Order | None:
+        """Return the resting protective stop order, if one is working."""
+        resting = self._resting_protective_stops()
+        return resting[0] if resting else None
+
     def has_resting_exit(self) -> bool:
         """Whether any SELL order (protective stop or exit) is working.
 
@@ -370,7 +401,7 @@ class TradingEngine:
         """
         return any(order.side == Side.SELL for order in self._adapter.open_orders())
 
-    async def arm_protective_stop(self, entry: Order, quantity_base: Decimal) -> None:
+    async def submit_protective_stop(self, entry: Order, quantity_base: Decimal) -> None:
         """Re-protect an open position from its entry's persisted plan.
 
         Recovery path for the crash window between an entry fill and its
@@ -493,6 +524,130 @@ class TradingEngine:
         await self._record_decision(proposal.signal, DecisionOutcome.REJECTED)
         logger.info("proposal %s rejected by user", signal_id)
 
+    def arm_managed_stop(self, stop: ManagedStop, entry: Order | None = None) -> None:
+        """Arm (or re-arm) the managed stop level for the held position.
+
+        Restart recovery: journal replay restores the position and any
+        resting stop order, but the in-memory ratchet state is gone. With a
+        plan-bearing ``entry`` the engine keeps cancel/replacing the resting
+        order as the level ratchets; without one (approximate recovery of a
+        plan-less position) the market-exit backstop enforces the level.
+        """
+        self._managed_stop = stop
+        self._armed_entry = entry
+
+    @property
+    def protective_stop_quote(self) -> str | None:
+        """The current stop level, for status surfaces; ``None`` unarmed."""
+        stop = self._managed_stop
+        return str(stop.stop_price_quote) if stop is not None else None
+
+    async def _manage_protective_stop(self, candle: Candle) -> None:
+        """Keep the resting stop-limit in line with the managed stop level.
+
+        Runs after the adapter evaluated the candle — a breach is judged
+        against the level the stop actually rested at, never one this
+        candle's own high just ratcheted up — and before the strategy:
+        protective management is never muted by pause and never depends on
+        strategy logic being alive.
+
+        The resting stop-limit order is the enforcement (gap-through risk
+        included, as on a real venue). The market-exit backstop below only
+        covers positions with no resting order to fall back on: a plan-less
+        position recovered by approximation after a restart.
+        """
+        stop = self._managed_stop
+        if stop is None or self._symbol is None:
+            return
+        if self._portfolio.position(self._symbol) is None:
+            return  # already flat (e.g. kill switch); fill handler disarms
+        if self._pending_exit_order is not None:
+            return  # an exit is already on its way to the books
+        resting = self._resting_protective_stops()
+        gapped = tuple(
+            order
+            for order in resting
+            if order.client_order_id in self._adapter.triggered_order_ids()
+        )
+        if gapped:
+            # The native stop failed: it triggered but the market gapped
+            # through its limit floor, leaving the order resting above the
+            # market while the position bleeds below it. Bot-side market
+            # exit is the §4.4 fallback for exactly this case.
+            for order in gapped:
+                if self._order_store is not None:
+                    await self._order_store.mark_cancelled(order.client_order_id, candle.close_time)
+                await self._adapter.cancel(order.client_order_id)
+                self._journaled_triggered.discard(order.client_order_id)
+            await self._backstop_exit(
+                candle, stop, "stop-limit triggered but gapped through its limit"
+            )
+            return
+        if not resting and stop.is_breached_by(candle):
+            await self._backstop_exit(candle, stop, "no resting stop to enforce it")
+            return
+        previous_level = stop.stop_price_quote
+        ratcheted = stop.ratchet(candle)
+        if ratcheted == previous_level or self._armed_entry is None or not resting:
+            return
+        # The level moved: cancel/replace the resting order so the venue
+        # enforces the ratcheted stop, not the stale one. Same deterministic
+        # id; its journal row reopens carrying the new level.
+        for stale in resting:
+            if self._order_store is not None:
+                await self._order_store.mark_cancelled(stale.client_order_id, candle.close_time)
+            await self._adapter.cancel(stale.client_order_id)
+            self._journaled_triggered.discard(stale.client_order_id)
+        replacement = self._risk_manager.protective_exit_order(
+            self._armed_entry,
+            resting[0].quantity_base,
+            candle.close_time,
+            stop_price_quote=ratcheted,
+        )
+        await self._submit(replacement)
+        logger.info(
+            "protective stop for %s ratcheted %s -> %s",
+            self._symbol,
+            previous_level,
+            ratcheted,
+        )
+
+    async def _backstop_exit(self, candle: Candle, stop: ManagedStop, why: str) -> None:
+        """Exit at market when the resting stop cannot protect the position.
+
+        The §4.4 fallback: bot-side stop logic only where the native resting
+        order failed (gapped through) or never existed (plan-less recovery).
+        The exit goes through the risk manager like every order.
+        """
+        signal = Signal(
+            signal_id=f"stop:{self._symbol}:{candle.close_time.isoformat()}",
+            strategy_name="protective_stop",
+            symbol=self._symbol or candle.symbol,
+            side=Side.SELL,
+            confidence=1.0,
+            stop_price_quote=stop.stop_price_quote,
+            reasons=(
+                f"protective stop at {stop.stop_price_quote} traded through "
+                f"(candle low {candle.low_quote}); {why}",
+            ),
+            created_at=candle.close_time,
+        )
+        self._managed_stop = None  # one exit order; never resubmit per candle
+        self._armed_entry = None
+        exit_order = self._risk_manager.evaluate(signal, candle.close_quote)
+        if exit_order is None:  # pragma: no cover - exits always pass; defensive
+            logger.error("protective stop exit was vetoed; position unprotected")
+            return
+        await self._submit(exit_order)
+        self._pending_exit_order = exit_order.client_order_id
+        logger.warning(
+            "protective stop hit for %s: exiting %s at market (%s)",
+            self._symbol,
+            exit_order.quantity_base,
+            why,
+        )
+        await self._record_decision(signal, DecisionOutcome.SUBMITTED)
+
     async def _sweep_proposals(self, candle: Candle) -> None:
         if self._proposal_queue is None:
             return
@@ -542,15 +697,24 @@ class TradingEngine:
             await self._order_store.mark_filled(fill.client_order_id, fill.filled_at)
         self._journaled_triggered.discard(fill.client_order_id)
         entry = self._submitted_entries.pop(fill.client_order_id, None)
-        if entry is not None:
+        plan = None if entry is None else entry.protective_exit
+        if entry is not None and plan is not None:
             # The position exists from this fill on; its protection goes to
-            # the venue immediately (CLAUDE.md invariant 5) — sized to the
-            # filled quantity, active from the next candle. A crash from
-            # here is covered by the worker's boot reconciliation.
+            # the venue immediately (CLAUDE.md invariant 5) — a resting
+            # stop-limit sized to the filled quantity, active from the next
+            # candle — and the in-memory ratchet that manages its level. A
+            # crash from here is covered by the worker's boot reconciliation.
             stop_order = self._risk_manager.protective_exit_order(
                 entry, fill.quantity_base, fill.filled_at
             )
             await self._submit(stop_order)
+            self._managed_stop = ManagedStop(
+                entry_price_quote=fill.price_quote,
+                initial_stop_quote=plan.stop_price_quote,
+                breakeven_at_r=plan.breakeven_at_r,
+                trail_distance_quote=plan.trail_distance_quote,
+            )
+            self._armed_entry = entry
             logger.info(
                 "protective stop %s armed for %s: trigger %s, limit %s",
                 stop_order.client_order_id,
@@ -561,6 +725,13 @@ class TradingEngine:
         self._portfolio.apply_fill(fill)
         self._risk_manager.on_fill(fill)
         self._fills.append(fill)
+        if fill.side == Side.SELL:
+            if fill.client_order_id == self._pending_exit_order:
+                self._pending_exit_order = None
+            if self._portfolio.position(fill.symbol) is None:
+                # Flat again: nothing left to protect or ratchet.
+                self._managed_stop = None
+                self._armed_entry = None
         if self._bus is not None:
             await self._bus.publish(FillRecorded(fill=fill))
         logger.info(

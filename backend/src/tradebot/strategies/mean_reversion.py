@@ -34,6 +34,14 @@ class MeanReversionConfig(BaseModel):
     atr_period: int = 14
     atr_stop_multiple: float = 2.0
 
+    breakeven_at_r: float = 0.0
+    """Stop management: ratchet the stop to entry once the trade has earned
+    this many R. ``0`` disables (the historical behavior)."""
+
+    trail_atr_multiple: float = 0.0
+    """Stop management: trail the stop this many entry-time ATRs below the
+    highest high since entry. ``0`` disables (the historical behavior)."""
+
     trend_filter_ema_period: int = 0
     """Only buy oversold recoveries while the close sits above this EMA —
     a dip in an uptrend mean-reverts; a dip in a downtrend is a falling
@@ -117,6 +125,14 @@ class MeanReversionStrategy:
                 side=Side.BUY,
                 confidence=1.0,
                 stop_price_quote=stop,
+                breakeven_at_r=self._config.breakeven_at_r,
+                trail_distance_quote=(
+                    Decimal(str(self._config.trail_atr_multiple * atr)).quantize(
+                        ACCOUNTING_RESOLUTION, rounding=ROUND_HALF_EVEN
+                    )
+                    if self._config.trail_atr_multiple > 0
+                    else None
+                ),
                 reasons=(
                     f"RSI({self._config.rsi_period}) recovered above "
                     f"{self._config.oversold_threshold:g} from oversold "

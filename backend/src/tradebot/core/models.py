@@ -149,6 +149,15 @@ class Signal(BaseModel):
     entry_price_quote: PositiveAmount | None = None
     stop_price_quote: PositiveAmount
     target_price_quote: PositiveAmount | None = None
+    breakeven_at_r: float = 0.0
+    """Stop management: once the trade reaches this many R of open profit,
+    the protective stop ratchets to the entry price. ``0`` disables."""
+
+    trail_distance_quote: PositiveAmount | None = None
+    """Stop management: trail the stop this far (quote) below the highest
+    high since entry, frozen at signal time (k x ATR at entry) so the
+    behavior is deterministic and replayable. ``None`` disables."""
+
     reasons: tuple[str, ...] = ()
     created_at: UtcDatetime = Field(default_factory=utc_now)
 
@@ -158,20 +167,30 @@ class ProtectiveExitPlan(BaseModel):
 
     Deliberately separate from ``Signal.stop_price_quote`` (the *risk
     invalidation* level used for sizing and evaluation grading): this is the
-    *exchange order* — a stop-limit whose trigger is the invalidation level
-    and whose limit price sits below it by a configured offset, bounding how
-    far a fast market can fill past the stop. Keeping the three meanings of
-    "stop" (invalidation, resting exchange order, evaluation reference) in
-    distinct places stops them drifting apart silently.
+    *exchange order* — a stop-limit whose trigger starts at the invalidation
+    level and whose limit price sits below it by a configured offset,
+    bounding how far a fast market can fill past the stop. The ratchet
+    policy (breakeven, trail) is carried here too, so the whole protection
+    plan survives restarts with the entry order. Keeping the three meanings
+    of "stop" (invalidation, resting exchange order, evaluation reference)
+    in distinct places stops them drifting apart silently.
     """
 
     model_config = ConfigDict(frozen=True)
 
     stop_price_quote: PositiveAmount
-    """Trigger level — the signal's risk-invalidation price."""
+    """Initial trigger level — the signal's risk-invalidation price."""
 
     limit_price_quote: PositiveAmount
     """Limit floor of the stop-limit order, below the trigger."""
+
+    breakeven_at_r: float = 0.0
+    """Ratchet policy, copied from the signal: lock the stop to the entry
+    price once the trade has earned this many R. ``0`` disables."""
+
+    trail_distance_quote: PositiveAmount | None = None
+    """Ratchet policy, copied from the signal: trail the stop this far
+    below the highest high since entry. ``None`` disables."""
 
 
 class Order(BaseModel):
@@ -248,6 +267,9 @@ class DecisionOutcome(enum.StrEnum):
     REJECTED = "rejected"
     EXPIRED = "expired"
     DRIFTED = "drifted"
+    SUPERSEDED = "superseded"
+    """An exit signal arrived while another exit order was already in
+    flight for the same position; honoring both would over-sell."""
 
 
 class AutonomyMode(enum.StrEnum):
@@ -265,6 +287,9 @@ class ProposalStatus(enum.StrEnum):
     REJECTED = "rejected"
     EXPIRED = "expired"
     DRIFTED = "drifted"
+    SUPERSEDED = "superseded"
+    """An exit signal arrived while another exit order was already in
+    flight for the same position; honoring both would over-sell."""
 
 
 class Proposal(BaseModel):
