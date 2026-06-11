@@ -36,6 +36,10 @@ const GROUP: ComparisonGroupResponse = {
         profit_factor: "1.8000",
         average_win_r: "1.2000",
         average_loss_r: "-0.8000",
+        starting_balance_quote: "10000.00",
+        final_balance_quote: "10800.00",
+        net_pnl_quote: "800.00",
+        return_fraction: "0.0800",
         verdicts: {},
       },
     }),
@@ -50,6 +54,10 @@ const GROUP: ComparisonGroupResponse = {
         profit_factor: "1.2000",
         average_win_r: "1.0000",
         average_loss_r: "-0.9000",
+        starting_balance_quote: "10000.00",
+        final_balance_quote: "10200.00",
+        net_pnl_quote: "200.00",
+        return_fraction: "0.0200",
         verdicts: {},
       },
     }),
@@ -85,6 +93,20 @@ describe("ComparisonPanel", () => {
     expect(screen.getByText("Breakout")).toBeTruthy();
     expect(screen.getByText("0.3100")).toBeTruthy();
     expect(screen.getByText(/55\.0%/)).toBeTruthy(); // win rate as a percentage
+  });
+
+  it("leads with the ending balance and ranks the columns by it", () => {
+    render(
+      <ComparisonPanel groups={[GROUP]} onStart={() => undefined} startDisabled={false} />,
+    );
+    // The richer strategy ends with more money and takes first place.
+    const winner = screen.getByText(/10,800/);
+    expect(winner.closest("td")?.className).toContain("emerald");
+    expect(screen.getByText(/10,200/)).toBeTruthy();
+    expect(screen.getByText(/1st/)).toBeTruthy();
+    expect(screen.getByText(/2nd/)).toBeTruthy();
+    // Net P/L reads in money with its return percentage alongside.
+    expect(screen.getByText(/\+8\.00%/)).toBeTruthy();
   });
 
   it("marks the best completed value per highlighted metric", () => {

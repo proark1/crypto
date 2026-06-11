@@ -28,6 +28,7 @@ import type {
   SuggestedEvaluationResponse,
   SweepResponse,
 } from "../api/types";
+import { formatFractionPercent, formatMoney } from "../lib/format";
 import { ComparisonPanel } from "../components/ComparisonPanel";
 import { FindingsPanel } from "../components/FindingsPanel";
 import { ImprovementsPanel } from "../components/ImprovementsPanel";
@@ -130,12 +131,49 @@ export function RunReport(props: { run: EvaluationRunResponse }) {
   }
   const verdicts = asRecord(summary.verdicts) ?? {};
   const reading = interpretRun(summary);
+  // The R-multiple metrics below say how well the bot traded; this money
+  // band says what a fixed stake would have become, so the run reads in
+  // money too. Older runs predate the field — show it only when present.
+  const startBalance = summary.starting_balance_quote;
+  const finalBalance = summary.final_balance_quote;
+  const netPnl = summary.net_pnl_quote;
+  const moneyTone: Tone =
+    typeof netPnl === "string" ? (netPnl.startsWith("-") ? "bad" : "good") : "neutral";
   return (
     <div className="space-y-4">
       <div className={`rounded-lg border p-3 ${TONE_PANEL_CLASS[reading.tone]}`}>
         <div className="text-sm font-bold">{reading.headline}</div>
         <p className="mt-1 text-sm opacity-90">{reading.explanation}</p>
       </div>
+      {typeof finalBalance === "string" && (
+        <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+          <Metric
+            label="starting value"
+            value={typeof startBalance === "string" ? formatMoney(startBalance) : "—"}
+            hint="the stake every strategy is given to start"
+          />
+          <Metric
+            label="ending value"
+            value={formatMoney(finalBalance)}
+            tone={moneyTone}
+            hint="what that stake would be after these trades (1% risk per trade)"
+          />
+          <Metric
+            label="net P/L"
+            value={typeof netPnl === "string" ? formatMoney(netPnl) : "—"}
+            tone={moneyTone}
+            hint="profit or loss on the stake"
+          />
+          <Metric
+            label="return"
+            value={formatFractionPercent(
+              typeof summary.return_fraction === "string" ? summary.return_fraction : null,
+            )}
+            tone={moneyTone}
+            hint="ending value vs. starting value"
+          />
+        </div>
+      )}
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
         <Metric
           label="expectancy (R)"

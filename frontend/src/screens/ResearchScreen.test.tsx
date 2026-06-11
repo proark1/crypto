@@ -21,6 +21,10 @@ const RUN: EvaluationRunResponse = {
     expectancy_r: "0.3100",
     profit_factor: "1.8000",
     win_rate: "0.5000",
+    starting_balance_quote: "10000.00",
+    final_balance_quote: "10450.00",
+    net_pnl_quote: "450.00",
+    return_fraction: "0.0450",
     verdicts: { good: 2, very_bad: 1, correct_hold: 7 },
     by_trend: {
       up: { scenario_count: 6, trade_count: 3, expectancy_r: "0.5", win_rate: "0.66" },
@@ -35,6 +39,14 @@ describe("RunReport", () => {
     expect(screen.getByText("0.3100")).toBeDefined();
     expect(screen.getByText(/very bad: 1/)).toBeDefined();
     expect(screen.getByText("by trend")).toBeDefined();
+  });
+
+  it("shows the start and end value of the stake", () => {
+    render(<RunReport run={RUN} />);
+    expect(screen.getByText("starting value")).toBeDefined();
+    expect(screen.getByText("ending value")).toBeDefined();
+    expect(screen.getByText("10,450")).toBeDefined();
+    expect(screen.getByText(/\+4\.50%/)).toBeDefined();
   });
 
   it("says so when the run has no report yet", () => {

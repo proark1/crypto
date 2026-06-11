@@ -616,6 +616,15 @@ broken down by regime, volatility, event, timeframe, and symbol. Sharpe is
 reported but flagged as indicative only (overlapping scenarios violate its
 independence assumption).
 
+Alongside the R-multiple metrics the report carries an **illustrative money
+result** so a non-technical reader can read outcomes in money, not only in
+R: a fixed stake (10,000 quote) replayed through the graded trades at a
+fixed-fractional 1%-per-trade risk (the live risk default), compounding, to
+a starting/ending balance, net PnL, and return fraction. Ending equity is
+the order-independent product of `(1 + 0.01 * R)` over trades — it isolates
+signal quality, not position-sizing, so the same stake makes the columns
+of a comparison directly rankable by ending money.
+
 ### 12.4 Persistence
 
 Five tables (see `persistence/database.py`): `evaluation_runs` (config
@@ -844,5 +853,8 @@ Members share a `comparison_group` (the lead run's id) so
 `GET /evaluations/comparisons` can hand the research screen whole
 batches for a side-by-side table (expectancy, win rate, profit factor,
 per-regime breakdowns — every §12.3 metric, one column per strategy).
-Cancelling any member cancels the batch: half a comparison cannot answer
-the question the batch asked.
+Because every strategy starts from the identical 10,000 stake (§12.3
+money result), the table leads with each column's **ending balance and a
+1st/2nd/3rd rank** by that balance — the plainest read of which strategy
+did best — above the R-multiple detail. Cancelling any member cancels the
+batch: half a comparison cannot answer the question the batch asked.
