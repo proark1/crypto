@@ -3,6 +3,13 @@
 Autonomous crypto **spot trading bot**: technical analysis + market data signals,
 per-coin autonomy modes (autonomous / co-pilot approval), strict risk management.
 
+The bot runs a **strategy competition** (ARCHITECTURE.md §13): five paper
+accounts — the production regime router plus four solo challengers (trend
+following, mean reversion, breakout, MACD momentum) — trade the same coins,
+candles, and gates from their own journal-backed balances. The dashboard's
+leaderboard ranks them by equity, and the research screen can grade all five
+on identical historical scenarios for a direct side-by-side comparison.
+
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** — the design document and source of truth
   (includes the implementation-status table).
 - **[CLAUDE.md](CLAUDE.md)** — repository structure, safety invariants, and coding standards.
@@ -66,7 +73,8 @@ internally.
 | `TRADEBOT_API_CORS_ORIGINS` | no | `*` (safe with bearer-header auth); set to the dashboard URL, e.g. `https://frontend-xxxx.up.railway.app`, for defence in depth |
 | `TRADEBOT_EXCHANGE_ID` | no | `binance` (any CCXT id: `kraken`, `coinbase`, ...) |
 | `TRADEBOT_SYMBOLS` | no | `BTC/USDT` — comma-separated, e.g. `BTC/USDT,ETH/USDT` (all pairs share the quote currency; singular `TRADEBOT_SYMBOL` still works). **Seeds the coin list on first boot only** — afterwards add/remove coins from the dashboard and the database is the source of truth |
-| `TRADEBOT_PAPER_INITIAL_BALANCE_QUOTE` | no | `10000` |
+| `TRADEBOT_PAPER_INITIAL_BALANCE_QUOTE` | no | `10000` — seeds every competition account equally |
+| `TRADEBOT_COMPETITION_ENABLED` | no | `true` — run the five-bot strategy competition; `false` trades the production router alone |
 | `TRADEBOT_HISTORY_BACKFILL_DAYS` | no | `1460` — a full ~4-year crypto cycle of 1m history (free, public REST) fetched the first time a coin has no stored candles; existing databases are deepened to the horizon on the next boot. Expect the initial crawl to take ~30–60 min per coin-year and ~0.5 GB of Postgres per coin-year |
 | `TRADEBOT_HEARTBEAT_URL` | recommended | a healthchecks.io ping URL; the monitor alerts when the bot (or its data feed) goes silent |
 | `TRADEBOT_HEARTBEAT_INTERVAL_SECONDS` | no | `60` |
