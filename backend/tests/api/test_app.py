@@ -72,6 +72,7 @@ class StubBot:
             symbol: self._build_engine(symbol) for symbol in self.config.symbol_list()
         }
         self.engine = self.engines[self.config.symbol_list()[0]]
+        self.risk_state_persists = 0
         self.evaluation_store = EvaluationStore(database)
         self.strategy_settings_store = StrategySettingsStore(database)
         self.metrics = MetricsCollector()
@@ -151,6 +152,10 @@ class StubBot:
         if len(self.engines) == 1:
             raise RuntimeError("cannot remove the last coin; pause the bot instead")
         del self.engines[symbol]
+
+    async def persist_risk_state(self) -> None:
+        """Count synchronous persists (pause/resume/kill must call this)."""
+        self.risk_state_persists += 1
 
     def replace_first_engine(self, engine: TradingEngine) -> None:
         """Swap the first symbol's engine (for co-pilot test setups)."""
@@ -1144,3 +1149,14 @@ class TestWallet:
         assert btc["quantity"] == "2"
         assert btc["value_quote"] is None
         assert body["equity_quote"] is None
+
+
+class TestRiskStatePersistsOnCommands:
+    async def test_pause_resume_kill_persist_synchronously(self, database: Database) -> None:
+        """A halt must reach Postgres before the command returns."""
+        bot = StubBot(database)
+        async with make_client(bot) as client:
+            await client.post("/pause")
+            await client.post("/resume")
+            await client.post("/kill")
+        assert bot.risk_state_persists == 3

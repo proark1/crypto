@@ -620,13 +620,19 @@ class Worker:
         self._saved_risk_state = (state, paused_symbols)
 
     async def _persist_risk_state(self, event: CandleClosed) -> None:
-        """Save the brake/pause snapshot when it changed (checked per candle).
+        """Bus hook: persist the brake/pause snapshot once per closed candle."""
+        await self.persist_risk_state()
 
-        Bus-driven, so a change persists within one candle of happening;
-        an operator pause/kill on a market with no flowing candles persists
-        on the next candle of any traded symbol. Write failures are logged
-        and retried implicitly on the next candle — risk persistence must
-        not break trading, only restarts can be stale.
+    async def persist_risk_state(self) -> None:
+        """Save the brake/pause snapshot if it changed since the last save.
+
+        Called per closed candle by the bus hook, and synchronously by the
+        pause/resume/kill API endpoints — an operator halt must reach
+        Postgres before the command returns, not a candle later (a crash
+        inside that window would otherwise resume a killed bot). Write
+        failures are logged and retried implicitly on the next candle —
+        risk persistence must not break trading, only restarts can be
+        stale.
         """
         snapshot = self.risk_manager.breakers.snapshot()
         paused = tuple(symbol for symbol, engine in self.engines.items() if engine.paused)

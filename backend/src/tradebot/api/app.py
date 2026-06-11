@@ -79,6 +79,10 @@ class BotState(Protocol):
         """One trading loop per symbol, for pause/resume/kill commands."""
         ...
 
+    async def persist_risk_state(self) -> None:
+        """Persist the brake/pause snapshot now (operator halts cannot wait)."""
+        ...
+
     async def add_coin(self, symbol: str) -> None:
         """Start trading a coin at runtime (``ValueError`` on bad input)."""
         ...
@@ -759,12 +763,14 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
         # actions, and "I paused it" must never mean "except that symbol".
         for engine in state.engines.values():
             engine.pause()
+        await state.persist_risk_state()
         return CommandResponse(paused=True, detail="strategies muted; resting orders stay live")
 
     @protected.post("/resume")
     async def resume() -> CommandResponse:
         for engine in state.engines.values():
             engine.resume()
+        await state.persist_risk_state()
         return CommandResponse(paused=False, detail="strategies resumed")
 
     @protected.post("/kill")
@@ -779,6 +785,9 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
                     exits_submitted += 1
             except RuntimeError as error:
                 failures.append(str(error))
+        # Persist the halt before reporting it — even on partial failure,
+        # "halted" must survive a crash the moment the operator sees it.
+        await state.persist_risk_state()
         if failures:
             # Halted but NOT flat — surface it as a clear conflict, never as
             # a 500 and never as a misleading "nothing to flatten". The
