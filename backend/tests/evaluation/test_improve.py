@@ -95,6 +95,7 @@ def make_improver(
     symbols: tuple[str, ...] = ("BTC/USDT", "ETH/USDT"),
     notify: Callable[[str], Awaitable[None]] | None = None,
     evaluations: ScriptedEvaluations | None = None,
+    confirm: Callable[[str, Mapping[str, Any], str], Awaitable[str | None]] | None = None,
 ) -> AutoImprover:
     async def promote(
         family: str, params: Mapping[str, Any], sweep_id: int | None, note: str | None
@@ -109,6 +110,7 @@ def make_improver(
         active_params=lambda: {"trend_following": {"fast_ema_period": 20}},
         symbols=lambda: symbols,
         promote=promote,
+        confirm=confirm,
         interval=timedelta(hours=12),
         history_days=180,
         timeframe="1h",
@@ -210,6 +212,51 @@ class TestAutoImprover:
             "ETH/USDT",
             "BTC/USDT",
         ]
+
+    async def test_engine_confirmation_veto_blocks_the_promotion(self) -> None:
+        """A validated sweep winner still needs the engine's confirmation."""
+        messages: list[str] = []
+        confirmed: list[tuple[str, str]] = []
+        promoted: list[tuple[str, Mapping[str, Any], int | None, str | None]] = []
+
+        async def vetoing_confirm(family: str, params: Mapping[str, Any], symbol: str) -> str:
+            confirmed.append((family, symbol))
+            return "challenger final equity 9000 < incumbent 10000"
+
+        async def notify(message: str) -> None:
+            messages.append(message)
+
+        store = ScriptedStore(
+            "completed",
+            {"verdict": "validated", "winner": "tighter_stop", "explanation": "won"},
+        )
+        improver = make_improver(
+            ScriptedSweeps(), store, promoted, notify=notify, confirm=vetoing_confirm
+        )
+
+        sweep_id = await improver.run_cycle()
+
+        assert sweep_id == 1
+        assert confirmed == [("trend_following", "BTC/USDT")]  # the swept symbol
+        assert promoted == []  # the veto is final for this cycle
+        assert messages and "vetoed" in messages[0]
+
+    async def test_engine_confirmation_pass_promotes(self) -> None:
+        promoted: list[tuple[str, Mapping[str, Any], int | None, str | None]] = []
+
+        async def passing_confirm(
+            family: str, params: Mapping[str, Any], symbol: str
+        ) -> str | None:
+            return None
+
+        store = ScriptedStore(
+            "completed",
+            {"verdict": "validated", "winner": "tighter_stop", "explanation": "won"},
+        )
+        improver = make_improver(ScriptedSweeps(), store, promoted, confirm=passing_confirm)
+
+        await improver.run_cycle()
+        assert len(promoted) == 1
 
     async def test_notify_carries_the_promotion_message(self) -> None:
         messages: list[str] = []

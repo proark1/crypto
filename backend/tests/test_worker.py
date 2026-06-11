@@ -664,3 +664,39 @@ class TestRiskStatePersistence:
         loaded = await RiskStateStore(database).load()
         assert loaded is not None
         assert loaded[0].tripped_reason is not None  # the trip reached Postgres
+
+
+class TestPromotionConfirmation:
+    async def test_gate_vetoes_without_history_and_passes_a_matching_challenger(
+        self, database: Database
+    ) -> None:
+        """Fail-safe both ways: no data means no promotion; a challenger
+        replaying at least as well as the incumbent passes."""
+        from tradebot.core.models import Candle
+
+        worker = Worker(make_config(), database, ScriptedExchange([]))
+        await worker.initialize()
+
+        params = {"fast_ema_period": 3, "slow_ema_period": 6, "atr_period": 3}
+        veto = await worker._confirm_promotion("trend_following", params, "BTC/USDT")
+        assert veto is not None and "no stored" in veto
+
+        candles = [
+            Candle(
+                symbol="BTC/USDT",
+                interval=CandleInterval.M1,
+                open_time=BASE_TIME + timedelta(minutes=i),
+                close_time=BASE_TIME + timedelta(minutes=i + 1),
+                open_quote=Decimal(str(close)),
+                high_quote=Decimal(str(close + 0.5)),
+                low_quote=Decimal(str(close - 0.5)),
+                close_quote=Decimal(str(close)),
+                volume_base=Decimal("10"),
+            )
+            for i, close in enumerate([100.0] * 6 + [100.0 + 2 * i for i in range(1, 11)])
+        ]
+        await worker.candle_store.insert_batch(candles)
+        # Challenger == incumbent defaults for the family: identical replay,
+        # equal equity, so the gate must allow.
+        worker.strategy_params["trend_following"] = dict(params)
+        assert await worker._confirm_promotion("trend_following", params, "BTC/USDT") is None

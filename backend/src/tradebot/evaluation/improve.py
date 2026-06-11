@@ -4,8 +4,11 @@ The loop (ARCHITECTURE.md §12.7) closes the research cycle without a human
 in the middle: on a schedule it derives challenger variants from the
 parameters the bot is trading *right now*, runs them through the blind
 walk-forward sweep, and promotes the winner only when the verdict is
-**validated** — the Bonferroni-corrected, multi-window statistical bar.
-Training wins, near-misses, and findings never promote anything.
+**validated** — the Bonferroni-corrected, multi-window statistical bar —
+AND it survives the engine-backed confirmation gate: the evaluator's unit
+trades validate, the production engine (sizing, fees, stop lifecycle,
+breakers) confirms. Training wins, near-misses, and findings never promote
+anything.
 
 Scope is deliberate: promotions apply to the paper bot (the worker refuses
 live mode outright), every promotion is journaled as a strategy-settings
@@ -229,6 +232,7 @@ class AutoImprover:
         active_params: Callable[[], Mapping[str, Mapping[str, Any]]],
         symbols: Callable[[], tuple[str, ...]],
         promote: Callable[[str, Mapping[str, Any], int | None, str | None], Awaitable[int]],
+        confirm: Callable[[str, Mapping[str, Any], str], Awaitable[str | None]] | None = None,
         interval: timedelta,
         history_days: int,
         timeframe: str,
@@ -240,6 +244,9 @@ class AutoImprover:
         ``symbols``) because coins and configurations change at runtime —
         a cycle must see the world as it is, not as it was at boot.
         ``promote`` is the worker's apply path: persist + hot-swap.
+        ``confirm`` is the engine-backed gate: given (family, params,
+        symbol) it returns a veto reason, or ``None`` to allow — promotion
+        is skipped entirely when it vetoes.
         """
         self._sweeps = sweeps
         self._evaluations = evaluations
@@ -247,6 +254,7 @@ class AutoImprover:
         self._active_params = active_params
         self._symbols = symbols
         self._promote = promote
+        self._confirm = confirm
         self._interval = interval
         self._history_days = history_days
         self._timeframe = timeframe
@@ -341,6 +349,17 @@ class AutoImprover:
             logger.warning("improvement sweep %d validated no challenger; skipping", sweep_id)
             return sweep_id
         explanation = str(report.get("explanation", ""))
+        if self._confirm is not None:
+            veto_reason = await self._confirm(winner.family, winner.params, symbol)
+            if veto_reason is not None:
+                message = (
+                    f"sweep #{sweep_id} validated {winner.name}, but the engine-backed "
+                    f"confirmation vetoed the promotion: {veto_reason}"
+                )
+                logger.warning("%s", message)
+                if self._notify is not None:
+                    await self._notify(message)
+                return sweep_id
         version = await self._promote(
             winner.family, winner.params, sweep_id, f"auto-promoted: {explanation}"
         )

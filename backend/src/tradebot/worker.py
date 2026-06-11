@@ -36,6 +36,7 @@ from tradebot.evaluation.improve import AutoImprover
 from tradebot.evaluation.runner import EvaluationManager, EvaluationRunConfig, EvaluationRunner
 from tradebot.evaluation.strategy import build_traded_strategy
 from tradebot.evaluation.sweep import (
+    SweepCandidate,
     SweepConfig,
     SweepManager,
     SweepRunner,
@@ -488,6 +489,49 @@ class Worker:
         engine.detach_from(self.bus)
         del self.engines[symbol]
         logger.info("coin removed at runtime: %s", symbol)
+
+    async def _confirm_promotion(
+        self, family: str, params: Mapping[str, Any], symbol: str
+    ) -> str | None:
+        """Engine-backed confirmation: the last gate before any promotion.
+
+        Sweeps grade candidates with the scenario evaluator's unit trades,
+        which deliberately ignore sizing, account limits, and the stop
+        lifecycle. Before a validated winner is promoted, it and the
+        incumbent are replayed through the production engine over the same
+        stored history; a challenger that cannot beat the incumbent where
+        it actually has to trade is vetoed — the evaluator validates, the
+        engine confirms. Returns the veto reason, or ``None`` to allow.
+        Fails safe: nothing to confirm on means no promotion.
+        """
+        from tradebot.backtest import BacktestRunner
+
+        candles = await self.candle_store.fetch_recent(
+            symbol, CandleInterval.M1, self.config.auto_improve_history_days * 1440
+        )
+        if not candles:
+            return f"no stored {symbol} candles to replay"
+
+        async def final_equity(candidate_params: Mapping[str, Any]) -> Decimal:
+            portfolio = Portfolio(self.config.paper_initial_balance_quote)
+            runner = BacktestRunner(
+                build_candidate_strategy(
+                    SweepCandidate(name="confirm", family=family, params=dict(candidate_params))
+                ),
+                RiskManager(RiskConfig(), portfolio),
+                portfolio,
+                SimulatedExecutionAdapter(FillSimulatorConfig()),
+            )
+            return (await runner.run(candles)).final_equity_quote
+
+        challenger_equity = await final_equity(params)
+        incumbent_equity = await final_equity(self.strategy_params.get(family, {}))
+        if challenger_equity < incumbent_equity:
+            return (
+                f"engine replay over {len(candles)} {symbol} candles: challenger "
+                f"final equity {challenger_equity} < incumbent {incumbent_equity}"
+            )
+        return None
 
     async def _restore_risk_state(self) -> None:
         """Adopt the persisted brakes and pause flags before trading resumes.
@@ -957,6 +1001,7 @@ class Worker:
             active_params=lambda: self.strategy_params,
             symbols=lambda: self.symbols,
             promote=self.apply_strategy_params,
+            confirm=self._confirm_promotion,
             interval=timedelta(hours=self.config.auto_improve_interval_hours),
             history_days=self.config.auto_improve_history_days,
             timeframe=self.config.auto_improve_timeframe,
