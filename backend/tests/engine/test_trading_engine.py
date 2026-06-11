@@ -24,10 +24,10 @@ from tradebot.engine import TradingEngine
 from tradebot.execution import FillSimulatorConfig, SimulatedExecutionAdapter
 from tradebot.persistence import Database, DecisionStore, FillStore, OrderStore
 from tradebot.persistence.database import metadata
-from tradebot.portfolio import Portfolio
+from tradebot.portfolio import Portfolio, Position
 from tradebot.risk import BreakerConfig, RiskConfig, RiskManager
 from tradebot.signals import EntryGate, GateDecision
-from tradebot.strategies import TrendFollowingConfig, TrendFollowingStrategy
+from tradebot.strategies import Strategy, TrendFollowingConfig, TrendFollowingStrategy
 
 BASE_TIME = datetime(2026, 1, 2, 0, 0, tzinfo=UTC)
 INITIAL_BALANCE = Decimal("10000")
@@ -83,8 +83,9 @@ def make_engine(
     risk_config: RiskConfig | None = None,
     entry_gates: tuple[EntryGate, ...] = (),
     order_store: OrderStore | None = None,
+    strategy: Strategy | None = None,
 ) -> TradingEngine:
-    strategy = TrendFollowingStrategy(
+    strategy = strategy or TrendFollowingStrategy(
         TrendFollowingConfig(fast_ema_period=3, slow_ema_period=6, atr_period=3)
     )
     return TradingEngine(
@@ -100,6 +101,34 @@ def make_engine(
         entry_gates=entry_gates,
         order_store=order_store,
     )
+
+
+class SellOnceStrategy:
+    """Emits a single SELL on its first candle — drives the exit path directly.
+
+    The trend strategy only sells when its EMAs cross, which is hard to line
+    up against a specific restored order; this stub makes the strategy-exit
+    moment deterministic.
+    """
+
+    def __init__(self) -> None:
+        self._emitted = False
+
+    @property
+    def name(self) -> str:
+        return "sell_once"
+
+    def on_candle(self, candle: Candle, position: Position | None) -> Signal | None:
+        if self._emitted:
+            return None
+        self._emitted = True
+        return Signal(
+            strategy_name="sell_once",
+            symbol=candle.symbol,
+            side=Side.SELL,
+            confidence=1.0,
+            stop_price_quote=Decimal("90"),
+        )
 
 
 class TestPaperFlowOverBus:
@@ -460,6 +489,119 @@ class TestOrderJournal:
         # as it would have without the restart in between.
         (stop,) = await order_store.fetch_open("BTC/USDT")
         assert stop.order.client_order_id.startswith("stop-")
+
+    async def test_restart_relatches_a_working_exit_so_strategy_sell_is_superseded(
+        self, database: Database
+    ) -> None:
+        """A non-stop exit still working after a restart re-adopts the latch.
+
+        Without it a fresh strategy SELL sizes against the still-open position
+        and submits a second full-position sell — both fills would take the
+        position short, which a spot venue cannot do.
+        """
+        order_store = OrderStore(database)
+        decision_store = DecisionStore(database)
+        # A resting limit exit priced far above the market: it stays working
+        # across the candle below, standing in for an exit in flight.
+        exit_order = Order(
+            client_order_id="exit-1",
+            signal_id="sig-exit",
+            symbol="BTC/USDT",
+            side=Side.SELL,
+            order_type=OrderType.LIMIT,
+            quantity_base=Decimal("1"),
+            limit_price_quote=Decimal("200"),
+            created_at=BASE_TIME,
+        )
+        await order_store.record_submitted(exit_order)
+
+        portfolio = Portfolio(INITIAL_BALANCE)
+        portfolio.apply_fill(
+            Fill(
+                client_order_id="seed",
+                symbol="BTC/USDT",
+                side=Side.BUY,
+                price_quote=Decimal("100"),
+                quantity_base=Decimal("1"),
+                fee_quote=Decimal("0"),
+                filled_at=BASE_TIME,
+            )
+        )
+        engine = make_engine(
+            portfolio,
+            order_store=order_store,
+            decision_store=decision_store,
+            strategy=SellOnceStrategy(),
+        )
+        for open_order in await order_store.fetch_open("BTC/USDT"):
+            engine.restore_order(open_order)
+
+        # Candle far below the 200 limit: the restored exit cannot fill, so the
+        # stub's SELL lands on top of an exit that is still in flight.
+        await engine.process_candle(make_candle(0, 96.0))
+
+        # The latch held: nothing new reached the adapter, only the restored
+        # exit is still working, and the strategy SELL was superseded.
+        assert engine.fills == ()
+        assert [o.client_order_id for o in engine.open_orders()] == ["exit-1"]
+        outcomes = {d.outcome for d in await decision_store.fetch_recent("BTC/USDT")}
+        assert DecisionOutcome.SUPERSEDED in outcomes
+        assert DecisionOutcome.SUBMITTED not in outcomes
+
+    async def test_restart_does_not_latch_a_restored_protective_stop(
+        self, database: Database
+    ) -> None:
+        """A resting protective stop must not arm the exit-in-flight latch.
+
+        The strategy exit is meant to replace the stop (the SELL path cancels
+        it first), so latching here would wrongly suppress that replacement.
+        """
+        order_store = OrderStore(database)
+        decision_store = DecisionStore(database)
+        stop = Order(
+            client_order_id="stop-1",
+            signal_id="sig-stop",
+            symbol="BTC/USDT",
+            side=Side.SELL,
+            order_type=OrderType.STOP_LIMIT,
+            quantity_base=Decimal("1"),
+            limit_price_quote=Decimal("94"),
+            stop_price_quote=Decimal("95"),
+            created_at=BASE_TIME,
+        )
+        await order_store.record_submitted(stop)
+
+        portfolio = Portfolio(INITIAL_BALANCE)
+        portfolio.apply_fill(
+            Fill(
+                client_order_id="seed",
+                symbol="BTC/USDT",
+                side=Side.BUY,
+                price_quote=Decimal("100"),
+                quantity_base=Decimal("1"),
+                fee_quote=Decimal("0"),
+                filled_at=BASE_TIME,
+            )
+        )
+        engine = make_engine(
+            portfolio,
+            order_store=order_store,
+            decision_store=decision_store,
+            strategy=SellOnceStrategy(),
+        )
+        for open_order in await order_store.fetch_open("BTC/USDT"):
+            engine.restore_order(open_order)
+
+        # Candle above the 95 trigger: the stop stays resting, and the stub's
+        # SELL replaces it — the stop is cancelled and a market exit submitted.
+        await engine.process_candle(make_candle(0, 110.0))
+
+        outcomes = {d.outcome for d in await decision_store.fetch_recent("BTC/USDT")}
+        assert DecisionOutcome.SUBMITTED in outcomes
+        assert DecisionOutcome.SUPERSEDED not in outcomes
+        # The stop was cancelled ahead of the exit; the new market sell is the
+        # only working order.
+        assert all(o.order_type != OrderType.STOP_LIMIT for o in engine.open_orders())
 
     async def test_kill_journals_the_cancellation(self, database: Database) -> None:
         order_store = OrderStore(database)

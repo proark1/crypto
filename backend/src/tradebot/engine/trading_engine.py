@@ -461,6 +461,17 @@ class TradingEngine:
         if open_order.order.protective_exit is not None:
             # A restored pending entry must still arm its stop when it fills.
             self._submitted_entries[open_order.order.client_order_id] = open_order.order
+        if (
+            open_order.order.side == Side.SELL
+            and open_order.order.order_type != OrderType.STOP_LIMIT
+        ):
+            # A restored non-stop exit (market/limit SELL still working after a
+            # restart) is an exit in flight: re-adopt the latch so a fresh
+            # strategy SELL is superseded instead of double-selling the
+            # position short. Resting protective stops are deliberately left
+            # out — a new strategy exit is meant to replace the stop, and the
+            # SELL path cancels it before submitting (see _evaluate path).
+            self._pending_exit_order = open_order.order.client_order_id
         logger.info(
             "restored open order %s: %s %s %s",
             open_order.order.client_order_id,
