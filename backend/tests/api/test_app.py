@@ -1098,3 +1098,49 @@ class TestStrategyVersions:
         bot = StubBot(database)
         async with make_client(bot) as client:
             assert (await client.post("/strategy/versions/9999/revert")).status_code == 404
+
+
+class TestWallet:
+    async def test_flat_account_holds_only_the_quote_currency(self, database: Database) -> None:
+        bot = StubBot(database)
+        async with make_client(bot) as client:
+            body = (await client.get("/wallet")).json()
+
+        assert body["quote_currency"] == "USDT"
+        assert body["equity_quote"] == "10000"
+        (usdt,) = body["holdings"]
+        assert usdt["asset"] == "USDT"
+        assert usdt["quantity"] == "10000"
+        assert usdt["value_quote"] == "10000"
+
+    async def test_open_position_is_listed_with_its_marked_value(self, database: Database) -> None:
+        bot = StubBot(database)
+        bot.portfolio.apply_fill(make_fill(price="100", quantity="2"))  # 2 BTC @ 100
+        await bot.candle_store.insert_batch([make_candle(close="110")])
+
+        async with make_client(bot) as client:
+            body = (await client.get("/wallet")).json()
+
+        usdt, btc = body["holdings"]
+        assert usdt["asset"] == "USDT"
+        assert usdt["quantity"] == "9799.8"  # 10000 - 200 - 0.2 fee
+        assert btc["asset"] == "BTC"
+        assert btc["symbol"] == "BTC/USDT"
+        assert btc["quantity"] == "2"
+        assert btc["mark_price_quote"] == "110"
+        assert btc["value_quote"] == "220"
+        assert Decimal(btc["unrealized_pnl_quote"]) == Decimal("19.8")  # incl. entry fee
+        assert Decimal(body["equity_quote"]) == Decimal("10019.8")
+
+    async def test_position_without_a_mark_is_listed_not_hidden(self, database: Database) -> None:
+        """No candles yet: the coin still shows, its value honestly unknown."""
+        bot = StubBot(database)
+        bot.portfolio.apply_fill(make_fill(price="100", quantity="2"))
+
+        async with make_client(bot) as client:
+            body = (await client.get("/wallet")).json()
+
+        _, btc = body["holdings"]
+        assert btc["quantity"] == "2"
+        assert btc["value_quote"] is None
+        assert body["equity_quote"] is None

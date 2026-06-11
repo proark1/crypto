@@ -131,6 +131,22 @@ export interface FindingResponse {
   created_at: string;
 }
 
+export interface HoldingResponse {
+  asset: string;
+  /** The pair behind a coin holding; null for the quote currency itself. */
+  symbol: string | null;
+  quantity: string;
+  mark_price_quote: string | null;
+  value_quote: string | null;
+  unrealized_pnl_quote: string | null;
+}
+
+export interface WalletResponse {
+  quote_currency: string;
+  equity_quote: string | null;
+  holdings: HoldingResponse[];
+}
+
 export interface StrategyVersionResponse {
   id: number;
   family: string;

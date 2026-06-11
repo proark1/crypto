@@ -9,6 +9,7 @@ import {
   fetchFills,
   fetchProposals,
   fetchStatus,
+  fetchWallet,
   getStoredToken,
   postKill,
   postPause,
@@ -24,6 +25,7 @@ import type {
   FillResponse,
   ProposalResponse,
   StatusResponse,
+  WalletResponse,
 } from "../api/types";
 import { CandleChart } from "../components/CandleChart";
 import { IntervalSwitcher } from "../components/IntervalSwitcher";
@@ -36,6 +38,7 @@ import { DecisionsPanel } from "../components/DecisionsPanel";
 import { FillsTable } from "../components/FillsTable";
 import { ProposalsPanel } from "../components/ProposalsPanel";
 import { StatusCard } from "../components/StatusCard";
+import { WalletCard } from "../components/WalletCard";
 
 const POLL_INTERVAL_MS = 5000;
 
@@ -45,6 +48,7 @@ export function OverviewScreen() {
   const [decisions, setDecisions] = useState<DecisionResponse[]>([]);
   const [candles, setCandles] = useState<CandleResponse[]>([]);
   const [proposals, setProposals] = useState<ProposalResponse[]>([]);
+  const [wallet, setWallet] = useState<WalletResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [needsToken, setNeedsToken] = useState(getStoredToken() === "");
   const [tokenDraft, setTokenDraft] = useState("");
@@ -65,13 +69,14 @@ export function OverviewScreen() {
     try {
       // Decisions are explainability, not safety: their endpoint failing
       // must never take down status/fills or the kill switch with it.
-      const [nextStatus, nextFills, nextDecisions, nextCandles, nextProposals] =
+      const [nextStatus, nextFills, nextDecisions, nextCandles, nextProposals, nextWallet] =
         await Promise.all([
           fetchStatus(symbol),
           fetchFills(),
           fetchDecisions(symbol).catch(() => null),
           fetchCandles(symbol, chartInterval).catch(() => null),
           fetchProposals().catch(() => null),
+          fetchWallet().catch(() => null),
         ]);
       if (requestId !== requestIdRef.current) {
         return;
@@ -86,6 +91,9 @@ export function OverviewScreen() {
       }
       if (nextProposals !== null) {
         setProposals(nextProposals);
+      }
+      if (nextWallet !== null) {
+        setWallet(nextWallet);
       }
       setError(null);
       setNeedsToken(false);
@@ -265,6 +273,7 @@ export function OverviewScreen() {
         ) : (
           <div className="text-sm text-zinc-500">loading…</div>
         ))}
+      {screen === "trade" && <WalletCard wallet={wallet} />}
       {screen === "trade" && (
         <>
           <ProposalsPanel
