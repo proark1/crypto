@@ -192,6 +192,7 @@ class TradingEngine:
                 await self._adapter.cancel(order.client_order_id)
                 self._journaled_triggered.discard(order.client_order_id)
                 self._submitted_entries.pop(order.client_order_id, None)
+                self._risk_manager.on_order_cancelled(order.client_order_id)
                 logger.warning("kill switch cancelled open order %s", order.client_order_id)
             except Exception:
                 logger.exception("kill switch failed to cancel order %s", order.client_order_id)

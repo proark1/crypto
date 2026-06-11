@@ -6,7 +6,7 @@ from decimal import Decimal
 import pytest
 
 from tradebot.backtest import BacktestRunner, PortfolioBacktestRunner
-from tradebot.core.models import Candle, CandleInterval, Side
+from tradebot.core.models import Candle, CandleInterval, Side, SymbolFilters
 from tradebot.execution import FillSimulatorConfig, SimulatedExecutionAdapter
 from tradebot.portfolio import Portfolio
 from tradebot.risk import RiskConfig, RiskManager
@@ -91,11 +91,10 @@ class TestPortfolioBacktestRunner:
     async def test_exposure_cap_is_enforced_across_symbols(self) -> None:
         """The point of the account runner: one coin's position consumes the
         other's headroom, which no single-symbol backtest can show."""
-        # ETH's rally lags three candles: its entry signal arrives after
-        # BTC's position exists. (Same-candle signals would both pass risk —
-        # the cap judges open positions, and neither order has filled yet;
-        # committed-but-unfilled balance is a known live-trading extension.)
-        eth_closes = [100.0] * 3 + [c / 10 for c in CLOSES]
+        # Same-candle rallies on purpose: both entry signals fire at the
+        # same close, neither order has filled yet — only the committed
+        # (submitted-but-unfilled) notional can enforce the cap here.
+        eth_closes = [c / 10 for c in CLOSES]
         candles = [make_candle(i, c, "BTC/USDT") for i, c in enumerate(CLOSES)] + [
             make_candle(i, c, "ETH/USDT") for i, c in enumerate(eth_closes)
         ]
@@ -103,17 +102,27 @@ class TestPortfolioBacktestRunner:
         # Total exposure equals the per-position cap: whoever enters first
         # takes the whole budget.
         config = RiskConfig(
+            # Risk sizing large enough that the position cap binds: the
+            # first entry consumes the entire account exposure budget.
+            risk_per_trade_fraction=Decimal("0.05"),
             max_position_fraction=Decimal("0.25"),
             max_total_exposure_fraction=Decimal("0.25"),
         )
+        # Venue minimums, as production always has them: quantize rounding
+        # can leave nano-headroom under the cap, and the min-notional filter
+        # is what keeps that from becoming a dust position.
+        filters = {
+            symbol: SymbolFilters(min_notional_quote=Decimal("5"))
+            for symbol in ("BTC/USDT", "ETH/USDT")
+        }
         result = await PortfolioBacktestRunner(
-            make_strategy, RiskManager(config, portfolio), portfolio
+            make_strategy, RiskManager(config, portfolio, filters), portfolio
         ).run(candles)
 
         btc_sides = [f.side for f in result.fills if f.symbol == "BTC/USDT"]
         eth_buys = [f for f in result.fills if f.symbol == "ETH/USDT" and f.side == Side.BUY]
         assert btc_sides[0] == Side.BUY  # first in line got the budget
-        assert eth_buys == []  # vetoed at zero headroom, loudly, not resized
+        assert eth_buys == []  # the committed claim left ETH below the venue minimum
 
     async def test_runner_is_single_use_and_rejects_empty_series(self) -> None:
         portfolio = Portfolio(INITIAL_BALANCE)
