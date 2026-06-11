@@ -81,6 +81,11 @@ if TYPE_CHECKING:  # runtime import stays local to its start method
 
 logger = logging.getLogger(__name__)
 
+PRODUCTION_FAMILIES = frozenset({"trend_following", "mean_reversion"})
+"""Families the worker's router actually trades. Sweeps may grade more
+(e.g. ``breakout``); routing a new family is an explicit architecture
+decision, never a side effect of a promotion."""
+
 STRATEGY_PRIME_CANDLES = 1000
 """Stored 1m candles fed through a freshly promoted strategy before it
 goes live: comfortably past the slowest indicator's warm-up (a 90-period
@@ -281,6 +286,13 @@ class Worker:
         family or parameter.
         """
         validate_family_params(family, dict(params))
+        if family not in PRODUCTION_FAMILIES:
+            # Sweepable but not yet routed: silently "promoting" parameters
+            # the router never trades would be a lie in the journal.
+            raise ValueError(
+                f"{family} is research-only: it has no production route yet, so its "
+                "parameters cannot be promoted (sweep it via the research API instead)"
+            )
         version = await self.strategy_settings_store.record(
             family, params, datetime.now(UTC), source_sweep_id, note
         )

@@ -829,3 +829,12 @@ class TestDivergenceReport:
         await worker.initialize()
         with pytest.raises(KeyError, match="DOGE/USDT"):
             await worker.divergence_report("DOGE/USDT")
+
+
+class TestResearchOnlyFamilies:
+    async def test_breakout_cannot_be_promoted_into_production(self, database: Database) -> None:
+        """Sweepable but unrouted: promoting it would lie in the journal."""
+        worker = Worker(make_config(), database, ScriptedExchange([]))
+        await worker.initialize()
+        with pytest.raises(ValueError, match="research-only"):
+            await worker.apply_strategy_params("breakout", {"channel_period": 20})
