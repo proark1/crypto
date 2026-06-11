@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
   acceptFinding,
@@ -258,11 +258,21 @@ export function ResearchScreen() {
   const [versions, setVersions] = useState<StrategyVersionResponse[]>([]);
   const [suggestions, setSuggestions] = useState<SuggestedEvaluationResponse[]>([]);
 
+  const suggestionsLoaded = useRef(false);
+
   const refresh = useCallback(async () => {
     try {
       setRuns(await fetchEvaluations());
       setSweeps(await fetchSweeps());
       setVersions(await fetchStrategyVersions());
+      // Suggestions ride the poll only until the first success: stored
+      // history depth moves a day at a time, so once loaded they stay put —
+      // but a fetch that failed (token not entered yet, transient outage)
+      // must retry, or the panel would sit empty until a full reload.
+      if (!suggestionsLoaded.current) {
+        setSuggestions(await fetchEvaluationSuggestions());
+        suggestionsLoaded.current = true;
+      }
     } catch {
       // The overview screen owns auth/error UX; research polls quietly.
     }
@@ -275,12 +285,6 @@ export function ResearchScreen() {
       clearInterval(timer);
     };
   }, [refresh]);
-
-  useEffect(() => {
-    // Stored history depth moves a day at a time; once per visit is fresh
-    // enough, and it keeps the poll loop free of per-coin depth queries.
-    fetchEvaluationSuggestions().then(setSuggestions, () => undefined);
-  }, []);
 
   const selected = runs.find((run) => run.id === selectedId) ?? runs[0] ?? null;
   const selectedRunId = selected?.id ?? null;
