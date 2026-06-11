@@ -51,6 +51,26 @@ class BreakerConfig(BaseModel):
     """Entry orders allowed per UTC day (an overtrading guard, not a PnL one)."""
 
 
+class BreakerState(BaseModel):
+    """A point-in-time snapshot of every mutable breaker field.
+
+    Persisted across restarts: a tripped breaker that forgets it tripped on
+    deploy would resume trading exactly when a human was meant to look. All
+    fields mirror :class:`CircuitBreakers`' internals one to one.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    tripped_reason: str | None = None
+    day: date | None = None
+    day_start_equity_quote: Decimal | None = None
+    entries_today: int = 0
+    peak_equity_quote: Decimal | None = None
+    consecutive_losses: int = 0
+    cooldown_until: datetime | None = None
+    last_observed_time: datetime | None = None
+
+
 def _require_aware(moment: datetime) -> datetime:
     """Reject naive datetimes (CLAUDE.md invariant 2) and normalize to UTC."""
     if moment.tzinfo is None:
@@ -189,6 +209,37 @@ class CircuitBreakers:
         logger.warning("circuit breakers reset by operator (was: %s)", self._tripped_reason)
         self._tripped_reason = None
         self._cooldown_until = None
+
+    def snapshot(self) -> BreakerState:
+        """Return the full mutable state, for persistence."""
+        return BreakerState(
+            tripped_reason=self._tripped_reason,
+            day=self._day,
+            day_start_equity_quote=self._day_start_equity_quote,
+            entries_today=self._entries_today,
+            peak_equity_quote=self._peak_equity_quote,
+            consecutive_losses=self._consecutive_losses,
+            cooldown_until=self._cooldown_until,
+            last_observed_time=self._last_observed_time,
+        )
+
+    def restore(self, state: BreakerState) -> None:
+        """Adopt a persisted snapshot (restart recovery, before any observe).
+
+        A restored hard trip stays latched until the human reset it was
+        waiting for; day anchors and the peak roll forward naturally from
+        the next observation.
+        """
+        self._tripped_reason = state.tripped_reason
+        self._day = state.day
+        self._day_start_equity_quote = state.day_start_equity_quote
+        self._entries_today = state.entries_today
+        self._peak_equity_quote = state.peak_equity_quote
+        self._consecutive_losses = state.consecutive_losses
+        self._cooldown_until = state.cooldown_until
+        self._last_observed_time = state.last_observed_time
+        if state.tripped_reason is not None:
+            logger.warning("restored tripped circuit breaker: %s", state.tripped_reason)
 
     def _trip(self, reason: str) -> None:
         self._tripped_reason = reason

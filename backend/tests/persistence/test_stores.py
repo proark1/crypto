@@ -520,3 +520,45 @@ class TestStrategySettingsStore:
         assert [row["id"] for row in history] == [second, first]
         assert history[0]["note"] == "auto-promoted"
         assert await store.fetch(9999) is None
+
+
+class TestRiskStateStore:
+    async def test_round_trip_preserves_state_and_paused_symbols(self, database: Database) -> None:
+        from tradebot.persistence import RiskStateStore
+        from tradebot.risk import BreakerState
+
+        store = RiskStateStore(database)
+        state = BreakerState(
+            tripped_reason="daily loss limit",
+            day=BASE_TIME.date(),
+            day_start_equity_quote=Decimal("10000.000000000001"),
+            entries_today=3,
+            peak_equity_quote=Decimal("12345.678901234567"),
+            consecutive_losses=2,
+            cooldown_until=BASE_TIME + timedelta(hours=4),
+            last_observed_time=BASE_TIME,
+        )
+        await store.save(state, ["BTC/USDT", "ETH/USDT"], BASE_TIME)
+
+        loaded = await store.load()
+        assert loaded is not None
+        assert loaded[0] == state  # Decimal-exact, timezone-aware
+        assert loaded[1] == ("BTC/USDT", "ETH/USDT")
+
+    async def test_save_overwrites_the_single_row(self, database: Database) -> None:
+        from tradebot.persistence import RiskStateStore
+        from tradebot.risk import BreakerState
+
+        store = RiskStateStore(database)
+        await store.save(BreakerState(entries_today=1), [], BASE_TIME)
+        await store.save(BreakerState(entries_today=2), ["BTC/USDT"], BASE_TIME)
+
+        loaded = await store.load()
+        assert loaded is not None
+        assert loaded[0].entries_today == 2
+        assert loaded[1] == ("BTC/USDT",)
+
+    async def test_fresh_database_loads_none(self, database: Database) -> None:
+        from tradebot.persistence import RiskStateStore
+
+        assert await RiskStateStore(database).load() is None

@@ -33,8 +33,10 @@ from tradebot.persistence.database import (
     decisions_table,
     fills_table,
     orders_table,
+    risk_state_table,
     strategy_settings_table,
 )
+from tradebot.risk.breakers import BreakerState
 
 CHART_BUCKET_UNITS: dict[str, str] = {
     "1h": "hour",
@@ -351,10 +353,13 @@ class OrderStore:
         row["status_at"] = order.created_at
         # Refresh every column, not just the status: a ratcheted stop is
         # resubmitted under the same id at a new level, and the reopened row
-        # must carry the values the adapter is actually working with.
-        statement = pg_insert(orders_table).on_conflict_do_update(
+        # must carry the values the adapter is actually working with. The
+        # SET clause references the excluded (inserted) row so the statement
+        # shape stays constant and plan-cacheable.
+        statement = pg_insert(orders_table)
+        statement = statement.on_conflict_do_update(
             index_elements=["client_order_id"],
-            set_={name: value for name, value in row.items() if name != "client_order_id"},
+            set_={name: statement.excluded[name] for name in row if name != "client_order_id"},
         )
         async with self._database.engine.begin() as connection:
             await connection.execute(statement, [row])
@@ -474,6 +479,53 @@ class DecisionStore:
         async with self._database.engine.connect() as connection:
             rows = (await connection.execute(statement)).mappings().all()
         return [Decision.model_validate(dict(row)) for row in rows]
+
+
+class RiskStateStore:
+    """The single-row account brake state: breakers plus paused engines.
+
+    Saved whenever the snapshot changes (the worker checks once per closed
+    candle, so a change persists within one candle of happening) and loaded
+    before trading resumes — a deploy must never silently release a tripped
+    breaker, reset a daily-loss anchor, or resume a killed bot.
+    """
+
+    ROW_ID = 1
+
+    def __init__(self, database: Database) -> None:
+        """Bind the store to ``database``."""
+        self._database = database
+
+    async def save(self, state: BreakerState, paused_symbols: Sequence[str], at: datetime) -> None:
+        """Upsert the one risk-state row."""
+        _require_aware(at)
+        row = state.model_dump()
+        row["id"] = self.ROW_ID
+        row["paused_symbols"] = list(paused_symbols)
+        row["updated_at"] = at
+        statement = pg_insert(risk_state_table)
+        statement = statement.on_conflict_do_update(
+            index_elements=["id"],
+            # Reference the excluded (inserted) row rather than re-binding
+            # literals: the statement shape stays constant across saves, so
+            # the driver can cache its plan.
+            set_={name: statement.excluded[name] for name in row if name != "id"},
+        )
+        async with self._database.engine.begin() as connection:
+            await connection.execute(statement, [row])
+
+    async def load(self) -> tuple[BreakerState, tuple[str, ...]] | None:
+        """Return the persisted state and paused symbols, or ``None`` if fresh."""
+        statement = select(risk_state_table).where(risk_state_table.c.id == self.ROW_ID)
+        async with self._database.engine.connect() as connection:
+            row = (await connection.execute(statement)).mappings().first()
+        if row is None:
+            return None
+        data = dict(row)
+        paused = tuple(data.pop("paused_symbols"))
+        data.pop("id")
+        data.pop("updated_at")
+        return BreakerState.model_validate(data), paused
 
 
 class StrategySettingsStore:

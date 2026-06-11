@@ -189,3 +189,45 @@ class TestTimeHandling:
 
         # One UTC hour later it is still the same UTC day: cap holds.
         assert breakers.entry_block_reason(datetime(2026, 1, 2, 23, 30, tzinfo=UTC)) is not None
+
+
+class TestSnapshotRestore:
+    """Breaker state survives a restart via snapshot/restore."""
+
+    def test_round_trip_preserves_every_field(self) -> None:
+        from datetime import UTC, datetime, timedelta
+        from decimal import Decimal
+
+        from tradebot.risk import BreakerConfig, CircuitBreakers
+
+        now = datetime(2026, 1, 2, 12, 0, tzinfo=UTC)
+        original = CircuitBreakers(BreakerConfig(loss_streak_threshold=2))
+        original.observe(now, Decimal("10000"))
+        original.record_entry(now)
+        original.record_closed_trade(Decimal("-50"), now)
+        original.record_closed_trade(Decimal("-60"), now)  # streak -> cooldown
+        original.observe(now + timedelta(minutes=1), Decimal("9000"))  # daily-loss trip
+
+        restored = CircuitBreakers(BreakerConfig(loss_streak_threshold=2))
+        restored.restore(original.snapshot())
+
+        assert restored.snapshot() == original.snapshot()
+        assert restored.tripped_reason is not None  # the latch survived
+        assert restored.entry_block_reason(now + timedelta(minutes=2)) is not None
+
+    def test_restored_trip_clears_only_by_human_reset(self) -> None:
+        from datetime import UTC, datetime
+        from decimal import Decimal
+
+        from tradebot.risk import BreakerConfig, CircuitBreakers
+
+        now = datetime(2026, 1, 2, 12, 0, tzinfo=UTC)
+        original = CircuitBreakers(BreakerConfig())
+        original.observe(now, Decimal("10000"))
+        original.observe(now, Decimal("9000"))  # > 3% daily loss: hard trip
+
+        restored = CircuitBreakers(BreakerConfig())
+        restored.restore(original.snapshot())
+        assert restored.entry_block_reason(now) is not None
+        restored.reset()
+        assert restored.entry_block_reason(now) is None
