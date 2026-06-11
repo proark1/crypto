@@ -160,37 +160,6 @@ class SweepConfig(BaseModel):
         return CandleInterval(self.timeframe)
 
 
-DEFAULT_SWEEP_CANDIDATES: tuple[SweepCandidate, ...] = (
-    SweepCandidate(name="baseline_20_50", params=TrendFollowingConfig().model_dump()),
-    SweepCandidate(
-        name="faster_cross_10_30",
-        params=TrendFollowingConfig(fast_ema_period=10, slow_ema_period=30).model_dump(),
-    ),
-    SweepCandidate(
-        name="slower_cross_30_90",
-        params=TrendFollowingConfig(fast_ema_period=30, slow_ema_period=90).model_dump(),
-    ),
-    SweepCandidate(
-        name="wider_stop_3x",
-        params=TrendFollowingConfig(atr_stop_multiple=3.0).model_dump(),
-    ),
-    SweepCandidate(
-        name="tighter_stop_1.5x",
-        params=TrendFollowingConfig(atr_stop_multiple=1.5).model_dump(),
-    ),
-    SweepCandidate(
-        name="reversion_rsi_14",
-        family="mean_reversion",
-        params=MeanReversionConfig().model_dump(),
-    ),
-)
-"""The default grid: the live trend defaults as the baseline, one
-deliberate change per trend candidate so a verdict names the single knob
-that earned (or lost) it — plus the mean-reversion family's defaults, so
-every default sweep also asks whether the other family beats the
-incumbent on the same scenarios."""
-
-
 class CandidateScore(BaseModel):
     """One candidate's graded outcomes, pooled across the scored windows."""
 
