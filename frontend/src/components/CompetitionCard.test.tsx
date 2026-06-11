@@ -1,5 +1,5 @@
 import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { CompetitionResponse, CompetitorResponse } from "../api/types";
 import { CompetitionCard } from "./CompetitionCard";
@@ -146,5 +146,40 @@ describe("CompetitionCard", () => {
     const { handlers } = renderCard(COMPETITION);
     fireEvent.click(screen.getByRole("button", { name: "create a bot" }));
     expect(handlers.onCreateBot).toHaveBeenCalled();
+  });
+});
+
+describe("CompetitionCard on a narrow screen", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function mockMatchMedia(matches: boolean) {
+    vi.stubGlobal("matchMedia", (query: string) => ({
+      matches,
+      media: query,
+      onchange: null,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+      addListener: () => undefined,
+      removeListener: () => undefined,
+      dispatchEvent: () => false,
+    }));
+  }
+
+  it("renders stacked cards instead of the table and keeps the controls working", () => {
+    mockMatchMedia(true);
+    const { handlers } = renderCard(COMPETITION);
+
+    // Each bot still appears exactly once — the card layout, not the table.
+    expect(screen.getByText("Regime router")).toBeTruthy();
+    expect(screen.getByText("10123.45")).toBeTruthy();
+
+    // The stop confirm flow behaves the same as on desktop.
+    const stopButtons = screen.getAllByRole("button", { name: "stop" });
+    fireEvent.click(stopButtons[0] as HTMLElement);
+    expect(handlers.onKillBot).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "sell & stop" }));
+    expect(handlers.onKillBot).toHaveBeenCalledWith("production");
   });
 });
