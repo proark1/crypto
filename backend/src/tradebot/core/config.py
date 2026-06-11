@@ -175,17 +175,19 @@ class AppConfig(BaseSettings):
             )
         return self
 
-    history_backfill_days: int = Field(default=365, ge=0)
+    history_backfill_days: int = Field(default=730, ge=0)
     """How many days of candle history to fetch for a symbol that has none
     stored yet (first boot, newly added coin). Binance-class venues serve
     years of public 1m history for free; the only cost is database storage
     (roughly 0.5 GB per symbol-year of 1m candles) and a one-time deep
     crawl on first boot (a few minutes per symbol behind CCXT's rate
-    limiter; later boots resume from the newest stored candle). A year is
-    the research system's default evaluation window (§12), keeps walk-
-    forward sweeps fed, and dwarfs the regime gate's ~10-day warm-up, so
-    a fresh deploy trades and researches from day one. ``0`` disables deep
-    backfill: only the gap from the newest stored candle forward is
+    limiter; later boots resume from the newest stored candle). Two years
+    covers the research system's one-year default evaluation window (§12)
+    with a full year of out-of-sample headroom for walk-forward sweeps,
+    and dwarfs the regime gate's ~10-day warm-up, so a fresh deploy trades
+    and researches from day one. Databases backfilled under a shallower
+    setting are deepened to this horizon on the next boot. ``0`` disables
+    deep backfill: only the gap from the newest stored candle forward is
     repaired."""
 
     api_token: str | None = None
@@ -244,8 +246,29 @@ class AppConfig(BaseSettings):
     default."""
 
     auto_improve_history_days: int = Field(default=365, gt=0)
-    """History window automated evaluations and sweeps learn from — the
-    full default backfill, so the loop never judges on a sliver."""
+    """History window automated evaluations and sweeps learn from — a full
+    year of the stored backfill, so the loop never judges on a sliver."""
+
+    @model_validator(mode="after")
+    def _backfill_must_cover_auto_improve_window(self) -> AppConfig:
+        """Reject a backfill horizon shallower than the research window.
+
+        The improvement loop trusts that ``auto_improve_history_days`` of
+        candles exist; a deep backfill that stops short would have it judge
+        on a sliver anyway — silently, which is the failure the window
+        exists to prevent. ``0`` is exempt: deep backfill is off and the
+        stored history (however it got there) is what the operator chose.
+        """
+        if self.auto_improve_enabled and 0 < self.history_backfill_days < (
+            self.auto_improve_history_days
+        ):
+            raise ValueError(
+                f"TRADEBOT_HISTORY_BACKFILL_DAYS ({self.history_backfill_days}) must "
+                f"cover TRADEBOT_AUTO_IMPROVE_HISTORY_DAYS "
+                f"({self.auto_improve_history_days}): the improvement loop would "
+                "evaluate on less history than configured"
+            )
+        return self
 
     auto_improve_timeframe: str = "1h"
     """Candle timeframe the automated sweeps evaluate (validated at boot)."""
