@@ -162,6 +162,56 @@ class Signal(BaseModel):
     created_at: UtcDatetime = Field(default_factory=utc_now)
 
 
+class SymbolFilters(BaseModel):
+    """One trading pair's venue rules, as the exchange enforces them.
+
+    Zero means unconstrained — paper trading without a market catalog and
+    every backtest run this way, so the golden fixture never depends on a
+    venue lookup. With real values (from ccxt's market metadata) the risk
+    manager aligns quantities/prices and vetoes entries the venue would
+    reject, keeping paper fills exchange-plausible.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    price_tick_quote: Amount = Decimal(0)
+    """Price increment; order prices must be a multiple of it."""
+
+    quantity_step_base: Amount = Decimal(0)
+    """Quantity increment (lot step); order sizes must be a multiple."""
+
+    min_quantity_base: Amount = Decimal(0)
+    """Smallest order size the venue accepts."""
+
+    min_notional_quote: Amount = Decimal(0)
+    """Smallest order value (price x quantity) the venue accepts."""
+
+    def align_quantity(self, quantity_base: Decimal) -> Decimal:
+        """Round ``quantity_base`` down to the lot step (never up: caps hold)."""
+        if self.quantity_step_base <= 0:
+            return quantity_base
+        return (quantity_base // self.quantity_step_base) * self.quantity_step_base
+
+    def align_price_down(self, price_quote: Decimal) -> Decimal:
+        """Round ``price_quote`` down to the tick.
+
+        Down on purpose for protective sell stops: rounding a stop *up*
+        could trigger above the level the position was sized against.
+        """
+        if self.price_tick_quote <= 0:
+            return price_quote
+        return (price_quote // self.price_tick_quote) * self.price_tick_quote
+
+    def entry_block_reason(self, quantity_base: Decimal, price_quote: Decimal) -> str | None:
+        """Why the venue would reject this entry, or ``None`` if it passes."""
+        if self.min_quantity_base > 0 and quantity_base < self.min_quantity_base:
+            return f"quantity {quantity_base} is below the venue minimum {self.min_quantity_base}"
+        notional = quantity_base * price_quote
+        if self.min_notional_quote > 0 and notional < self.min_notional_quote:
+            return f"notional {notional} is below the venue minimum {self.min_notional_quote}"
+        return None
+
+
 class ProtectiveExitPlan(BaseModel):
     """How the position opened by an entry order will be protected.
 

@@ -700,3 +700,46 @@ class TestPromotionConfirmation:
         # equal equity, so the gate must allow.
         worker.strategy_params["trend_following"] = dict(params)
         assert await worker._confirm_promotion("trend_following", params, "BTC/USDT") is None
+
+
+class TestVenueFilterMapping:
+    def test_ccxt_market_translates_int_and_fraction_precision(self) -> None:
+        from tradebot.worker import filters_from_market
+
+        filters = filters_from_market(
+            {
+                "precision": {"amount": 3, "price": 0.01},
+                "limits": {"amount": {"min": 0.001}, "cost": {"min": 5.0}},
+            }
+        )
+        assert filters.quantity_step_base == Decimal("0.001")  # 3 decimals
+        assert filters.price_tick_quote == Decimal("0.01")  # fraction = tick
+        assert filters.min_quantity_base == Decimal("0.001")
+        assert filters.min_notional_quote == Decimal("5.0")
+
+    def test_sparse_or_malformed_catalogs_degrade_to_unconstrained(self) -> None:
+        from tradebot.worker import filters_from_market
+
+        for market in ({}, {"precision": None, "limits": None}, {"precision": {"price": "junk"}}):
+            filters = filters_from_market(market)
+            assert filters.quantity_step_base == 0
+            assert filters.price_tick_quote == 0
+            assert filters.entry_block_reason(Decimal("1"), Decimal("1")) is None
+
+    async def test_initialize_fills_filters_from_the_catalog(self, database: Database) -> None:
+        class CatalogExchange(ScriptedExchange):
+            async def load_markets(self) -> dict[str, object]:
+                return {
+                    "BTC/USDT": {
+                        "precision": {"amount": 0.0001, "price": 0.01},
+                        "limits": {"amount": {"min": 0.0001}, "cost": {"min": 5}},
+                    }
+                }
+
+        worker = Worker(make_config(), database, CatalogExchange([]))
+        await worker.initialize()
+
+        filters = worker.symbol_filters["BTC/USDT"]
+        assert filters.min_notional_quote == Decimal("5")
+        # The risk manager reads the same live dict the worker fills.
+        assert worker.risk_manager._filters_by_symbol is worker.symbol_filters

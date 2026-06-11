@@ -11,6 +11,7 @@ risk-limit pressure from the operator.
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from datetime import datetime
 from decimal import ROUND_DOWN, Decimal
 
@@ -25,6 +26,7 @@ from tradebot.core.models import (
     ProtectiveExitPlan,
     Side,
     Signal,
+    SymbolFilters,
 )
 from tradebot.portfolio import Portfolio
 from tradebot.risk.breakers import BreakerConfig, CircuitBreakers
@@ -81,17 +83,33 @@ class RiskManager:
     eyes. Other symbols' positions are marked at their last seen close
     (cached in :meth:`on_candle`).
 
-    Two known extensions arrive with live trading and are deliberately not
-    faked here: balance committed to resting orders will be subtracted from
-    spendable once an order-state tracker exists, and exchange
-    lot-size/min-notional rounding stays in the execution engine's
-    pre-submit checks (ARCHITECTURE.md 4.8) where the venue rules live.
+    Venue rules (lot step, minimum quantity/notional, price tick) are
+    applied here, at order construction — the one gate every order passes
+    (CLAUDE.md invariant 4) — from the per-symbol filters the worker fills
+    out of the exchange catalog. One known extension arrives with live
+    trading and is deliberately not faked: balance committed to resting
+    orders will be subtracted from spendable once exchange reconciliation
+    exists.
     """
 
-    def __init__(self, config: RiskConfig, portfolio: Portfolio) -> None:
-        """Bind the limits to the portfolio whose equity they protect."""
+    def __init__(
+        self,
+        config: RiskConfig,
+        portfolio: Portfolio,
+        filters_by_symbol: Mapping[str, SymbolFilters] | None = None,
+    ) -> None:
+        """Bind the limits to the portfolio whose equity they protect.
+
+        ``filters_by_symbol`` is a live view of each pair's venue rules
+        (the worker fills it from the exchange's market catalog and keeps
+        it updated as coins are added); absent or empty means unconstrained
+        — every backtest runs that way, so research needs no venue lookup.
+        """
         self._config = config
         self._portfolio = portfolio
+        self._filters_by_symbol: Mapping[str, SymbolFilters] = (
+            filters_by_symbol if filters_by_symbol is not None else {}
+        )
         self._breakers = CircuitBreakers(config.breakers)
         self._observed_realized_pnl: dict[str, Decimal] = {}
         self._open_round_trip_pnl: dict[str, Decimal] = {}
@@ -249,6 +267,17 @@ class RiskManager:
         quantity = min(quantity, spendable / current_price_quote)
 
         quantity = quantity.quantize(ACCOUNTING_RESOLUTION, rounding=ROUND_DOWN)
+        filters = self._filters_by_symbol.get(signal.symbol)
+        if filters is not None:
+            # Venue rules last, after every risk cap: aligning down only
+            # shrinks, so no cap can be re-breached by rounding.
+            quantity = filters.align_quantity(quantity)
+            if quantity <= 0:
+                return None
+            block_reason = filters.entry_block_reason(quantity, current_price_quote)
+            if block_reason is not None:
+                logger.warning("entry vetoed for %s: %s", signal.symbol, block_reason)
+                return None
         if quantity <= 0:
             return None
         return Order(
@@ -312,6 +341,12 @@ class RiskManager:
             if stop_price_quote is None
             else self._stop_limit_floor(trigger)
         )
+        filters = self._filters_by_symbol.get(entry.symbol)
+        if filters is not None:
+            # Down-tick both prices: a sell stop rounded up could trigger
+            # above the level the position was sized against.
+            trigger = filters.align_price_down(trigger)
+            limit = filters.align_price_down(limit)
         return Order(
             client_order_id=f"stop-{entry.client_order_id}",
             signal_id=entry.signal_id,

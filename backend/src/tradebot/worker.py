@@ -29,7 +29,7 @@ from tradebot.authorization import ProposalQueue
 from tradebot.core.config import AppConfig, TradingMode, validate_symbol_quote
 from tradebot.core.events import CandleClosed, EventBus
 from tradebot.core.metrics import MetricsCollector
-from tradebot.core.models import CandleInterval
+from tradebot.core.models import CandleInterval, SymbolFilters
 from tradebot.engine import TradingEngine
 from tradebot.evaluation import ScenarioEvaluator
 from tradebot.evaluation.improve import AutoImprover
@@ -86,6 +86,48 @@ goes live: comfortably past the slowest indicator's warm-up (a 90-period
 EMA needs ~450), so a promotion never trades on half-formed indicators."""
 
 
+def filters_from_market(market: Mapping[str, Any]) -> SymbolFilters:
+    """Translate one ccxt market entry into venue filters.
+
+    ccxt unifies ``limits`` (min amount/cost) across exchanges but leaves
+    ``precision`` mode-dependent: an int means decimal places, a fraction
+    means the tick/step itself. Missing or malformed fields degrade to 0
+    (unconstrained) — paper trading must not crash on a sparse catalog,
+    and an unconstrained filter is exactly the pre-filters behavior.
+    """
+
+    def as_step(value: object) -> Decimal:
+        if value is None or isinstance(value, bool):
+            return Decimal(0)
+        if isinstance(value, int):
+            return Decimal(1).scaleb(-value) if value >= 0 else Decimal(0)
+        try:
+            step = Decimal(str(value))
+        except ArithmeticError:
+            return Decimal(0)
+        return step if step > 0 else Decimal(0)
+
+    def as_minimum(value: object) -> Decimal:
+        if value is None or isinstance(value, bool):
+            return Decimal(0)
+        try:
+            minimum = Decimal(str(value))
+        except ArithmeticError:
+            return Decimal(0)
+        return minimum if minimum > 0 else Decimal(0)
+
+    precision = market.get("precision") or {}
+    limits = market.get("limits") or {}
+    amount_limits = limits.get("amount") or {}
+    cost_limits = limits.get("cost") or {}
+    return SymbolFilters(
+        price_tick_quote=as_step(precision.get("price")),
+        quantity_step_base=as_step(precision.get("amount")),
+        min_quantity_base=as_minimum(amount_limits.get("min")),
+        min_notional_quote=as_minimum(cost_limits.get("min")),
+    )
+
+
 class TradingVenue(OhlcvExchange, Protocol):
     """The worker's view of the exchange: OHLCV plus the market catalog."""
 
@@ -131,10 +173,13 @@ class Worker:
         # so research always grades what the bot actually trades.
         self.strategy_params: dict[str, dict[str, Any]] = {}
         self.portfolio = Portfolio(config.paper_initial_balance_quote)
+        # Per-symbol venue rules, filled from the exchange's market catalog
+        # in initialize()/add_coin and read live by the risk manager.
+        self.symbol_filters: dict[str, SymbolFilters] = {}
         # One risk manager for all symbols: the circuit breakers and equity
         # caps are account-level and must see every position through one
         # pair of eyes (engines and feeds are per-symbol).
-        self.risk_manager = RiskManager(RiskConfig(), self.portfolio)
+        self.risk_manager = RiskManager(RiskConfig(), self.portfolio, self.symbol_filters)
         self.engines: dict[str, TradingEngine] = {}
         self._feeds: dict[str, LiveMarketDataFeed] = {}
         self._feed_tasks: dict[str, asyncio.Task[None]] = {}
@@ -376,6 +421,17 @@ class Worker:
         if await self.coin_store.seed_if_empty(self.config.symbol_list(), datetime.now(UTC)):
             logger.info("first boot: coins seeded from TRADEBOT_SYMBOLS")
         symbols = await self.coin_store.list_symbols()
+        try:
+            markets = await self._exchange.load_markets()
+        except Exception:
+            # Venue rules tighten realism; their absence must not stop the
+            # bot. Unfiltered sizing is exactly the pre-catalog behavior.
+            logger.warning("market catalog unavailable; trading without venue filters")
+            markets = {}
+        for symbol in symbols:
+            market = markets.get(symbol)
+            if isinstance(market, Mapping):
+                self.symbol_filters[symbol] = filters_from_market(market)
         # Resolved before any engine is built: engines capture the gate at
         # activation, and a gate without a data feed would block every entry
         # forever on stale data.
@@ -444,6 +500,9 @@ class Worker:
         markets = await self._exchange.load_markets()
         if symbol not in markets:
             raise ValueError(f"{symbol} is not listed on {self.config.exchange_id}")
+        market = markets[symbol]
+        if isinstance(market, Mapping):
+            self.symbol_filters[symbol] = filters_from_market(market)
         await self.coin_store.add(symbol, datetime.now(UTC))
         self._activate(symbol)
         logger.info("coin added at runtime: %s", symbol)

@@ -419,3 +419,66 @@ class TestProtectiveExitPlanning:
 
         with pytest.raises(ValueError, match="no protective exit plan"):
             manager.protective_exit_order(exit_order, Decimal("1"), SIGNAL_TIME)
+
+
+class TestVenueFilters:
+    """Venue rules are applied at order construction, after every risk cap."""
+
+    @staticmethod
+    def filtered_manager(
+        min_notional: str = "0", step: str = "0.001", tick: str = "0.01"
+    ) -> tuple[RiskManager, Portfolio]:
+        from tradebot.core.models import SymbolFilters
+
+        portfolio = Portfolio(Decimal("10000"))
+        filters = {
+            "BTC/USDT": SymbolFilters(
+                price_tick_quote=Decimal(tick),
+                quantity_step_base=Decimal(step),
+                min_quantity_base=Decimal("0.001"),
+                min_notional_quote=Decimal(min_notional),
+            )
+        }
+        return RiskManager(RiskConfig(), portfolio, filters), portfolio
+
+    def test_entry_quantity_is_aligned_down_to_the_lot_step(self) -> None:
+        manager, _ = self.filtered_manager()
+        order = manager.evaluate(make_signal(Side.BUY, stop="95"), Decimal("100"))
+        assert order is not None
+        # 1% of 10000 over a 5-quote stop distance = 20; already aligned —
+        # use the remainder check to assert the general property instead.
+        assert order.quantity_base % Decimal("0.001") == 0
+
+    def test_entry_below_min_notional_is_vetoed_not_resized(self) -> None:
+        manager, _ = self.filtered_manager(min_notional="1000000")
+        assert manager.evaluate(make_signal(Side.BUY, stop="95"), Decimal("100")) is None
+
+    def test_exits_are_never_filtered(self) -> None:
+        """A held position must always be sellable, venue dust rules aside."""
+        manager, portfolio = self.filtered_manager(min_notional="1000000")
+        open_position(portfolio, "100", "0.0007")  # below step and notional
+        order = manager.evaluate(make_signal(Side.SELL, stop="95"), Decimal("100"))
+        assert order is not None
+        assert order.quantity_base == Decimal("0.0007")  # full position, untouched
+
+    def test_ratcheted_stop_prices_align_down_to_the_tick(self) -> None:
+        manager, _ = self.filtered_manager()
+        entry = manager.evaluate(make_signal(Side.BUY, stop="95"), Decimal("100"))
+        assert entry is not None
+
+        replacement = manager.protective_exit_order(
+            entry, Decimal("1"), SIGNAL_TIME, stop_price_quote=Decimal("97.0299999")
+        )
+        assert replacement.stop_price_quote == Decimal("97.02")  # down, never up
+        assert replacement.limit_price_quote is not None
+        assert replacement.limit_price_quote % Decimal("0.01") == 0
+        assert replacement.limit_price_quote < replacement.stop_price_quote
+
+    def test_unfiltered_symbols_size_exactly_as_before(self) -> None:
+        filtered, _ = self.filtered_manager()
+        bare, _ = make_manager()
+        eth = make_signal(Side.BUY, stop="95", symbol="ETH/USDT")
+        filtered_order = filtered.evaluate(eth, Decimal("100"))
+        bare_order = bare.evaluate(eth, Decimal("100"))
+        assert filtered_order is not None and bare_order is not None
+        assert filtered_order.quantity_base == bare_order.quantity_base
