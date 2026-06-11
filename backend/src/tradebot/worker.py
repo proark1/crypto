@@ -65,6 +65,7 @@ from tradebot.signals import (
     MarketRegimeDetector,
     MarketSentiment,
     RegimeGate,
+    SentimentConfig,
     SentimentMonitor,
 )
 from tradebot.strategies import (
@@ -231,7 +232,12 @@ class Worker:
         # Sentiment can only tighten the regime gate, so it exists only
         # alongside it; without the gate there is nothing for it to tighten.
         self.sentiment: MarketSentiment | None = (
-            MarketSentiment()
+            MarketSentiment(
+                SentimentConfig(
+                    extreme_fear_at_or_below=config.sentiment_extreme_fear_at_or_below,
+                    extreme_greed_at_or_above=config.sentiment_extreme_greed_at_or_above,
+                )
+            )
             if config.sentiment_enabled and self.regime_detector is not None
             else None
         )

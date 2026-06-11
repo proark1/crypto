@@ -97,6 +97,24 @@ def test_disabled_auto_improve_skips_research_window_check(
     assert AppConfig().history_backfill_days == 180
 
 
+def test_sentiment_thresholds_load_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TRADEBOT_SENTIMENT_EXTREME_FEAR_AT_OR_BELOW", "10")
+    monkeypatch.setenv("TRADEBOT_SENTIMENT_EXTREME_GREED_AT_OR_ABOVE", "85")
+    config = AppConfig()
+    assert config.sentiment_extreme_fear_at_or_below == 10
+    assert config.sentiment_extreme_greed_at_or_above == 85
+
+
+def test_overlapping_sentiment_thresholds_fail_at_load(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fear floor at the greed ceiling would block every entry; a typo, not a choice."""
+    monkeypatch.setenv("TRADEBOT_SENTIMENT_EXTREME_FEAR_AT_OR_BELOW", "90")
+    monkeypatch.setenv("TRADEBOT_SENTIMENT_EXTREME_GREED_AT_OR_ABOVE", "90")
+    with pytest.raises(ValidationError, match="must be below"):
+        AppConfig()
+
+
 def test_config_is_frozen(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("TRADEBOT_MODE", raising=False)
     config = AppConfig()

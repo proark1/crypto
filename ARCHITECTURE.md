@@ -265,6 +265,13 @@ A trade decision is a pipeline of gates, not a vote among equals:
 1. **Regime gate (market-wide):** BTC regime (trend/range/risk-off via ADX + Fear &
    Greed extremes + BTC dominance shifts) decides *whether* altcoin entries are
    allowed at all and which strategy family (trend vs. mean-reversion) is active.
+   The sentiment tighteners are family-aware where it matters: extreme *greed*,
+   dominance surges, and broad negative news pause every family's entries, but
+   extreme *fear* pauses only trend entries — mean-reversion exists to buy fear
+   behind its protective stop, and a genuine crash is still caught by the
+   drawdown-based risk-off state, which halts everything. Both Fear & Greed
+   thresholds are operator-tunable (`TRADEBOT_SENTIMENT_EXTREME_FEAR_AT_OR_BELOW`,
+   `TRADEBOT_SENTIMENT_EXTREME_GREED_AT_OR_ABOVE`).
 2. **Entry signal (TA, per coin):** the active strategy produces the candidate
    buy/sell signal with stop and target. TA is the trigger; everything else filters.
 3. **Confirmation filters (market microstructure & positioning):** order-flow (CVD

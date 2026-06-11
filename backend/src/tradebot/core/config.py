@@ -117,6 +117,31 @@ class AppConfig(BaseSettings):
 
     sentiment_poll_minutes: int = Field(default=15, ge=1)
 
+    sentiment_extreme_fear_at_or_below: int = Field(default=20, ge=0, le=100)
+    """Fear & Greed at or below this pauses trend-family entries
+    (mean-reversion entries are exempt: that family buys fear by design,
+    behind its protective stop and the regime gate's drawdown risk-off)."""
+
+    sentiment_extreme_greed_at_or_above: int = Field(default=90, ge=0, le=100)
+    """Fear & Greed at or above this pauses every family's entries —
+    euphoria is historically where tops form."""
+
+    @model_validator(mode="after")
+    def _sentiment_thresholds_must_not_overlap(self) -> AppConfig:
+        """Stop the deploy when the fear floor reaches the greed ceiling.
+
+        That overlap would block entries at every Fear & Greed value — a
+        typo, not a choice.
+        """
+        if self.sentiment_extreme_fear_at_or_below >= self.sentiment_extreme_greed_at_or_above:
+            raise ValueError(
+                f"TRADEBOT_SENTIMENT_EXTREME_FEAR_AT_OR_BELOW "
+                f"({self.sentiment_extreme_fear_at_or_below}) must be below "
+                f"TRADEBOT_SENTIMENT_EXTREME_GREED_AT_OR_ABOVE "
+                f"({self.sentiment_extreme_greed_at_or_above})"
+            )
+        return self
+
     cryptopanic_token: str | None = None
     """CryptoPanic API token. Unset disables news polling; the news gate
     still runs (scheduled-event windows work without any news source)."""

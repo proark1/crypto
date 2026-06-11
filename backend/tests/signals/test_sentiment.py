@@ -35,6 +35,16 @@ class TestRiskOffReason:
         sentiment.record_fear_greed(50, NOW)
         assert sentiment.risk_off_reason(NOW) is None
 
+    def test_extreme_fear_exempts_mean_reversion_entries_only(self) -> None:
+        """Mean-reversion buys fear by design; greed still pauses it."""
+        sentiment = MarketSentiment()
+        sentiment.record_fear_greed(12, NOW)
+        assert sentiment.risk_off_reason(NOW, mean_reversion_entry=True) is None
+        assert "extreme fear" in str(sentiment.risk_off_reason(NOW))
+
+        sentiment.record_fear_greed(95, NOW)
+        assert "euphoria" in str(sentiment.risk_off_reason(NOW, mean_reversion_entry=True))
+
     def test_stale_readings_contribute_nothing(self) -> None:
         """Advisory data expires quietly; it must never freeze an opinion."""
         sentiment = MarketSentiment(SentimentConfig(reading_ttl=timedelta(hours=2)))
@@ -90,6 +100,37 @@ class TestGateIntegration:
         blocked = gate.evaluate(signal)
         assert blocked.allowed is False
         assert any("extreme fear" in reason for reason in blocked.reasons)
+
+    def test_extreme_fear_lets_mean_reversion_buy_in_a_ranging_market(self) -> None:
+        """The family routed into a fearful chop may still buy it."""
+        detector = MarketRegimeDetector(
+            "BTC/USDT", RegimeConfig(timeframe=CandleInterval.M1, adx_period=3)
+        )
+        feed(detector, [100.0 + (1.0 if i % 2 == 0 else -1.0) for i in range(20)])
+        signal_time = datetime(2026, 1, 2, 0, 21, tzinfo=UTC)
+        sentiment = MarketSentiment()
+        sentiment.record_fear_greed(12, signal_time)
+        gate = RegimeGate(detector, sentiment)
+        signal = Signal(
+            signal_id="test:3",
+            strategy_name="mean_reversion",
+            symbol="ETH/USDT",
+            side=Side.BUY,
+            confidence=0.8,
+            stop_price_quote=Decimal("95"),
+            reasons=(),
+            created_at=signal_time,
+        )
+
+        assert gate.evaluate(signal).allowed is True
+
+        trend_signal = signal.model_copy(
+            update={"signal_id": "test:4", "strategy_name": "trend_following"}
+        )
+        # The trend family stays gated here by the regime itself (ranging),
+        # so fear never even gets asked — the family exemption widens
+        # nothing for trend entries.
+        assert gate.evaluate(trend_signal).allowed is False
 
     def test_sentiment_never_overrides_a_blocking_regime(self) -> None:
         """One-way valve: greedy-but-ranging stays blocked."""
