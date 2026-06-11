@@ -109,6 +109,28 @@ describe("BotBuilderScreen", () => {
     expect(await screen.findByText("a bot with that name already exists")).toBeTruthy();
   });
 
+  it("flags an invalid numeric setting live and blocks saving", async () => {
+    renderBuilder();
+    fireEvent.click(await screen.findByRole("checkbox", { name: /Trend following/ }));
+    // The picked rule's settings show inline (fast EMA period defaults to 20);
+    // clearing the field flags it immediately and the create button cannot be
+    // used until it is fixed.
+    const fastEma = screen.getByDisplayValue("20");
+    fireEvent.change(fastEma, { target: { value: "" } });
+    expect(screen.getByText("must be a number")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "create the bot" })).toHaveProperty(
+      "disabled",
+      true,
+    );
+    // Restoring a valid value clears the block.
+    fireEvent.change(fastEma, { target: { value: "15" } });
+    expect(screen.queryByText("must be a number")).toBeNull();
+    expect(screen.getByRole("button", { name: "create the bot" })).toHaveProperty(
+      "disabled",
+      false,
+    );
+  });
+
   it("prefills from a custom bot's rules in edit mode and PUTs the update", async () => {
     const detail: BotDetailResponse = {
       summary: {
