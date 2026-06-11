@@ -15,6 +15,7 @@ import type {
   ProposalResponse,
   ScenarioReplayResponse,
   ScenarioSummaryResponse,
+  DivergenceReportResponse,
   StatusResponse,
   StrategyVersionResponse,
   SweepResponse,
@@ -84,6 +85,15 @@ function withSymbol(path: string, symbol?: string): string {
 
 export function fetchStatus(symbol?: string): Promise<StatusResponse> {
   return request<StatusResponse>(withSymbol("/status", symbol), "GET");
+}
+
+/** Live-vs-replay divergence (the paper-gate metric). Recomputed per call —
+ * the backend replays the window — so poll sparingly. */
+export function fetchDivergence(symbol: string, hours = 24): Promise<DivergenceReportResponse> {
+  return request<DivergenceReportResponse>(
+    `/coins/${symbol}/divergence?hours=${String(hours)}`,
+    "GET",
+  );
 }
 
 export function fetchWallet(): Promise<WalletResponse> {

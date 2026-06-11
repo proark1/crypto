@@ -23,6 +23,7 @@ from fastapi.responses import PlainTextResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 
+from tradebot.backtest.parity import DivergenceReport
 from tradebot.core.config import AppConfig
 from tradebot.core.metrics import MetricsCollector, format_metric
 from tradebot.core.models import Candle, CandleInterval, utc_now
@@ -81,6 +82,12 @@ class BotState(Protocol):
 
     async def persist_risk_state(self) -> None:
         """Persist the brake/pause snapshot now (operator halts cannot wait)."""
+        ...
+
+    async def divergence_report(
+        self, symbol: str, window_hours: int = 24, window_end: datetime | None = None
+    ) -> DivergenceReport:
+        """Compute the §10 paper-gate metric (``KeyError`` for an untraded coin)."""
         ...
 
     async def add_coin(self, symbol: str) -> None:
@@ -159,6 +166,9 @@ class StatusResponse(BaseModel):
 
     mode: str
     paused: bool
+    protective_stop_quote: str | None
+    """The armed protective stop level, or ``None`` while flat/unarmed."""
+
     symbol: str
     symbols: list[str]
     exchange_id: str
@@ -736,6 +746,7 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
         return StatusResponse(
             mode=state.config.mode.value,
             paused=engine.paused,
+            protective_stop_quote=engine.protective_stop_quote,
             breakers=BreakersResponse(
                 tripped_reason=breakers.tripped_reason,
                 cooldown_until=(
@@ -756,6 +767,25 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
             mark_price_quote=str(mark_price) if mark_price is not None else None,
             equity_quote=str(equity) if equity is not None else None,
         )
+
+    @protected.get("/coins/{symbol:path}/divergence")
+    async def get_divergence(
+        symbol: str, hours: int = Query(24, ge=1, le=24 * 90)
+    ) -> DivergenceReport:
+        """Live-vs-replay divergence for one coin: the §10 paper-gate metric.
+
+        Zero means the one-code-path invariant is holding; sustained
+        non-zero either has a journaled explanation (gates, pauses,
+        co-pilot) or is a parity bug. Recomputed per request — it replays
+        the window — so callers should poll it sparingly (a dashboard
+        tile, not a tick stream).
+        """
+        try:
+            return await state.divergence_report(symbol, window_hours=hours)
+        except KeyError:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail=f"{symbol} is not being traded"
+            ) from None
 
     @protected.post("/pause")
     async def pause() -> CommandResponse:

@@ -80,6 +80,17 @@ export function StatusCard(props: { status: StatusResponse }) {
               }
               valueClass={signClass(status.position.unrealized_pnl_quote)}
             />
+            <Metric
+              label="protective stop"
+              value={
+                status.protective_stop_quote === null
+                  ? "not armed"
+                  : truncateAmount(status.protective_stop_quote)
+              }
+              valueClass={
+                status.protective_stop_quote === null ? "text-red-400" : "text-zinc-100"
+              }
+            />
           </div>
         )}
       </div>

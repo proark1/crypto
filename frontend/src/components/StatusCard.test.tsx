@@ -7,6 +7,7 @@ import { StatusCard } from "./StatusCard";
 const FLAT_STATUS: StatusResponse = {
   mode: "paper",
   paused: false,
+  protective_stop_quote: null,
   symbol: "BTC/USDT",
   symbols: ["BTC/USDT"],
   exchange_id: "binance",
