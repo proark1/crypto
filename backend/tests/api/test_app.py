@@ -63,6 +63,7 @@ class StubBot:
 
     def __init__(self, database: Database, symbols: str = "BTC/USDT") -> None:
         self.config = AppConfig(mode=TradingMode.PAPER, symbols=symbols)
+        self.strategy_params: dict[str, dict[str, object]] = {}
         self.portfolio = Portfolio(Decimal("10000"))
         self.candle_store = CandleStore(database)
         self.fill_store = FillStore(database)
@@ -978,7 +979,9 @@ class TestFindings:
 
 
 class TestSweeps:
-    async def test_start_with_default_grid_lists_and_fetches(self, database: Database) -> None:
+    async def test_start_without_candidates_derives_the_active_grid(
+        self, database: Database
+    ) -> None:
         bot = StubBot(database)
         async with make_client(bot) as client:
             started = await client.post("/sweeps", json={})
@@ -990,11 +993,56 @@ class TestSweeps:
         assert [sweep["id"] for sweep in listed] == [sweep_id]
         assert fetched["status"] == "pending"
         assert fetched["symbol"] == "BTC/USDT"  # defaulted to the first active coin
-        # The default grid rides in the config snapshot, baseline first.
+        # The derived grid rides in the config snapshot, the active
+        # configuration first — the baseline every verdict challenges.
         names = [candidate["name"] for candidate in fetched["config"]["candidates"]]
-        assert names[0].startswith("baseline")
+        assert names[0].startswith("active_trend")
         assert len(names) >= 2
         assert fetched["report"] is None
+
+    async def test_findings_of_the_latest_run_steer_the_derived_grid(
+        self, database: Database
+    ) -> None:
+        """A manual sweep challenges the knobs the latest findings point at."""
+        from tradebot.evaluation.models import LearningFinding
+
+        bot = StubBot(database)
+        config = EvaluationRunConfig(symbols=("BTC/USDT",))
+        run_id = await bot.evaluation_store.create_run(
+            ["BTC/USDT"], ["1h"], config.model_dump(), "test", 1, BASE_TIME
+        )
+        await bot.evaluation_store.complete_run(run_id, {})
+
+        def finding(pattern: str) -> LearningFinding:
+            return LearningFinding(
+                run_id=run_id,
+                pattern=pattern,
+                evidence_scenario_ids=(1, 2, 3),
+                affected_count=3,
+                average_r_impact=Decimal("-0.4"),
+                suggestion="test",
+                confidence="low",
+                created_at=BASE_TIME,
+            )
+
+        wrong_hold_id = await bot.evaluation_store.insert_finding(
+            finding("held positions ride into their stops")
+        )
+        chase_id = await bot.evaluation_store.insert_finding(
+            finding("entries chase moves that are already over")
+        )
+        await bot.evaluation_store.set_finding_status(chase_id, "rejected")
+
+        async with make_client(bot) as client:
+            started = await client.post("/sweeps", json={})
+            fetched = (await client.get(f"/sweeps/{started.json()['run_id']}")).json()
+
+        names = {candidate["name"] for candidate in fetched["config"]["candidates"]}
+        # The wrong-hold finding adds its stop-management challengers...
+        assert {"breakeven_lock", "atr_trailing"} <= names
+        # ...the rejected chase finding adds nothing (a human called it noise).
+        assert "anti_chase" not in names
+        assert fetched["config"]["motivating_finding_ids"] == [wrong_hold_id]
 
     async def test_second_start_while_running_is_409(self, database: Database) -> None:
         bot = StubBot(database)

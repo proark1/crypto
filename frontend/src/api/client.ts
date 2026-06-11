@@ -209,7 +209,9 @@ export function startSweep(body: {
   timeframe: string;
   history_days: number;
 }): Promise<{ run_id: number; detail: string }> {
-  // Omitting candidates sweeps the backend's default grid for the strategy.
+  // Omitting candidates lets the backend derive the grid: variants of the
+  // actively traded parameters plus challengers targeted at the latest
+  // run's findings.
   return request<{ run_id: number; detail: string }>("/sweeps", "POST", body);
 }
 

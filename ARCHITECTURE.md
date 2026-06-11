@@ -636,6 +636,13 @@ trend family's entry-extension filter — with the finding ids recorded as
 the sweep's motivation. Patterns the bot has no knob for yet remain
 human-facing suggestions.
 
+Manual sweeps share this derivation: a sweep started without explicit
+candidates (the dashboard's "run sweep" button) challenges the actively
+traded parameters with the same findings-targeted grid — never a static
+default grid — so the button tests exactly the knobs the findings on
+screen point at, with the non-rejected finding ids recorded as the
+sweep's motivation.
+
 Guardrails, in order of importance: promotions apply to the **paper** bot
 only (the worker refuses to construct in any other mode, and going live
 stays a human decision in every configuration); every promotion appends a

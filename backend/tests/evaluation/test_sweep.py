@@ -11,7 +11,6 @@ import pytest
 
 from tradebot.core.models import Candle, CandleInterval, utc_now
 from tradebot.evaluation.sweep import (
-    DEFAULT_SWEEP_CANDIDATES,
     MIN_SWEEP_TRADES,
     CandidateScore,
     SweepCandidate,
@@ -304,14 +303,3 @@ class TestSweepEndToEnd:
         sweep = await store.fetch_sweep(sweep_id)
         assert sweep is not None and sweep["status"] == "failed"
         assert sweep["report"] is None
-
-    async def test_default_grid_names_are_unique_and_baseline_first(self) -> None:
-        names = [candidate.name for candidate in DEFAULT_SWEEP_CANDIDATES]
-        assert len(set(names)) == len(names)
-        assert names[0].startswith("baseline")
-
-    async def test_default_grid_pits_both_families_against_the_incumbent(self) -> None:
-        families = {candidate.family for candidate in DEFAULT_SWEEP_CANDIDATES}
-        assert families == {"trend_following", "mean_reversion"}
-        # The baseline stays the configuration the bot trades today.
-        assert DEFAULT_SWEEP_CANDIDATES[0].family == "trend_following"

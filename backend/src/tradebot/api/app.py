@@ -28,12 +28,12 @@ from tradebot.core.config import AppConfig
 from tradebot.core.metrics import MetricsCollector, format_metric
 from tradebot.core.models import Candle, CandleInterval, utc_now
 from tradebot.engine import TradingEngine
-from tradebot.evaluation.models import LearningFinding
+from tradebot.evaluation.improve import build_improvement_candidates
+from tradebot.evaluation.models import LearningFinding, RunStatus
 from tradebot.evaluation.replay import load_replay
 from tradebot.evaluation.runner import EvaluationRunConfig
 from tradebot.evaluation.sweep import (
     DEFAULT_SCENARIO_COUNT,
-    DEFAULT_SWEEP_CANDIDATES,
     SweepCandidate,
     SweepConfig,
 )
@@ -112,6 +112,11 @@ class BotState(Protocol):
     @property
     def evaluation_store(self) -> EvaluationStore:
         """Persisted evaluation runs, scenarios, and verdicts."""
+        ...
+
+    @property
+    def strategy_params(self) -> Mapping[str, Mapping[str, Any]]:
+        """The active (possibly auto-promoted) parameters per strategy family."""
         ...
 
     async def start_evaluation(self, config: EvaluationRunConfig) -> int:
@@ -410,9 +415,11 @@ class SweepCandidateRequest(BaseModel):
 class SweepStartRequest(BaseModel):
     """Shape of a new sweep; the symbol defaults to the first active coin.
 
-    Omitting ``candidates`` sweeps the default grid (the live trend
-    configuration and its variants, plus the mean-reversion family's
-    defaults); ``candidates[0]`` is always treated as the baseline.
+    Omitting ``candidates`` derives the grid the automated improver would
+    sweep: single-knob variants of the parameters the bot is trading right
+    now, plus challengers targeted at the latest completed run's
+    non-rejected findings (their ids recorded as the sweep's motivation).
+    ``candidates[0]`` is always treated as the baseline.
     """
 
     symbol: str | None = None
@@ -1151,20 +1158,44 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
         first_engine = next(iter(state.engines.values()))
         return CommandResponse(paused=first_engine.paused, detail=f"run {run_id} cancelled")
 
+    async def latest_run_findings() -> list[tuple[int, str]]:
+        """Non-rejected findings of the newest completed run, for targeting.
+
+        Rejected findings are excluded (a human called those noise); the
+        rest steer the derived sweep grid exactly as in the automated
+        improvement cycle (§12.7).
+        """
+        for run in await state.evaluation_store.list_runs(limit=10):
+            if run.get("status") != RunStatus.COMPLETED.value:
+                continue
+            return [
+                (finding_id, finding.pattern)
+                for finding_id, finding in await state.evaluation_store.fetch_findings(run["id"])
+                if finding.status != "rejected"
+            ]
+        return []
+
     @protected.post("/sweeps")
     async def start_sweep(request: SweepStartRequest) -> EvaluationStartResponse:
         """Start a walk-forward parameter sweep (one at a time)."""
         try:
-            candidates = (
-                tuple(
+            motivating = tuple(request.motivating_finding_ids)
+            if request.candidates:
+                candidates = tuple(
                     SweepCandidate(
                         name=candidate.name, params=candidate.params, family=candidate.family
                     )
                     for candidate in request.candidates
                 )
-                if request.candidates
-                else DEFAULT_SWEEP_CANDIDATES
-            )
+            else:
+                # The manual button challenges the configuration actually
+                # trading, steered by the latest findings — the same grid
+                # the automated improver would sweep, so "run sweep" tests
+                # the knobs the findings on screen point at.
+                candidates, mined = build_improvement_candidates(
+                    state.strategy_params, await latest_run_findings()
+                )
+                motivating = tuple(dict.fromkeys((*motivating, *mined)))
             config = SweepConfig(
                 symbol=request.symbol if request.symbol else resolve_symbol(None),
                 timeframe=request.timeframe,
@@ -1176,7 +1207,7 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
                 training_fraction=request.training_fraction,
                 validation_windows=request.validation_windows,
                 candidates=candidates,
-                motivating_finding_ids=tuple(request.motivating_finding_ids),
+                motivating_finding_ids=motivating,
             )
             sweep_id = await state.start_sweep(config)
         except RuntimeError as error:
