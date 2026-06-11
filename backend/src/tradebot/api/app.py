@@ -163,6 +163,28 @@ class StatusResponse(BaseModel):
     breakers: BreakersResponse
 
 
+class HoldingResponse(BaseModel):
+    """One asset the paper account holds, valued at the latest mark."""
+
+    asset: str
+    symbol: str | None
+    """The trading pair behind a coin holding; ``None`` for the quote
+    currency itself, which is held free rather than through a pair."""
+
+    quantity: str
+    mark_price_quote: str | None
+    value_quote: str | None
+    unrealized_pnl_quote: str | None
+
+
+class WalletResponse(BaseModel):
+    """What the account holds right now: free quote plus every coin."""
+
+    quote_currency: str
+    equity_quote: str | None
+    holdings: list[HoldingResponse]
+
+
 class CommandResponse(BaseModel):
     """Outcome of a control command."""
 
@@ -626,6 +648,56 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
         stays behind the bearer token.
         """
         return {"status": "ok"}
+
+    @protected.get("/wallet")
+    async def get_wallet() -> WalletResponse:
+        """Report holdings: how much quote sits free, how much of each coin.
+
+        Marks are gathered first, then the portfolio is read synchronously
+        (no awaits in between) — the same race discipline as
+        ``account_equity``. A position whose mark is missing is listed with
+        unknown value rather than dropped: hiding a holding would be worse
+        than not pricing it.
+        """
+        marks: dict[str, Decimal] = {}
+        for active in active_symbols():
+            candle = await state.candle_store.latest_candle(active, CandleInterval.M1)
+            if candle is not None:
+                marks[active] = candle.close_quote
+        portfolio = state.portfolio
+        quote = state.config.quote_currency
+        holdings = [
+            HoldingResponse(
+                asset=quote,
+                symbol=None,
+                quantity=str(portfolio.quote_balance),
+                mark_price_quote=None,
+                value_quote=str(portfolio.quote_balance),
+                unrealized_pnl_quote=None,
+            )
+        ]
+        all_marked = True
+        for held_symbol, position in portfolio.positions.items():
+            mark = marks.get(held_symbol)
+            if mark is None:
+                all_marked = False
+            holdings.append(
+                HoldingResponse(
+                    asset=held_symbol.split("/")[0],
+                    symbol=held_symbol,
+                    quantity=str(position.quantity_base),
+                    mark_price_quote=str(mark) if mark is not None else None,
+                    value_quote=(str(position.quantity_base * mark) if mark is not None else None),
+                    unrealized_pnl_quote=(
+                        str(position.unrealized_pnl_quote(mark)) if mark is not None else None
+                    ),
+                )
+            )
+        return WalletResponse(
+            quote_currency=quote,
+            equity_quote=str(portfolio.equity_quote(marks)) if all_marked else None,
+            holdings=holdings,
+        )
 
     @protected.get("/status")
     async def get_status(symbol: str | None = Query(None)) -> StatusResponse:

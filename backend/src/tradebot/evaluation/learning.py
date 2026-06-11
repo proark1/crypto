@@ -52,6 +52,22 @@ definition of R."""
 _Record = tuple[Scenario, ScenarioResult]
 
 
+def _knob_hint(dimension: str, label: str) -> str:
+    """Name the sweepable knob that targets a losing bucket, when one exists.
+
+    A suggestion that names a real setting closes the loop: the automated
+    improver (§12.7) adds the matching challenger to its next sweep, with
+    this finding as the recorded motivation.
+    """
+    if dimension == "trend" and label in ("down", "ranging"):
+        return (
+            " (sweepable knob: mean_reversion.trend_filter_ema_period — skip "
+            "dip-buys while the coin trends down; the automated improver "
+            "tests it when this finding appears)"
+        )
+    return ""
+
+
 def mine_findings(run_id: int, records: list[_Record], now: datetime) -> list[LearningFinding]:
     """Return every pattern in ``records`` worth a human's accept/reject.
 
@@ -103,6 +119,7 @@ def _losing_buckets(run_id: int, records: list[_Record], now: datetime) -> list[
                     suggestion=(
                         f"gate entries behind extra confirmation when {dimension} is "
                         f"{label}; expectancy there is {expectancy}R over {len(trades)} trades"
+                        + _knob_hint(dimension, label)
                     ),
                     confidence=_confidence(len(trades)),
                     created_at=now,
@@ -127,7 +144,9 @@ def _late_entries(run_id: int, records: list[_Record], now: datetime) -> list[Le
             average_r_impact=impact,
             suggestion=(
                 "signals confirm too slowly; consider faster confirmation or skipping "
-                "entries when the move already ran, instead of buying its top"
+                "entries when the move already ran, instead of buying its top "
+                "(sweepable knob: trend_following.max_entry_extension_atr — the "
+                "automated improver tests it when this finding appears)"
             ),
             confidence=_confidence(len(late)),
             created_at=now,

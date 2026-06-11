@@ -17,7 +17,7 @@ from decimal import ROUND_HALF_EVEN, Decimal
 from pydantic import BaseModel, ConfigDict
 
 from tradebot.core.models import ACCOUNTING_RESOLUTION, Candle, Side, Signal
-from tradebot.indicators import Atr, Rsi
+from tradebot.indicators import Atr, Ema, Rsi
 from tradebot.portfolio import Position
 
 
@@ -33,6 +33,13 @@ class MeanReversionConfig(BaseModel):
 
     atr_period: int = 14
     atr_stop_multiple: float = 2.0
+
+    trend_filter_ema_period: int = 0
+    """Only buy oversold recoveries while the close sits above this EMA —
+    a dip in an uptrend mean-reverts; a dip in a downtrend is a falling
+    knife, and the evaluation system's "entries lose money when trend is
+    down" finding is exactly this failure. ``0`` disables the filter (the
+    historical behavior)."""
 
 
 class MeanReversionStrategy:
@@ -53,6 +60,9 @@ class MeanReversionStrategy:
         self._config = config
         self._rsi = Rsi(config.rsi_period)
         self._atr = Atr(config.atr_period)
+        self._trend_ema = (
+            Ema(config.trend_filter_ema_period) if config.trend_filter_ema_period > 0 else None
+        )
         self._previous_rsi: float | None = None
         self._last_open_time: datetime | None = None
 
@@ -78,6 +88,7 @@ class MeanReversionStrategy:
         close = float(candle.close_quote)
         rsi = self._rsi.update(close)
         atr = self._atr.update(float(candle.high_quote), float(candle.low_quote), close)
+        trend_ema = self._trend_ema.update(close) if self._trend_ema is not None else None
         if rsi is None or atr is None:
             return None
         previous_rsi = self._previous_rsi
@@ -90,7 +101,10 @@ class MeanReversionStrategy:
             previous_rsi < self._config.oversold_threshold
             and rsi >= self._config.oversold_threshold
         )
-        if recovered and position is None:
+        # With the filter on, an unformed trend EMA also blocks: buying a
+        # dip with no trend information is the falling-knife case.
+        downtrending = self._trend_ema is not None and (trend_ema is None or close < trend_ema)
+        if recovered and position is None and not downtrending:
             stop = Decimal(str(close - self._config.atr_stop_multiple * atr)).quantize(
                 ACCOUNTING_RESOLUTION, rounding=ROUND_HALF_EVEN
             )

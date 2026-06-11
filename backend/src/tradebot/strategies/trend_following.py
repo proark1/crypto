@@ -29,6 +29,13 @@ class TrendFollowingConfig(BaseModel):
     atr_period: int = 14
     atr_stop_multiple: float = 2.0
 
+    max_entry_extension_atr: float = 0.0
+    """Anti-chase filter: skip an entry whose close already sits more than
+    this many ATRs above the slow EMA — by then the move that caused the
+    cross has largely happened, and the evaluation system's "entries chase
+    moves that are already over" finding is exactly this failure. ``0``
+    disables the filter (the historical behavior)."""
+
 
 class TrendFollowingStrategy:
     """EMA-cross trend follower for one symbol.
@@ -88,7 +95,9 @@ class TrendFollowingStrategy:
         # so this is unique — and it makes backtests reproducible end to end,
         # including order lineage (the golden backtest depends on it).
         signal_id = f"{self.name}:{candle.symbol}:{candle.close_time.isoformat()}"
-        if crossed_up and position is None:
+        extension_limit = self._config.max_entry_extension_atr
+        chasing = extension_limit > 0 and (close - slow) > extension_limit * atr
+        if crossed_up and position is None and not chasing:
             stop = Decimal(str(close - self._config.atr_stop_multiple * atr)).quantize(
                 ACCOUNTING_RESOLUTION, rounding=ROUND_HALF_EVEN
             )

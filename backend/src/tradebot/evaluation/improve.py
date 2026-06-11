@@ -17,11 +17,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable, Mapping
-from datetime import timedelta
+from collections.abc import Awaitable, Callable, Mapping, Sequence
+from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 
-from tradebot.evaluation.models import RunStatus
+from tradebot.evaluation.models import LearningFinding, RunStatus
+from tradebot.evaluation.runner import EvaluationRunConfig
 from tradebot.evaluation.sweep import SweepCandidate, SweepConfig
 from tradebot.strategies import MeanReversionConfig, TrendFollowingConfig
 
@@ -29,6 +30,18 @@ logger = logging.getLogger(__name__)
 
 PROMOTION_VERDICT = "validated"
 """The only sweep verdict that may change the traded configuration."""
+
+IMPROVEMENT_SCENARIO_COUNT = 400
+"""Scenarios per candidate per period in automated research. The strategy
+trades in only a few percent of scenarios, so a small count starves every
+sweep below MIN_SWEEP_TRADES and the loop can never validate anything —
+exactly the "insufficient evidence on every sweep" failure observed in
+production."""
+
+STALE_RUN_CYCLES = 2
+"""A completed evaluation older than this many improvement intervals no
+longer describes the configuration now trading; the cycle re-evaluates
+before sweeping."""
 
 POLL_SECONDS = 30.0
 """How often a running sweep is re-checked for a terminal status."""
@@ -47,26 +60,54 @@ class SweepStarter(Protocol):
         ...
 
 
-class SweepReader(Protocol):
+class ResearchReader(Protocol):
     """The slice of ``EvaluationStore`` the improver depends on."""
 
     async def fetch_sweep(self, sweep_id: int) -> dict[str, Any] | None:
         """Return the sweep row (status + report), or ``None`` if unknown."""
         ...
 
+    async def list_runs(self, limit: int = 50) -> list[dict[str, Any]]:
+        """Return evaluation runs, newest first."""
+        ...
+
+    async def fetch_findings(self, run_id: int) -> list[tuple[int, LearningFinding]]:
+        """Return one run's mined findings with their database ids."""
+        ...
+
+
+class EvaluationStarter(Protocol):
+    """The slice of ``EvaluationManager`` the improver depends on."""
+
+    async def start(self, config: EvaluationRunConfig) -> int:
+        """Create and launch a run; raises ``RuntimeError`` if one runs."""
+        ...
+
 
 def build_improvement_candidates(
     active: Mapping[str, Mapping[str, Any]],
-) -> tuple[SweepCandidate, ...]:
-    """Derive one challenger grid from the currently traded parameters.
+    findings: Sequence[tuple[int, str]] = (),
+) -> tuple[tuple[SweepCandidate, ...], tuple[int, ...]]:
+    """Derive one challenger grid from the active parameters and findings.
 
-    The active trend configuration is the baseline (``candidates[0]``, as
-    the sweep contract requires); each variant changes a single knob by a
+    Returns ``(candidates, motivating_finding_ids)``. The active trend
+    configuration is the baseline (``candidates[0]``, as the sweep
+    contract requires); each variant changes a single knob by a
     multiplicative step so the journal can name what earned a promotion.
     Steps are clamped to valid configurations (fast EMA strictly below
     slow, stops never collapsing to zero) and variants that clamp into a
     copy of an existing candidate are dropped — sweeping a candidate
     against itself would only spend the significance budget.
+
+    ``findings`` — ``(id, pattern)`` pairs mined from the latest
+    evaluation run — add *targeted* challengers: a losing-downtrend
+    pattern toggles the mean-reversion trend filter, a chasing pattern
+    toggles the trend family's extension filter. This is where the bot
+    learns from its own graded record: the pattern names the knob, the
+    sweep proves or refutes it, and the finding ids ride along as the
+    sweep's recorded motivation (§12.5 lineage). Candidates are added
+    only when their pattern actually fired — every extra candidate
+    tightens the Bonferroni bar for all of them.
     """
     trend = TrendFollowingConfig(**active.get("trend_following", {}))
     reversion = MeanReversionConfig(**active.get("mean_reversion", {}))
@@ -112,6 +153,36 @@ def build_improvement_candidates(
             params=reversion.model_dump(),
         ),
     ]
+    motivating: list[int] = []
+    downtrend_ids = [
+        finding_id
+        for finding_id, pattern in findings
+        if "trend is down" in pattern or "trend is ranging" in pattern
+    ]
+    if downtrend_ids:
+        motivating += downtrend_ids
+        filter_toggle = 50 if reversion.trend_filter_ema_period == 0 else 0
+        raw.append(
+            SweepCandidate(
+                name=("trend_filtered_reversion" if filter_toggle else "unfiltered_reversion"),
+                family="mean_reversion",
+                params=reversion.model_copy(
+                    update={"trend_filter_ema_period": filter_toggle}
+                ).model_dump(),
+            )
+        )
+    chase_ids = [finding_id for finding_id, pattern in findings if "chase" in pattern]
+    if chase_ids:
+        motivating += chase_ids
+        chase_toggle = 2.0 if trend.max_entry_extension_atr == 0 else 0.0
+        raw.append(
+            SweepCandidate(
+                name="anti_chase" if chase_toggle else "no_chase_filter",
+                params=trend.model_copy(
+                    update={"max_entry_extension_atr": chase_toggle}
+                ).model_dump(),
+            )
+        )
     seen: set[tuple[str, tuple[tuple[str, Any], ...]]] = set()
     unique: list[SweepCandidate] = []
     for candidate in raw:
@@ -120,7 +191,7 @@ def build_improvement_candidates(
             continue
         seen.add(key)
         unique.append(candidate)
-    return tuple(unique)
+    return tuple(unique), tuple(motivating)
 
 
 class AutoImprover:
@@ -130,7 +201,8 @@ class AutoImprover:
         self,
         *,
         sweeps: SweepStarter,
-        store: SweepReader,
+        evaluations: EvaluationStarter,
+        store: ResearchReader,
         active_params: Callable[[], Mapping[str, Mapping[str, Any]]],
         symbols: Callable[[], tuple[str, ...]],
         promote: Callable[[str, Mapping[str, Any], int | None, str | None], Awaitable[int]],
@@ -147,6 +219,7 @@ class AutoImprover:
         ``promote`` is the worker's apply path: persist + hot-swap.
         """
         self._sweeps = sweeps
+        self._evaluations = evaluations
         self._store = store
         self._active_params = active_params
         self._symbols = symbols
@@ -174,18 +247,49 @@ class AutoImprover:
                 logger.exception("improvement cycle failed; retrying next interval")
 
     async def run_cycle(self) -> int | None:
-        """Run one sweep-and-maybe-promote cycle; returns the sweep id."""
+        """Run one cycle: evaluate when stale, otherwise sweep and promote.
+
+        Returns the sweep id when a sweep ran, ``None`` otherwise. The
+        cycle alternates naturally: a stale (or absent) evaluation run is
+        refreshed first — its completion mines the findings — and the next
+        cycle sweeps challengers targeted at those findings.
+        """
         symbols = self._symbols()
         if not symbols:
             return None
+        latest_run = await self._latest_completed_run()
+        if latest_run is None:
+            try:
+                run_id = await self._evaluations.start(
+                    EvaluationRunConfig(
+                        symbols=symbols,
+                        timeframes=(self._timeframe,),
+                        history_days=self._history_days,
+                        scenario_count=IMPROVEMENT_SCENARIO_COUNT,
+                    )
+                )
+                logger.info(
+                    "improvement cycle started evaluation run %d: no fresh run to learn from",
+                    run_id,
+                )
+            except RuntimeError:
+                logger.info("improvement cycle skipped: an evaluation run is already in flight")
+            return None
+        findings = [
+            (finding_id, finding.pattern)
+            for finding_id, finding in await self._store.fetch_findings(latest_run["id"])
+            if finding.status != "rejected"  # a human called those noise
+        ]
         symbol = symbols[self._rotation % len(symbols)]
         self._rotation += 1
-        candidates = build_improvement_candidates(self._active_params())
+        candidates, motivating = build_improvement_candidates(self._active_params(), findings)
         config = SweepConfig(
             symbol=symbol,
             timeframe=self._timeframe,
             history_days=self._history_days,
+            scenario_count=IMPROVEMENT_SCENARIO_COUNT,
             candidates=candidates,
+            motivating_finding_ids=motivating,
         )
         try:
             sweep_id = await self._sweeps.start(config)
@@ -225,6 +329,22 @@ class AutoImprover:
         if self._notify is not None:
             await self._notify(message)
         return sweep_id
+
+    async def _latest_completed_run(self) -> dict[str, Any] | None:
+        """Return the newest completed evaluation run, unless it is stale.
+
+        Staleness is judged in improvement intervals: findings mined from
+        a run that predates recent promotions would steer the next sweep
+        with observations about a configuration no longer trading.
+        """
+        for run in await self._store.list_runs(limit=10):
+            if run.get("status") != RunStatus.COMPLETED.value:
+                continue
+            age = datetime.now(UTC) - run["created_at"]
+            if age > self._interval * STALE_RUN_CYCLES:
+                return None  # completed, but too old to describe the bot of today
+            return run
+        return None
 
     async def _wait_for_report(self, sweep_id: int) -> dict[str, Any] | None:
         """Poll until the sweep is terminal; ``None`` unless it completed."""

@@ -18,6 +18,7 @@ import type {
   StatusResponse,
   StrategyVersionResponse,
   SweepResponse,
+  WalletResponse,
 } from "./types";
 
 const TOKEN_STORAGE_KEY = "tradebot_api_token";
@@ -83,6 +84,10 @@ function withSymbol(path: string, symbol?: string): string {
 
 export function fetchStatus(symbol?: string): Promise<StatusResponse> {
   return request<StatusResponse>(withSymbol("/status", symbol), "GET");
+}
+
+export function fetchWallet(): Promise<WalletResponse> {
+  return request<WalletResponse>("/wallet", "GET");
 }
 
 export function fetchFills(): Promise<FillResponse[]> {
