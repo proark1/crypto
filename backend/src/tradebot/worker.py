@@ -861,13 +861,16 @@ class Worker:
         )
 
     def _activate(self, symbol: str) -> None:
-        """Build and wire one coin's engines and feed; start the feed if running.
+        """Build and wire one coin's engines and feed (does not start the feed).
 
         One feed per symbol fans out to every competitor's engine through
         the bus — the competition multiplies accounts, never market-data
         connections (the exchange rate budget is shared). The feed is built
         first: every engine's data-health gate reads its health latch, so
         the feed must exist before any engine on this symbol is wired.
+        Starting the feed task is the caller's job: at boot ``run`` starts
+        every feed inside the TaskGroup, and ``add_coin`` starts the feed
+        only after the new coin's strategies have been primed.
         """
         feed = LiveMarketDataFeed(
             self._exchange,
@@ -897,8 +900,35 @@ class Worker:
         for runtime in self.challengers.values():
             self._activate_challenger_engine(runtime, symbol)
         self.engines[symbol] = engine
-        if self._task_group is not None:
-            self._feed_tasks[symbol] = self._task_group.create_task(feed.run())
+
+    async def _prime_symbol(self, symbol: str) -> None:
+        """Warm one coin's production and challenger strategies from stored candles.
+
+        Replays up to ``STRATEGY_PRIME_CANDLES`` recent 1m candles through a
+        fresh strategy per engine (outputs discarded) and swaps it in, so
+        the EMAs/RSI/ATR are formed before the first live candle — the same
+        warm-start a parameter promotion gets (see ``_rebuild_strategies``).
+        The engines hold no position yet, so the swap only seeds indicator
+        state. A no-op when nothing is stored: the strategy then warms from
+        the live stream, exactly as on a first-ever boot.
+        """
+        stored = await self.candle_store.fetch_recent(
+            symbol, CandleInterval.M1, STRATEGY_PRIME_CANDLES
+        )
+        if not stored:
+            return
+        production = self._build_strategy()
+        for candle in stored:
+            production.on_candle(candle, None)
+        self.engines[symbol].replace_strategy(production)
+        for runtime in self.challengers.values():
+            engine = runtime.engines.get(symbol)
+            if engine is None:
+                continue
+            strategy = self._challenger_strategy(runtime)
+            for candle in stored:
+                strategy.on_candle(candle, None)
+            engine.replace_strategy(strategy)
 
     def _activate_challenger_engine(
         self, runtime: CompetitorRuntime, symbol: str, strategy: Strategy | None = None
@@ -1043,9 +1073,13 @@ class Worker:
         return replayed
 
     async def add_coin(self, symbol: str) -> None:
-        """Start trading ``symbol``: validate, persist, build, stream.
+        """Start trading ``symbol``: validate, persist, build, warm, stream.
 
         Raises ``ValueError`` for an invalid, duplicate, or unlisted pair.
+        The coin's strategies are primed from a bounded recent-history fetch
+        before the live stream starts, so a coin added into a running bot
+        trades on warm indicators instead of staying blind for hours while
+        the deep history crawl catches up in the background.
         """
         symbol = symbol.strip()
         validate_symbol_quote(symbol, self.config.quote_currency)
@@ -1059,6 +1093,24 @@ class Worker:
             self.symbol_filters[symbol] = filters_from_market(market)
         await self.coin_store.add(symbol, datetime.now(UTC))
         self._activate(symbol)
+        # Warm the strategies before any live candle reaches them. The recent
+        # fetch is bounded (the multi-year crawl in the feed's own backfill
+        # would block this call for minutes); a failure degrades to a cold
+        # start — the strategies warm from the live stream — loudly.
+        feed = self._feeds[symbol]
+        try:
+            fetched = await feed.prime_history(STRATEGY_PRIME_CANDLES)
+            if fetched:
+                log_event(
+                    logger, logging.INFO, "coin_prime_fetched", symbol=symbol, candles=fetched
+                )
+        except Exception:
+            log_event(
+                logger, logging.WARNING, "coin_prime_fetch_failed", symbol=symbol, exc_info=True
+            )
+        await self._prime_symbol(symbol)
+        if self._task_group is not None:
+            self._feed_tasks[symbol] = self._task_group.create_task(feed.run())
         log_event(logger, logging.INFO, "coin_added", symbol=symbol)
 
     async def remove_coin(self, symbol: str) -> None:

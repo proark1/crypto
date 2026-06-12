@@ -157,6 +157,29 @@ class BackfillFailingExchange(ScriptedExchange):
         raise ConnectionError("backfill unavailable")
 
 
+class RecentHistoryExchange(ScriptedExchange):
+    """Serves a recent 1m REST history for one symbol so a strategy can prime."""
+
+    def __init__(self, symbol: str, closes: list[float]) -> None:
+        super().__init__([])
+        self._symbol = symbol
+        # Anchored to the wall clock: prime_history reaches back from now, so
+        # the history must be recent to be fetched at all.
+        end = datetime.now(UTC).replace(second=0, microsecond=0)
+        start_ms = int((end - timedelta(minutes=len(closes))).timestamp() * 1000)
+        self.history: list[OhlcvRow] = [
+            [start_ms + i * MINUTE_MS, close, close + 0.5, close - 0.5, close, 10.0]
+            for i, close in enumerate(closes)
+        ]
+
+    async def fetch_ohlcv(
+        self, symbol: str, timeframe: str, since: int | None = None, limit: int | None = None
+    ) -> list[OhlcvRow]:
+        if symbol != self._symbol:
+            return []
+        return self.history if since is None else [r for r in self.history if r[0] >= since]
+
+
 class TestWorker:
     async def test_paper_trades_end_to_end(self, database: Database) -> None:
         exchange = ScriptedExchange(CLOSES)
@@ -326,6 +349,50 @@ class TestWorker:
         restarted = Worker(make_config("BTC/USDT"), database, ScriptedExchange([]))
         await restarted.initialize()
         assert restarted.symbols == ("BTC/USDT", "ETH/USDT")
+
+    async def test_add_coin_primes_strategies_from_recent_history(self, database: Database) -> None:
+        """A coin added mid-run trades on warm indicators, not a cold start.
+
+        Only a recent decline is served (every indicator warm, fast EMA below
+        slow). A handful of rallying candles then crosses up and records a BUY
+        decision — a cold strategy needs ~50 candles before any EMA is even
+        defined, so the recorded decision proves the priming ran. The fetch is
+        bounded: the store holds only the recent window, never a deep crawl.
+        """
+        new_symbol = "ETH/USDT"
+        decline = [100.0 - 0.2 * i for i in range(60)]
+        exchange = RecentHistoryExchange(new_symbol, decline)
+        worker = Worker(make_config("BTC/USDT"), database, exchange)
+        await worker.initialize()
+
+        await worker.add_coin(new_symbol)
+
+        stored = await worker.candle_store.fetch_recent(new_symbol, CandleInterval.M1, 1000)
+        assert len(stored) == len(decline) - 1  # newest row dropped as in progress
+
+        # Drive the rally through the now-warm strategy; the feed is still
+        # unhealthy (not streaming), so the BUY is gated but still journaled.
+        last_open = stored[-1].open_time
+        engine = worker.engines[new_symbol]
+        for index, close in enumerate(range(90, 150, 2), start=1):
+            open_time = last_open + timedelta(minutes=index)
+            price = Decimal(str(close))
+            await engine.process_candle(
+                Candle(
+                    symbol=new_symbol,
+                    interval=CandleInterval.M1,
+                    open_time=open_time,
+                    close_time=open_time + timedelta(minutes=1),
+                    open_quote=price,
+                    high_quote=price + Decimal("0.5"),
+                    low_quote=price - Decimal("0.5"),
+                    close_quote=price,
+                    volume_base=Decimal("10"),
+                )
+            )
+
+        decisions = await worker.decision_store.fetch_recent(new_symbol, 10)
+        assert any(decision.side == Side.BUY for decision in decisions)
 
     async def test_remove_coin_refuses_unsafe_states(self, database: Database) -> None:
         worker = Worker(make_config("BTC/USDT,ETH/USDT"), database, ScriptedExchange([]))
