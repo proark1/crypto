@@ -1272,3 +1272,34 @@ class TestShutdown:
             run_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await run_task
+
+    async def test_add_coin_during_shutdown_does_not_spawn_a_hanging_feed(
+        self, database: Database
+    ) -> None:
+        """An add_coin landing in the grace window must not start a new feed.
+
+        The control API is alive through the grace window, so a coin added
+        mid-shutdown could otherwise spawn a feed the supervisor has already
+        passed over and hang the TaskGroup. Nulling the group on stop closes
+        that window: the coin is still built, but no streaming task starts.
+        """
+        exchange = WedgedFeedExchange()
+        worker = Worker(make_config(api_port=8943), database, exchange)
+        worker._feed_shutdown_grace_seconds = 0.1
+        run_task = asyncio.create_task(worker.run())
+        try:
+            await asyncio.wait_for(exchange.parked.wait(), timeout=5)
+            worker._stop_requested.set()
+            # Let the supervisor observe the stop and close the add-feed window.
+            for _ in range(100):
+                await asyncio.sleep(0)
+                if worker._task_group is None:
+                    break
+            assert worker._task_group is None
+            await worker.add_coin("ETH/USDT")
+            assert "ETH/USDT" not in worker._feed_tasks
+            await asyncio.wait_for(run_task, timeout=5)
+        finally:
+            run_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await run_task

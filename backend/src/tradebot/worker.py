@@ -600,8 +600,18 @@ class Worker:
         grace window for clean exits, then cancels whatever is still parked.
         Cancelled children are ignored by the TaskGroup, so this never turns
         a clean shutdown into an error.
+
+        Nulling the group first is what makes the snapshot below complete: the
+        control API stays up through the grace window (it is torn down only in
+        ``run``'s finally), so an ``add_coin`` landing here could otherwise
+        spawn a feed this supervisor has already passed over — and the group
+        would hang on it. With the group gone, ``add_coin`` and
+        ``_spawn_background`` can no longer start tasks, so nothing parks after
+        the snapshot. The null happens synchronously before the first await,
+        so no coroutine can interleave between it and the snapshot.
         """
         await self._stop_requested.wait()
+        self._task_group = None
         for feed in list(self._feeds.values()):
             feed.stop()
         pending = [task for task in self._feed_tasks.values() if not task.done()]
