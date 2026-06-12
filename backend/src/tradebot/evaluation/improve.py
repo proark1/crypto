@@ -28,21 +28,34 @@ from typing import Any, Protocol
 from tradebot.evaluation.models import LearningFinding, RunStatus
 from tradebot.evaluation.runner import EvaluationRunConfig
 from tradebot.evaluation.sweep import DEFAULT_SCENARIO_COUNT, SweepCandidate, SweepConfig
-from tradebot.strategies import MeanReversionConfig, TrendFollowingConfig
+from tradebot.strategies import (
+    BreakoutConfig,
+    MeanReversionConfig,
+    MomentumConfig,
+    TrendFollowingConfig,
+)
 
 logger = logging.getLogger(__name__)
 
 PROMOTION_VERDICT = "validated"
 """The only sweep verdict that may change the traded configuration."""
 
+IMPROVEMENT_TARGETS = ("production", "breakout", "momentum")
+"""What the loop improves, in rotation. ``production`` covers the regime-
+routed shape and therefore both of its families (trend following and mean
+reversion); ``breakout`` and ``momentum`` are the research families' solo
+competition accounts — tuning them sharpens the §13 leaderboard evidence
+the §13.7 routing decision will be made on. Custom bots are absent on
+purpose: auto-tuning a user's recipe needs their opt-in (a later change)."""
+
 IMPROVEMENT_SCENARIO_COUNT = DEFAULT_SCENARIO_COUNT
 """Scenarios per candidate per period in automated research — the shared
 unstarved default (see ``sweep.DEFAULT_SCENARIO_COUNT``)."""
 
 STALE_RUN_CYCLES = 2
-"""A completed evaluation older than this many improvement intervals no
-longer describes the configuration now trading; the cycle re-evaluates
-before sweeping."""
+"""A completed evaluation older than this many of its target's turns (one
+turn every ``len(IMPROVEMENT_TARGETS)`` intervals) no longer describes the
+configuration now trading; the cycle re-evaluates before sweeping."""
 
 POLL_SECONDS = 30.0
 """How often a running sweep is re-checked for a terminal status."""
@@ -291,6 +304,13 @@ def build_improvement_candidates(
                     params=reversion.model_copy(update={"oversold_threshold": looser}).model_dump(),
                 )
             )
+    return _dedupe(raw, motivating)
+
+
+def _dedupe(
+    raw: list[SweepCandidate], motivating: list[int]
+) -> tuple[tuple[SweepCandidate, ...], tuple[int, ...]]:
+    """Drop candidates that clamp into copies; keep order, baseline first."""
     seen: set[tuple[str, tuple[tuple[str, Any], ...]]] = set()
     unique: list[SweepCandidate] = []
     for candidate in raw:
@@ -302,8 +322,267 @@ def build_improvement_candidates(
     return tuple(unique), tuple(motivating)
 
 
+def _breakout_candidates(
+    active: Mapping[str, Mapping[str, Any]],
+    findings: Sequence[tuple[int, str]],
+) -> tuple[tuple[SweepCandidate, ...], tuple[int, ...]]:
+    """Build the breakout family's grid: channel variants plus targeted knobs.
+
+    Single-knob steps like the production grid; clamps keep channels
+    meaningful (never below 5 candles). The family-specific mapping is the
+    fake-breakout one: losses labeled ``breakout_fake`` toggle the
+    minimum-channel-width filter, the knob that exists precisely to skip
+    breakouts from channels too narrow to mean anything.
+    """
+    breakout = BreakoutConfig(**active.get("breakout", {}))
+    channel, exit_channel = breakout.channel_period, breakout.exit_channel_period
+    raw: list[SweepCandidate] = [
+        SweepCandidate(
+            name=f"active_breakout_{channel}_{exit_channel}",
+            family="breakout",
+            params=breakout.model_dump(),
+        ),
+        SweepCandidate(
+            name="wider_channel",
+            family="breakout",
+            params=breakout.model_copy(
+                update={"channel_period": round(channel * 1.5)}
+            ).model_dump(),
+        ),
+        SweepCandidate(
+            name="tighter_channel",
+            family="breakout",
+            params=breakout.model_copy(
+                update={"channel_period": max(5, round(channel * 0.6))}
+            ).model_dump(),
+        ),
+        SweepCandidate(
+            name="wider_stop",
+            family="breakout",
+            params=breakout.model_copy(
+                update={"atr_stop_multiple": round(breakout.atr_stop_multiple * 1.5, 2)}
+            ).model_dump(),
+        ),
+        SweepCandidate(
+            name="tighter_stop",
+            family="breakout",
+            params=breakout.model_copy(
+                update={"atr_stop_multiple": max(0.5, round(breakout.atr_stop_multiple * 0.75, 2))}
+            ).model_dump(),
+        ),
+    ]
+    motivating: list[int] = []
+    fake_ids = [finding_id for finding_id, pattern in findings if "breakout_fake" in pattern]
+    if fake_ids:
+        motivating += fake_ids
+        width_toggle = 0.5 if breakout.min_channel_width_atr == 0 else 0.0
+        raw.append(
+            SweepCandidate(
+                name="min_width_filter" if width_toggle else "no_min_width_filter",
+                family="breakout",
+                params=breakout.model_copy(
+                    update={"min_channel_width_atr": width_toggle}
+                ).model_dump(),
+            )
+        )
+    wrong_hold_ids = [
+        finding_id for finding_id, pattern in findings if "ride into their stops" in pattern
+    ]
+    if wrong_hold_ids:
+        motivating += wrong_hold_ids
+        raw.append(
+            SweepCandidate(
+                name="breakeven_lock" if breakout.breakeven_at_r == 0 else "no_breakeven",
+                family="breakout",
+                params=breakout.model_copy(
+                    update={"breakeven_at_r": 1.0 if breakout.breakeven_at_r == 0 else 0.0}
+                ).model_dump(),
+            )
+        )
+        trail_toggle = breakout.atr_stop_multiple if breakout.trail_atr_multiple == 0 else 0.0
+        raw.append(
+            SweepCandidate(
+                name="atr_trailing" if trail_toggle else "no_trailing",
+                family="breakout",
+                params=breakout.model_copy(
+                    update={"trail_atr_multiple": trail_toggle}
+                ).model_dump(),
+            )
+        )
+    early_exit_ids = [finding_id for finding_id, pattern in findings if "cut winners" in pattern]
+    if early_exit_ids:
+        motivating += early_exit_ids
+        # Turtle exits leave when price crosses the exit channel; a longer
+        # exit channel waits out shallow pullbacks instead of selling them.
+        raw.append(
+            SweepCandidate(
+                name="later_channel_exit",
+                family="breakout",
+                params=breakout.model_copy(
+                    update={"exit_channel_period": round(exit_channel * 1.5)}
+                ).model_dump(),
+            )
+        )
+    missed_ids = [finding_id for finding_id, pattern in findings if "stays flat" in pattern]
+    if missed_ids:
+        # The easier-entry knob is the tighter channel already in the base
+        # grid; the finding rides as motivation without spending another
+        # candidate's worth of significance budget.
+        motivating += missed_ids
+    return _dedupe(raw, motivating)
+
+
+def _momentum_candidates(
+    active: Mapping[str, Mapping[str, Any]],
+    findings: Sequence[tuple[int, str]],
+) -> tuple[tuple[SweepCandidate, ...], tuple[int, ...]]:
+    """Build the momentum family's grid: MACD-speed variants plus targeted knobs.
+
+    The zero-line filter is the family's gate: chasing or losing entries
+    test turning it on (fewer, stronger signals); staying flat through
+    moves tests turning it off (more entries). EMA clamps mirror the trend
+    family's (fast strictly below slow).
+    """
+    momentum = MomentumConfig(**active.get("momentum", {}))
+    fast, slow = momentum.fast_ema_period, momentum.slow_ema_period
+    faster_fast = max(3, round(fast * 0.6))
+    slower_fast = round(fast * 1.5)
+    raw: list[SweepCandidate] = [
+        SweepCandidate(
+            name=f"active_momentum_{fast}_{slow}",
+            family="momentum",
+            params=momentum.model_dump(),
+        ),
+        SweepCandidate(
+            name="faster_macd",
+            family="momentum",
+            params=momentum.model_copy(
+                update={
+                    "fast_ema_period": faster_fast,
+                    "slow_ema_period": max(faster_fast + 2, round(slow * 0.6)),
+                }
+            ).model_dump(),
+        ),
+        SweepCandidate(
+            name="slower_macd",
+            family="momentum",
+            params=momentum.model_copy(
+                update={
+                    "fast_ema_period": slower_fast,
+                    "slow_ema_period": max(slower_fast + 2, round(slow * 1.5)),
+                }
+            ).model_dump(),
+        ),
+        SweepCandidate(
+            name="wider_stop",
+            family="momentum",
+            params=momentum.model_copy(
+                update={"atr_stop_multiple": round(momentum.atr_stop_multiple * 1.5, 2)}
+            ).model_dump(),
+        ),
+        SweepCandidate(
+            name="tighter_stop",
+            family="momentum",
+            params=momentum.model_copy(
+                update={"atr_stop_multiple": max(0.5, round(momentum.atr_stop_multiple * 0.75, 2))}
+            ).model_dump(),
+        ),
+    ]
+    motivating: list[int] = []
+    losing_entry_ids = [
+        finding_id
+        for finding_id, pattern in findings
+        if "chase" in pattern or "trend is down" in pattern or "trend is ranging" in pattern
+    ]
+    if losing_entry_ids and not momentum.require_positive_macd:
+        motivating += losing_entry_ids
+        raw.append(
+            SweepCandidate(
+                name="zero_line_filter",
+                family="momentum",
+                params=momentum.model_copy(update={"require_positive_macd": True}).model_dump(),
+            )
+        )
+    missed_ids = [finding_id for finding_id, pattern in findings if "stays flat" in pattern]
+    if missed_ids and momentum.require_positive_macd:
+        motivating += missed_ids
+        raw.append(
+            SweepCandidate(
+                name="no_zero_line_filter",
+                family="momentum",
+                params=momentum.model_copy(update={"require_positive_macd": False}).model_dump(),
+            )
+        )
+    wrong_hold_ids = [
+        finding_id for finding_id, pattern in findings if "ride into their stops" in pattern
+    ]
+    if wrong_hold_ids:
+        motivating += wrong_hold_ids
+        raw.append(
+            SweepCandidate(
+                name="breakeven_lock" if momentum.breakeven_at_r == 0 else "no_breakeven",
+                family="momentum",
+                params=momentum.model_copy(
+                    update={"breakeven_at_r": 1.0 if momentum.breakeven_at_r == 0 else 0.0}
+                ).model_dump(),
+            )
+        )
+    early_exit_ids = [finding_id for finding_id, pattern in findings if "cut winners" in pattern]
+    if early_exit_ids:
+        motivating += early_exit_ids
+        # A smoother signal line crosses back later, so winners get room;
+        # the ATR trail is the other way to give it.
+        raw.append(
+            SweepCandidate(
+                name="slower_signal",
+                family="momentum",
+                params=momentum.model_copy(
+                    update={"signal_ema_period": round(momentum.signal_ema_period * 1.5)}
+                ).model_dump(),
+            )
+        )
+        trail_toggle = momentum.atr_stop_multiple if momentum.trail_atr_multiple == 0 else 0.0
+        raw.append(
+            SweepCandidate(
+                name="atr_trailing" if trail_toggle else "no_trailing",
+                family="momentum",
+                params=momentum.model_copy(
+                    update={"trail_atr_multiple": trail_toggle}
+                ).model_dump(),
+            )
+        )
+    return _dedupe(raw, motivating)
+
+
+def build_candidates_for(
+    target: str,
+    active: Mapping[str, Mapping[str, Any]],
+    findings: Sequence[tuple[int, str]] = (),
+) -> tuple[tuple[SweepCandidate, ...], tuple[int, ...]]:
+    """Derive the challenger grid for one improvement target.
+
+    ``production`` — and the two families it routes, when their solo
+    accounts are evaluated directly — uses the mixed production grid, so
+    the families are tuned as one budget exactly as they trade. The
+    research families get their own grids. ``ValueError`` for targets with
+    no grid (custom bots: auto-tuning a user's recipe needs their opt-in,
+    a later change) — callers skip loudly rather than sweep wrong knobs.
+    """
+    if target in ("production", "trend_following", "mean_reversion"):
+        return build_improvement_candidates(active, findings)
+    if target == "breakout":
+        return _breakout_candidates(active, findings)
+    if target == "momentum":
+        return _momentum_candidates(active, findings)
+    raise ValueError(f"no improvement grid for {target!r}; known: {IMPROVEMENT_TARGETS}")
+
+
 class AutoImprover:
-    """Runs improvement cycles forever; one rotating symbol per cycle."""
+    """Runs improvement cycles forever; one (target, symbol) pair per cycle.
+
+    Targets rotate first (production, then each research family), symbols
+    second, so every family is revisited before any symbol repeats.
+    """
 
     def __init__(
         self,
@@ -368,19 +647,25 @@ class AutoImprover:
         self.status.last_cycle_finished_at = datetime.now(UTC)
 
     async def run_cycle(self) -> int | None:
-        """Run one cycle: evaluate when stale, otherwise sweep and promote.
+        """Run one cycle: evaluate the target when stale, else sweep it.
 
-        Returns the sweep id when a sweep ran, ``None`` otherwise. The
-        cycle alternates naturally: a stale (or absent) evaluation run is
-        refreshed first — its completion mines the findings — and the next
-        cycle sweeps challengers targeted at those findings.
+        Returns the sweep id when a sweep ran, ``None`` otherwise. Each
+        cycle serves one improvement target (production, then each
+        research family) on one symbol, rotating target-first so every
+        family is revisited before any symbol repeats. A target with no
+        fresh evaluation run is refreshed first — its completion mines the
+        findings — and the target's next turn sweeps challengers aimed at
+        them.
         """
         self.status.last_cycle_started_at = datetime.now(UTC)
         symbols = self._symbols()
         if not symbols:
             self._finish_cycle("skipped: no active coins to research")
             return None
-        latest_run = await self._latest_completed_run()
+        target = IMPROVEMENT_TARGETS[self._rotation % len(IMPROVEMENT_TARGETS)]
+        symbol = symbols[(self._rotation // len(IMPROVEMENT_TARGETS)) % len(symbols)]
+        self._rotation += 1
+        latest_run = await self._latest_completed_run(target)
         if latest_run is None:
             try:
                 run_id = await self._evaluations.start(
@@ -389,24 +674,24 @@ class AutoImprover:
                         timeframes=(self._timeframe,),
                         history_days=self._history_days,
                         scenario_count=IMPROVEMENT_SCENARIO_COUNT,
+                        strategy=target,
                     )
                 )
                 logger.info(
-                    "improvement cycle started evaluation run %d: no fresh run to learn from",
+                    "improvement cycle started evaluation run %d: no fresh %s run to learn from",
                     run_id,
+                    target,
                 )
                 self._finish_cycle(
-                    f"started evaluation run #{run_id}: no fresh run to learn from; "
-                    "the next cycle sweeps its findings"
+                    f"started evaluation run #{run_id}: no fresh {target} run to learn "
+                    f"from; {target}'s next turn sweeps its findings"
                 )
             except RuntimeError:
                 logger.info("improvement cycle skipped: an evaluation run is already in flight")
                 self._finish_cycle("skipped: an evaluation run is already in flight")
             return None
         findings = select_targeting_findings(await self._store.fetch_findings(latest_run["id"]))
-        symbol = symbols[self._rotation % len(symbols)]
-        self._rotation += 1
-        candidates, motivating = build_improvement_candidates(self._active_params(), findings)
+        candidates, motivating = build_candidates_for(target, self._active_params(), findings)
         config = SweepConfig(
             symbol=symbol,
             timeframe=self._timeframe,
@@ -421,11 +706,11 @@ class AutoImprover:
             logger.info("improvement cycle skipped: another sweep is already in flight")
             self._finish_cycle("skipped: another sweep is already in flight")
             return None
-        logger.info("improvement cycle started sweep %d on %s", sweep_id, symbol)
+        logger.info("improvement cycle started sweep %d (%s) on %s", sweep_id, target, symbol)
         # Interim state, not a finished outcome: a sweep can run for hours,
         # and the status surface should say so rather than look idle.
         self.status.last_outcome = (
-            f"sweep #{sweep_id} running on {symbol} ({len(candidates)} candidates)"
+            f"sweep #{sweep_id} ({target}) running on {symbol} ({len(candidates)} candidates)"
         )
         report = await self._wait_for_report(sweep_id)
         if report is None:
@@ -478,18 +763,22 @@ class AutoImprover:
             await self._notify(message)
         return sweep_id
 
-    async def _latest_completed_run(self) -> dict[str, Any] | None:
-        """Return the newest completed evaluation run, unless it is stale.
+    async def _latest_completed_run(self, target: str) -> dict[str, Any] | None:
+        """Return the target's newest completed run, unless it is stale.
 
-        Staleness is judged in improvement intervals: findings mined from
-        a run that predates recent promotions would steer the next sweep
-        with observations about a configuration no longer trading.
+        Staleness is judged in the target's own turns (one turn every
+        ``len(IMPROVEMENT_TARGETS)`` intervals): findings mined from a run
+        that predates recent promotions would steer the next sweep with
+        observations about a configuration no longer trading.
         """
-        for run in await self._store.list_runs(limit=10):
+        stale_after = self._interval * STALE_RUN_CYCLES * len(IMPROVEMENT_TARGETS)
+        for run in await self._store.list_runs(limit=50):
             if run.get("status") != RunStatus.COMPLETED.value:
                 continue
+            if run.get("strategy") != target:
+                continue
             age = datetime.now(UTC) - run["created_at"]
-            if age > self._interval * STALE_RUN_CYCLES:
+            if age > stale_after:
                 return None  # completed, but too old to describe the bot of today
             return run
         return None

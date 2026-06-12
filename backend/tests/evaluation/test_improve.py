@@ -65,8 +65,23 @@ class ScriptedEvaluations:
         return len(self.configs)
 
 
-def fresh_completed_run(run_id: int = 1) -> dict[str, Any]:
-    return {"id": run_id, "status": "completed", "created_at": datetime.now(UTC)}
+def fresh_completed_run(run_id: int = 1, strategy: str = "production") -> dict[str, Any]:
+    return {
+        "id": run_id,
+        "status": "completed",
+        "strategy": strategy,
+        "created_at": datetime.now(UTC),
+    }
+
+
+def runs_for_every_target() -> list[dict[str, Any]]:
+    """One fresh completed run per rotation target, so every cycle sweeps."""
+    from tradebot.evaluation.improve import IMPROVEMENT_TARGETS
+
+    return [
+        fresh_completed_run(run_id=index + 1, strategy=target)
+        for index, target in enumerate(IMPROVEMENT_TARGETS)
+    ]
 
 
 def make_finding(
@@ -198,20 +213,49 @@ class TestAutoImprover:
         assert await improver.run_cycle() is None
         assert promoted == []
 
-    async def test_symbols_rotate_across_cycles(self) -> None:
+    async def test_targets_rotate_first_then_symbols(self) -> None:
+        """Every family gets its turn before any symbol repeats."""
         sweeps = ScriptedSweeps()
-        store = ScriptedStore("completed", {"verdict": "baseline_best"})
+        store = ScriptedStore(
+            "completed", {"verdict": "baseline_best"}, runs=runs_for_every_target()
+        )
         improver = make_improver(sweeps, store, [])
 
-        await improver.run_cycle()
-        await improver.run_cycle()
-        await improver.run_cycle()
+        for _ in range(6):
+            await improver.run_cycle()
 
+        baseline_families = [config.candidates[0].family for config in sweeps.configs]
+        assert baseline_families == [
+            "trend_following",  # the production grid leads with the trend baseline
+            "breakout",
+            "momentum",
+            "trend_following",
+            "breakout",
+            "momentum",
+        ]
         assert [config.symbol for config in sweeps.configs] == [
             "BTC/USDT",
-            "ETH/USDT",
             "BTC/USDT",
+            "BTC/USDT",
+            "ETH/USDT",
+            "ETH/USDT",
+            "ETH/USDT",
         ]
+
+    async def test_a_target_without_a_fresh_run_gets_evaluated_first(self) -> None:
+        """Cycle two serves breakout; with only production runs on record it
+        starts a breakout evaluation instead of sweeping blind."""
+        sweeps = ScriptedSweeps()
+        evaluations = ScriptedEvaluations()
+        store = ScriptedStore("completed", {"verdict": "baseline_best"})  # production run only
+        improver = make_improver(sweeps, store, [], evaluations=evaluations)
+
+        await improver.run_cycle()  # production: sweeps
+        await improver.run_cycle()  # breakout: no run -> evaluates
+
+        assert len(sweeps.configs) == 1
+        (started,) = evaluations.configs
+        assert started.strategy == "breakout"
 
     async def test_engine_confirmation_veto_blocks_the_promotion(self) -> None:
         """A validated sweep winner still needs the engine's confirmation."""
@@ -325,6 +369,89 @@ async def _never_promote(
     family: str, params: Mapping[str, Any], sweep_id: int | None, note: str | None
 ) -> int:
     raise AssertionError("nothing should be promoted")
+
+
+class TestPerFamilyGrids:
+    def test_the_breakout_grid_is_single_family_and_buildable(self) -> None:
+        from tradebot.evaluation.improve import build_candidates_for
+
+        candidates, motivating = build_candidates_for("breakout", {})
+        assert candidates[0].name.startswith("active_breakout")
+        assert {candidate.family for candidate in candidates} == {"breakout"}
+        assert motivating == ()
+        names = {candidate.name for candidate in candidates}
+        assert {"wider_channel", "tighter_channel", "wider_stop", "tighter_stop"} <= names
+        for candidate in candidates:
+            build_candidate_strategy(candidate)
+
+    def test_fake_breakout_losses_toggle_the_min_width_filter(self) -> None:
+        from tradebot.evaluation.improve import build_candidates_for
+
+        candidates, motivating = build_candidates_for(
+            "breakout", {}, [(9, "entries lose money when event is breakout_fake")]
+        )
+        widths = next(c for c in candidates if c.name == "min_width_filter")
+        assert widths.params["min_channel_width_atr"] == 0.5
+        assert motivating == (9,)
+
+    def test_an_early_exit_finding_lengthens_the_breakout_exit_channel(self) -> None:
+        from tradebot.evaluation.improve import build_candidates_for
+
+        candidates, _ = build_candidates_for(
+            "breakout", {}, [(5, "exits cut winners while the move keeps going")]
+        )
+        later = next(c for c in candidates if c.name == "later_channel_exit")
+        assert later.params["exit_channel_period"] == 15  # 10 * 1.5
+
+    def test_the_momentum_grid_toggles_its_zero_line_filter_by_finding(self) -> None:
+        from tradebot.evaluation.improve import build_candidates_for
+
+        # Filter on (the default): staying flat tests removing it...
+        flat, flat_motivating = build_candidates_for(
+            "momentum", {}, [(7, "the bot stays flat through moves worth taking")]
+        )
+        assert any(c.name == "no_zero_line_filter" for c in flat)
+        assert flat_motivating == (7,)
+        # ...and chasing cannot test adding it — it is already on.
+        chase, chase_motivating = build_candidates_for(
+            "momentum", {}, [(8, "entries chase moves that are already over")]
+        )
+        assert all(c.name != "zero_line_filter" for c in chase)
+        assert chase_motivating == ()
+        # With the filter off, losing entries test turning it on.
+        losing, losing_motivating = build_candidates_for(
+            "momentum",
+            {"momentum": {"require_positive_macd": False}},
+            [(9, "entries lose money when trend is down")],
+        )
+        assert any(c.name == "zero_line_filter" for c in losing)
+        assert losing_motivating == (9,)
+        for candidate in (*flat, *chase, *losing):
+            build_candidate_strategy(candidate)
+
+    def test_momentum_ema_steps_clamp_like_the_trend_familys(self) -> None:
+        from tradebot.evaluation.improve import build_candidates_for
+
+        candidates, _ = build_candidates_for(
+            "momentum", {"momentum": {"fast_ema_period": 3, "slow_ema_period": 5}}
+        )
+        for candidate in candidates:
+            build_candidate_strategy(candidate)  # raises if fast >= slow
+
+    def test_solo_production_families_share_the_production_grid(self) -> None:
+        from tradebot.evaluation.improve import build_candidates_for
+
+        production, _ = build_candidates_for("production", {})
+        solo_trend, _ = build_candidates_for("trend_following", {})
+        assert [c.name for c in solo_trend] == [c.name for c in production]
+
+    def test_unknown_targets_are_refused_loudly(self) -> None:
+        import pytest
+
+        from tradebot.evaluation.improve import build_candidates_for
+
+        with pytest.raises(ValueError, match="no improvement grid"):
+            build_candidates_for("custom-my-recipe", {})
 
 
 class TestSelectTargetingFindings:
@@ -522,6 +649,7 @@ class TestEvaluateBeforeSweeping:
         stale = {
             "id": 1,
             "status": "completed",
+            "strategy": "production",
             "created_at": datetime.now(UTC) - timedelta(days=30),
         }
         evaluations = ScriptedEvaluations()

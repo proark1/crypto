@@ -62,8 +62,12 @@ def make_finding(finding_id: int, pattern: str, status: str) -> tuple[int, Learn
     )
 
 
-def make_run(symbols: list[str] | None = None) -> dict[str, Any]:
-    return {"id": 1, "symbols": symbols if symbols is not None else ["BTC/USDT", "ETH/USDT"]}
+def make_run(symbols: list[str] | None = None, strategy: str = "production") -> dict[str, Any]:
+    return {
+        "id": 1,
+        "symbols": symbols if symbols is not None else ["BTC/USDT", "ETH/USDT"],
+        "strategy": strategy,
+    }
 
 
 def make_scheduler(
@@ -157,6 +161,41 @@ async def test_a_busy_lane_is_retried_until_free(monkeypatch: pytest.MonkeyPatch
 async def test_a_vanished_run_fires_nothing() -> None:
     sweeps = ScriptedSweeps()
     store = ScriptedStore(None, [])
+    tasks: list[asyncio.Task[None]] = []
+    scheduler = make_scheduler(sweeps, store, tasks)
+
+    scheduler.note_acceptance(1)
+    await drain(tasks)
+
+    assert sweeps.configs == []
+
+
+async def test_the_grid_matches_the_run_that_was_graded() -> None:
+    """A breakout run's verdicts sweep breakout knobs, never the production grid."""
+    sweeps = ScriptedSweeps()
+    store = ScriptedStore(
+        make_run(strategy="breakout"),
+        [make_finding(10, "entries lose money when event is breakout_fake", "accepted")],
+    )
+    tasks: list[asyncio.Task[None]] = []
+    scheduler = make_scheduler(sweeps, store, tasks)
+
+    scheduler.note_acceptance(1)
+    await drain(tasks)
+
+    (config,) = sweeps.configs
+    assert {candidate.family for candidate in config.candidates} == {"breakout"}
+    assert any(candidate.name == "min_width_filter" for candidate in config.candidates)
+    assert config.motivating_finding_ids == (10,)
+
+
+async def test_a_custom_bots_run_is_skipped_for_now() -> None:
+    """No improvement grid for a recipe yet: skip loudly, never sweep wrong knobs."""
+    sweeps = ScriptedSweeps()
+    store = ScriptedStore(
+        make_run(strategy="custom-my-recipe"),
+        [make_finding(10, "entries lose money when trend is down", "accepted")],
+    )
     tasks: list[asyncio.Task[None]] = []
     scheduler = make_scheduler(sweeps, store, tasks)
 

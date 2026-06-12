@@ -23,12 +23,12 @@ This document is the target design. Implementation status as of June 2026
 | Telegram notifications (§6.2) | **Done** — alerts only; command handling missing |
 | Dashboard: status, chart, decisions, proposals, controls (§6.1) | **Done** — per-coin view with coin switcher, trade journal, decision/proposal panels, the bot-builder wizard, and the research screens (evaluate/compare/tune/progress); SSE/WS push still missing (the dashboard polls) |
 | Multi-coin support (§4.2) | **Done** — per-symbol feed+engine, shared account/breakers, per-coin dashboard, runtime add/remove via API + UI (coins persisted in Postgres; env var seeds first boot) |
-| Automated improvement: sweep-validated self-tuning (§12.7) | **Done** — paper-scoped; self-feeding cycle (auto-evaluates when stale, findings target the next sweep's challengers with recorded lineage; accepted findings outrank proposed ones, and accepting arms a coalesced accept-triggered sweep so a verdict visibly becomes a test); knob map covers downtrend/ranging, wrong-hold, chasing, early-exit, and missed-opportunity patterns; promotes only statistically validated sweep winners that also survive the engine-backed confirmation gate (challenger vs incumbent replayed through the production engine — sizing, fees, stop lifecycle, breakers — before any promotion; a vetoed winner is alerted, never applied); versioned settings journal with UI revert; Telegram alert per promotion |
+| Automated improvement: sweep-validated self-tuning (§12.7) | **Done** — paper-scoped; self-feeding cycle rotating per improvement target (production's two families as one budget, then each research family's solo account, target-first then symbols; per-target evaluations, findings, staleness, and family-specific grids — fake-breakout width filter, MACD zero-line toggle); findings target the next sweep's challengers with recorded lineage; accepted findings outrank proposed ones, and accepting arms a coalesced accept-triggered sweep (family-matched to the run it came from) so a verdict visibly becomes a test; knob map covers downtrend/ranging, wrong-hold, chasing, early-exit, missed-opportunity, and fake-breakout patterns; promotes only statistically validated sweep winners that also survive the engine-backed confirmation gate (challenger vs incumbent replayed through the production engine — sizing, fees, stop lifecycle, breakers — before any promotion; a vetoed winner is alerted, never applied); research-family promotions tune their competition accounts and say so in the journal (routing stays §13.7); versioned settings journal with UI revert; Telegram alert per promotion; custom bots excluded until owner opt-in |
 | Evaluation & training: blind walk-forward (§12) | **Done** — foundations, scenario engine (leak-tested), run orchestration + API, research screen, scenario replay viewer, learning findings (mined + human accept/reject), walk-forward parameter sweeps with explicit overfit verdicts, cross-family candidates, multiple validation windows, bootstrap confidence intervals + Bonferroni-corrected significance on every verdict; evaluation runs grade a chosen bot — any lineup entry or custom bot via the research bot selector, defaulting to the production shape (regime-routed families, self-classified per scenario); findings carry recurrence across a bot's runs and the research timeline serves the run/sweep/promotion story (§12.8) |
 | News pipeline, regime gates, signal fusion (§5.2, §5.3) | **Partial** — BTC regime gate done (ADX trend/range + drawdown risk-off; blocks every family only on risk-off/warm-up/stale data, while family routing is the router's preference rather than a gate veto so a healthy regime lets either family enter; exits never gated; verdicts journaled as `gated` decisions); sentiment tighteners done (Fear & Greed extremes, BTC dominance surges, broad negative news flow — advisory, one-way, stale data contributes nothing); news pipeline done defensively (CryptoPanic polling + keyword classifier, negative-news coin flags, env-configured event windows); confirmation filters (order-flow/funding, P2 data) and automated calendar ingestion missing |
-| Breakout strategy family (§5.2, review item 9) | **Research-only** — Donchian-channel entries (close clears the prior N-candle ceiling), turtle-style channel exits, shared ATR stop convention and managed-stop knobs; registered for sweeps/evaluation so research can pit it against the incumbents on identical scenarios, but deliberately unrouted in production: which regime activates it (and at whose expense) is a human decision the sweep evidence should inform, and the worker refuses to promote it until that route exists |
+| Breakout strategy family (§5.2, review item 9) | **Research + competition** — Donchian-channel entries (close clears the prior N-candle ceiling), turtle-style channel exits, shared ATR stop convention and managed-stop knobs; registered for sweeps/evaluation and auto-tuned by the §12.7 rotation (promotions change its solo competition account), but deliberately unrouted in production: which regime activates it (and at whose expense) is the §13.7 human decision the accumulating evidence exists to inform |
 | Mean-reversion strategy family (§5.2 routing) | **Done** — RSI oversold-recovery entries, midline exits, same ATR stop convention as trend; optional trend-filter EMA (skip falling knives) as a sweepable knob; regime-routed per coin, both families' indicators always warm, exits pass from either family in any regime |
-| Momentum strategy family (§13) | **Research + competition** — MACD histogram-crossover entries (12/26/9 defaults, zero-line filter on by default), histogram-flip exits, shared ATR stop convention; built from the TA-Lib-verified incremental EMA; sweepable and evaluated like every family, traded solo by its competition account, unrouted in production until a human routes it |
+| Momentum strategy family (§13) | **Research + competition** — MACD histogram-crossover entries (12/26/9 defaults, zero-line filter on by default), histogram-flip exits, shared ATR stop convention; built from the TA-Lib-verified incremental EMA; sweepable, evaluated, and auto-tuned by the §12.7 rotation like every family (promotions change its solo competition account), traded solo by that account, unrouted in production until the §13.7 evidence gate is met and a human routes it |
 | Strategy competition: paper-bot lineup + custom bot builder, per-bot controls, leaderboard, research comparison (§13) | **Done** — production regime router plus four solo-family challengers (trend, mean-reversion, breakout, momentum) trade the same coins, candles, and gates from isolated journal-backed paper accounts (bot-scoped fills/orders/decisions/risk rows, per-bot signal-id namespacing, full restart replay per account); GET /competition serves the equity-ranked leaderboard; POST /evaluations/compare grades the whole lineup on byte-identical scenario sets (one frozen window + seed, grouped runs) for the research screen's side-by-side table; solo bots trade ungated by the regime router's family schedule (news/event vetoes still apply to all); per-bot pause/resume/kill + detail API; user-built custom bots (rule recipes, any/all entry voting via CompositeStrategy, validated + persisted + hot-editable + restart-replayed) |
 | Observability: dead-man's switch, metrics, DB backups (§4.9, §7) | **Done** — structured JSON logging (one event per line, env-switchable to text for local tailing) with signal→order→fill correlation fields across the engine and risk manager, amounts kept exact as Decimal-derived strings; heartbeat ping gated on feed freshness; /metrics (feed lag, equity, breakers, bus counters) behind the bearer token; live-vs-backtest divergence measurable per coin (the §10 paper-gate metric: live paper fills matched against a same-candle replay of the production strategy shape; zero is the one-code-path expectation, non-zero is documented gating or a parity bug); scheduled gzipped-JSONL backups to S3-compatible storage with exact-Decimal restore (production restore drill pending, see checklist) |
 | Live trading (§8 Phase 3) | **Missing** — blockers enumerated in LIVE_TRADING_CHECKLIST.md |
@@ -673,6 +673,19 @@ walk-forward sweep, and promotes the winner **only when the verdict is
 validated** — the Bonferroni-corrected, multi-window statistical bar.
 Training wins, near-misses, and findings never promote anything.
 
+Each cycle serves one improvement target on one symbol, rotating
+target-first: `production` (the regime-routed shape, which tunes both of
+its families as one budget), then each research family (`breakout`,
+`momentum`) — every family is revisited before any symbol repeats, each
+with its own evaluations, findings, staleness clock, and family-specific
+challenger grid (the fake-breakout filter, the MACD zero-line toggle).
+A research family's promotion is **tuning, not routing**: it changes
+what the family's solo competition account trades — sharpening the §13
+leaderboard evidence — and its journal note says so explicitly;
+production routing remains the §13.7 human decision. Custom bots are
+outside the rotation until their owner opts in (a recipe is the user's
+own; silently mutating it would violate least surprise).
+
 The cycle is self-feeding: when no fresh evaluation run exists, the
 cycle starts one (with a sample size large enough that sweeps are never
 starved below their minimum-trades bar); its completion mines findings
@@ -927,3 +940,33 @@ money result), the table leads with each column's **ending balance and a
 1st/2nd/3rd rank** by that balance — the plainest read of which strategy
 did best — above the R-multiple detail. Cancelling any member cancels the
 batch: half a comparison cannot answer the question the batch asked.
+
+### 13.7 Routing a research family into production (the evidence gate)
+
+Tuning a research family (§12.7) sharpens it; routing it — adding it to
+the production router's regime schedule, at some incumbent's expense —
+is an architecture decision this section reserves for a human, made
+against explicit evidence rather than enthusiasm. A research family
+(`breakout`, `momentum`) becomes a routing *candidate* only when all of
+the following hold:
+
+1. **Validated out-of-sample edge in a named regime.** Its sweeps and
+   evaluation runs show statistically validated (§12.5 bar) positive
+   expectancy concentrated in an identifiable regime bucket (the regime
+   the router would activate it in), not a diffuse average.
+2. **Beats the incumbent router on identical scenarios.** Research
+   comparisons (§13.6, byte-identical scenario sets) rank it above the
+   production router in that regime's scenarios across at least two
+   separate comparison batches run weeks apart.
+3. **Live paper evidence.** Its solo competition account shows a
+   positive return over at least eight weeks of live paper trading
+   without tripping its own circuit breakers, covering the regime in
+   question.
+
+Meeting the gate flags the candidacy; it never flips the switch. The
+human decision that remains is exactly the part evidence cannot answer:
+which regime label activates the family, which incumbent (if any) yields
+its slot, and whether the router's added complexity is worth the edge.
+The decision is recorded by amending §5.2 and §13.1 in the same PR that
+adds the route, with the evidence linked — the same lineage discipline
+as every promotion (§12.5).

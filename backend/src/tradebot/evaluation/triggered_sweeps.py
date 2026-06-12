@@ -28,7 +28,7 @@ from typing import Any, Protocol
 
 from tradebot.evaluation.improve import (
     IMPROVEMENT_SCENARIO_COUNT,
-    build_improvement_candidates,
+    build_candidates_for,
     select_targeting_findings,
 )
 from tradebot.evaluation.models import LearningFinding
@@ -135,7 +135,20 @@ class AcceptSweepScheduler:
             logger.warning("accept-sweep for run %d skipped: run vanished", run_id)
             return
         findings = select_targeting_findings(await self._store.fetch_findings(run_id))
-        candidates, motivating = build_improvement_candidates(self._active_params(), findings)
+        target = str(run.get("strategy") or "production")
+        try:
+            # The grid must match the bot the findings were mined from: a
+            # breakout run's verdicts test breakout knobs, never the
+            # production grid's.
+            candidates, motivating = build_candidates_for(target, self._active_params(), findings)
+        except ValueError:
+            logger.info(
+                "accept-sweep for run %d skipped: no improvement grid for %r "
+                "(custom bots auto-tune only with their owner's opt-in, a later change)",
+                run_id,
+                target,
+            )
+            return
         symbols = list(run.get("symbols") or [])
         if not symbols:
             logger.warning("accept-sweep for run %d skipped: run has no symbols", run_id)

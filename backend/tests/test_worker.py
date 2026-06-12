@@ -26,7 +26,7 @@ from tradebot.evaluation.runner import EvaluationRunConfig
 from tradebot.marketdata.live_feed import OhlcvRow
 from tradebot.persistence import Database, FillStore, OrderStore
 from tradebot.persistence.database import metadata
-from tradebot.worker import Worker
+from tradebot.worker import PRODUCTION_FAMILIES, Worker
 
 BASE_TIME = datetime(2026, 1, 2, 0, 0, tzinfo=UTC)
 BASE_MS = int(BASE_TIME.timestamp() * 1000)
@@ -1029,13 +1029,33 @@ class TestDivergenceReport:
             await worker.divergence_report("DOGE/USDT")
 
 
-class TestResearchOnlyFamilies:
-    async def test_breakout_cannot_be_promoted_into_production(self, database: Database) -> None:
-        """Sweepable but unrouted: promoting it would lie in the journal."""
+class TestResearchFamilyPromotions:
+    async def test_breakout_promotion_tunes_its_account_and_says_so(
+        self, database: Database
+    ) -> None:
+        """Tuning is not routing: the journal row carries the scope."""
         worker = Worker(make_config(), database, ScriptedExchange([]))
         await worker.initialize()
-        with pytest.raises(ValueError, match="research-only"):
-            await worker.apply_strategy_params("breakout", {"channel_period": 20})
+
+        version = await worker.apply_strategy_params(
+            "breakout", {"channel_period": 30}, source_sweep_id=4, note="auto-promoted: it won"
+        )
+
+        assert worker.strategy_params["breakout"] == {"channel_period": 30}
+        row = await worker.strategy_settings_store.fetch(version)
+        assert row is not None
+        assert "unrouted in production" in row["note"]
+        assert "auto-promoted: it won" in row["note"]
+        # The breakout competition account now trades the promoted params;
+        # the production router's families are untouched.
+        assert "breakout" not in PRODUCTION_FAMILIES
+        assert worker.strategy_params.get("trend_following") is None
+
+    async def test_unknown_family_still_fails_loudly(self, database: Database) -> None:
+        worker = Worker(make_config(), database, ScriptedExchange([]))
+        await worker.initialize()
+        with pytest.raises(ValueError, match="unknown strategy family"):
+            await worker.apply_strategy_params("nonsense", {})
 
 
 class TestEvaluationStrategySelection:
