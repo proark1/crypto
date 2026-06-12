@@ -28,6 +28,7 @@ from tradebot.core.models import (
 )
 from tradebot.persistence.database import (
     Database,
+    bot_capital_table,
     candles_table,
     coins_table,
     custom_bots_table,
@@ -326,6 +327,18 @@ class FillStore:
             rows = (await connection.execute(statement)).all()
         return {side: int(count) for side, count in rows}
 
+    async def purge(self) -> int:
+        """Delete this bot's whole fill journal; returns rows removed.
+
+        Used only by an operator account reset (new starting capital). The
+        journal is otherwise append-only and kept forever — discarding it is
+        the deliberate meaning of "reset this bot's account".
+        """
+        statement = fills_table.delete().where(fills_table.c.bot_id == self._bot_id)
+        async with self._database.engine.begin() as connection:
+            result = await connection.execute(statement)
+        return result.rowcount
+
 
 def _order_from_row(row: dict[str, Any]) -> Order:
     """Rebuild an ``Order`` from its row, folding the flattened exit plan."""
@@ -516,6 +529,13 @@ class OrderStore:
             row = (await connection.execute(statement)).mappings().first()
         return None if row is None else _order_from_row(dict(row))
 
+    async def purge(self) -> int:
+        """Delete this bot's order rows; returns rows removed (account reset)."""
+        statement = orders_table.delete().where(orders_table.c.bot_id == self._bot_id)
+        async with self._database.engine.begin() as connection:
+            result = await connection.execute(statement)
+        return result.rowcount
+
 
 class DecisionStore:
     """Append-only record of every signal's fate; the explainability trail.
@@ -552,6 +572,13 @@ class DecisionStore:
         async with self._database.engine.connect() as connection:
             rows = (await connection.execute(statement)).mappings().all()
         return [Decision.model_validate(dict(row)) for row in rows]
+
+    async def purge(self) -> int:
+        """Delete this bot's decision trail; returns rows removed (account reset)."""
+        statement = decisions_table.delete().where(decisions_table.c.bot_id == self._bot_id)
+        async with self._database.engine.begin() as connection:
+            result = await connection.execute(statement)
+        return result.rowcount
 
 
 class RiskStateStore:
@@ -645,6 +672,42 @@ class TradingFeesStore:
         if row is None:
             return None
         return Decimal(row[0]), Decimal(row[1])
+
+
+class BotCapitalStore:
+    """Operator-set starting capital per bot, keyed by ``bot_id``.
+
+    A bot with no row uses the config default; a row appears the first time an
+    operator resets that bot's capital. Balances are exact ``Decimal`` quote
+    amounts, never floats.
+    """
+
+    def __init__(self, database: Database) -> None:
+        """Bind the store to ``database``."""
+        self._database = database
+
+    async def all(self) -> dict[str, Decimal]:
+        """Return every bot's configured starting capital, keyed by ``bot_id``."""
+        statement = select(bot_capital_table.c.bot_id, bot_capital_table.c.initial_balance_quote)
+        async with self._database.engine.connect() as connection:
+            rows = (await connection.execute(statement)).all()
+        return {bot_id: Decimal(balance) for bot_id, balance in rows}
+
+    async def set(self, bot_id: str, initial_balance_quote: Decimal, at: datetime) -> None:
+        """Upsert one bot's starting capital."""
+        _require_aware(at)
+        row = {
+            "bot_id": bot_id,
+            "initial_balance_quote": initial_balance_quote,
+            "updated_at": at,
+        }
+        statement = pg_insert(bot_capital_table)
+        statement = statement.on_conflict_do_update(
+            index_elements=["bot_id"],
+            set_={name: statement.excluded[name] for name in row if name != "bot_id"},
+        )
+        async with self._database.engine.begin() as connection:
+            await connection.execute(statement, [row])
 
 
 class StrategySettingsStore:

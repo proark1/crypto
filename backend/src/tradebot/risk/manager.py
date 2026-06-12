@@ -124,6 +124,20 @@ class RiskManager:
         """Breaker state, for status reporting and the operator reset."""
         return self._breakers
 
+    def reset(self) -> None:
+        """Clear all account-level state for a capital reset.
+
+        Fresh breakers (no trip, cooldown, day anchor, or peak) and no
+        committed/observed tracking. The portfolio it guards is reset
+        separately by the caller. For an operator account reset only — never
+        part of normal trading.
+        """
+        self._breakers = CircuitBreakers(self._config.breakers)
+        self._observed_realized_pnl = {}
+        self._open_round_trip_pnl = {}
+        self._committed_entries_quote = {}
+        self._last_price_quote = {}
+
     def on_candle(self, candle: Candle) -> None:
         """Feed one closed candle's equity mark to the circuit breakers.
 

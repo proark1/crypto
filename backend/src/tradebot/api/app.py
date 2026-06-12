@@ -131,6 +131,10 @@ class BotState(Protocol):
         """Retire a custom bot (journals stay)."""
         ...
 
+    async def reset_bot_capital(self, bot_id: str, new_balance_quote: Decimal) -> None:
+        """Reset a bot's account to a new starting capital (must be flat)."""
+        ...
+
     def trading_fees(self) -> Mapping[str, Decimal]:
         """Active per-side trading fees in bps (``buy_fee_bps``/``sell_fee_bps``)."""
         ...
@@ -553,6 +557,16 @@ class UpdateBotRulesRequest(BaseModel):
     """A custom bot's replacement recipe."""
 
     rules: dict[str, Any]
+
+
+class ResetBotCapitalRequest(BaseModel):
+    """A bot's new starting capital, in the quote currency.
+
+    Saving resets the bot's paper account: its journals are purged and it
+    restarts from this balance, so it is only allowed while the bot is flat.
+    """
+
+    initial_balance_quote: Decimal
 
 
 class TradingFeesResponse(BaseModel):
@@ -1186,6 +1200,29 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
                 status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)
             ) from error
         return CommandResponse(paused=False, detail=f"{bot_id} now trades the new rules")
+
+    @protected.put("/bots/{bot_id}/capital")
+    async def reset_bot_capital(bot_id: str, request: ResetBotCapitalRequest) -> CommandResponse:
+        """Reset a bot's account to a new starting capital (must be flat first).
+
+        Destructive: the bot's fills/orders/decisions are purged and it
+        restarts clean. 400 for a non-positive amount, 404 unknown, 409 while
+        the bot holds a position, has open orders, or has pending proposals.
+        """
+        try:
+            await state.reset_bot_capital(bot_id, request.initial_balance_quote)
+        except KeyError as error:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)
+            ) from error
+        except RuntimeError as error:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+        return CommandResponse(
+            paused=False,
+            detail=f"{bot_id} reset to {request.initial_balance_quote} starting capital",
+        )
 
     @protected.post("/bots/{bot_id}/pause")
     async def pause_bot(bot_id: str) -> CommandResponse:

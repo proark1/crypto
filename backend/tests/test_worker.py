@@ -10,6 +10,7 @@ from decimal import Decimal
 import httpx
 import pytest
 
+from tradebot.competition import PRODUCTION_BOT_ID
 from tradebot.core.config import AppConfig, TradingMode
 from tradebot.core.events import CandleClosed
 from tradebot.core.models import (
@@ -263,6 +264,63 @@ class TestWorker:
         await restarted.initialize()
         assert restarted.fee_schedule.buy_fee_bps == Decimal("20")
         assert restarted.fee_schedule.sell_fee_bps == Decimal("30")
+
+    async def test_reset_bot_capital_purges_journal_and_reloads_balance(
+        self, database: Database
+    ) -> None:
+        await database.create_schema()
+        worker = Worker(make_config(), database, ScriptedExchange([]))
+        # A prior trade in the production journal — the reset must discard it.
+        await worker.fill_store.append(
+            Fill(
+                client_order_id="ord-old",
+                symbol="BTC/USDT",
+                side=Side.BUY,
+                price_quote=Decimal("100"),
+                quantity_base=Decimal("1"),
+                fee_quote=Decimal("0.1"),
+                filled_at=BASE_TIME,
+            )
+        )
+
+        await worker.reset_bot_capital(PRODUCTION_BOT_ID, Decimal("5000"))
+
+        assert worker.portfolio.quote_balance == Decimal("5000")
+        assert await worker.fill_store.fetch_all() == []  # journal purged
+
+        # The new capital survives a restart: initialize() applies it before
+        # replaying the (now empty) journal.
+        restarted = Worker(make_config(), database, ScriptedExchange([]))
+        assert restarted.portfolio.quote_balance == Decimal("10000")  # config default pre-load
+        await restarted.initialize()
+        assert restarted.portfolio.quote_balance == Decimal("5000")
+
+    async def test_reset_bot_capital_refuses_while_holding_a_position(
+        self, database: Database
+    ) -> None:
+        await database.create_schema()
+        worker = Worker(make_config(), database, ScriptedExchange([]))
+        worker.portfolio.apply_fill(
+            Fill(
+                client_order_id="ord-open",
+                symbol="BTC/USDT",
+                side=Side.BUY,
+                price_quote=Decimal("100"),
+                quantity_base=Decimal("1"),
+                fee_quote=Decimal("0.1"),
+                filled_at=BASE_TIME,
+            )
+        )
+        with pytest.raises(RuntimeError, match="holds a position"):
+            await worker.reset_bot_capital(PRODUCTION_BOT_ID, Decimal("5000"))
+
+    async def test_reset_bot_capital_rejects_negative_or_zero(self, database: Database) -> None:
+        await database.create_schema()
+        worker = Worker(make_config(), database, ScriptedExchange([]))
+        with pytest.raises(ValueError, match="greater than zero"):
+            await worker.reset_bot_capital(PRODUCTION_BOT_ID, Decimal("-1"))
+        with pytest.raises(ValueError, match="greater than zero"):
+            await worker.reset_bot_capital(PRODUCTION_BOT_ID, Decimal("0"))
 
     async def test_restart_restores_open_orders_into_their_engines(
         self, database: Database

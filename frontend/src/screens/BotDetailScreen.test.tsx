@@ -7,6 +7,7 @@ import {
   fetchBotOptions,
   fetchDecisions,
   fetchFills,
+  resetBotCapital,
 } from "../api/client";
 import type {
   BotDetailResponse,
@@ -31,6 +32,7 @@ vi.mock("../api/client", () => ({
   fetchFills: vi.fn(),
   killBot: vi.fn(),
   pauseBot: vi.fn(),
+  resetBotCapital: vi.fn(),
   resumeBot: vi.fn(),
 }));
 
@@ -206,5 +208,32 @@ describe("BotDetailScreen", () => {
         name: /confirm: halt the bot and sell its holdings at the next price/,
       }),
     ).toBeTruthy();
+  });
+
+  it("resets a flat bot's starting capital after a confirm", async () => {
+    vi.mocked(fetchBot).mockResolvedValue({
+      ...PRODUCTION_DETAIL,
+      summary: makeSummary({ open_positions: 0 }),
+      positions: [],
+    });
+    vi.mocked(resetBotCapital).mockResolvedValue({ paused: false, detail: "reset" });
+    renderScreen("production");
+
+    const input = await screen.findByLabelText("Starting capital");
+    fireEvent.change(input, { target: { value: "5000" } });
+    fireEvent.click(screen.getByRole("button", { name: "reset capital" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: /confirm: reset account & clear history/ }),
+    );
+
+    expect(vi.mocked(resetBotCapital)).toHaveBeenCalledWith("production", "5000");
+  });
+
+  it("disables the capital reset while the bot holds a position", async () => {
+    vi.mocked(fetchBot).mockResolvedValue(PRODUCTION_DETAIL); // open_positions: 1
+    renderScreen("production");
+    await screen.findByLabelText("Starting capital");
+    expect(screen.getByLabelText("Starting capital")).toHaveProperty("disabled", true);
+    expect(screen.getByText(/stop it .* then reset/)).toBeTruthy();
   });
 });
