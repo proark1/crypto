@@ -23,6 +23,9 @@ jobs:
           --health-retries 10
     env:
       TEST_DATABASE_URL: postgresql+asyncpg://postgres:test@localhost:5432/tradebot_test
+      # Require the DB here: a Postgres that failed to come up must fail the
+      # run, not let every DB-backed test skip to a false green.
+      TRADEBOT_REQUIRE_DB: "1"
     defaults:
       run:
         working-directory: backend
