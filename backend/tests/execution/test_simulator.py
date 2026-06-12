@@ -416,6 +416,16 @@ class TestFeeSchedule:
         # The rejected update left the previous fees intact.
         assert schedule.buy_fee_bps == Decimal(10)
 
+    def test_update_rejects_non_finite_fees(self) -> None:
+        # NaN slips past < and > checks (every NaN comparison is False), so it
+        # must be rejected explicitly before it can poison fee math.
+        schedule = FeeSchedule.standard()
+        with pytest.raises(ValueError, match="finite"):
+            schedule.update(buy_fee_bps=Decimal("NaN"), sell_fee_bps=Decimal(10))
+        with pytest.raises(ValueError, match="finite"):
+            schedule.update(buy_fee_bps=Decimal(10), sell_fee_bps=Decimal("Infinity"))
+        assert schedule.buy_fee_bps == Decimal(10)
+
     async def test_schedule_fee_overrides_config_per_side(self) -> None:
         # Config says taker 10 bps, but a live schedule of 20/30 wins, by side.
         config = FillSimulatorConfig(taker_fee_bps=Decimal(10), market_slippage_bps=Decimal(0))

@@ -106,7 +106,7 @@ export function SettingsScreen() {
           <FeeField
             label="Buy fee"
             value={buyDraft}
-            error={buyDraft === fees?.buy_fee_percent ? null : buyError}
+            error={fees === null || buyDraft === fees.buy_fee_percent ? null : buyError}
             disabled={fees === null}
             onChange={(next) => {
               setBuyDraft(next);
@@ -116,7 +116,7 @@ export function SettingsScreen() {
           <FeeField
             label="Sell fee"
             value={sellDraft}
-            error={sellDraft === fees?.sell_fee_percent ? null : sellError}
+            error={fees === null || sellDraft === fees.sell_fee_percent ? null : sellError}
             disabled={fees === null}
             onChange={(next) => {
               setSellDraft(next);

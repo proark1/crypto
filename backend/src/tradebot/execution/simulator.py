@@ -93,6 +93,11 @@ class FeeSchedule:
         running engine's simulator pick up the new fee on its next fill.
         """
         for label, value in (("buy", buy_fee_bps), ("sell", sell_fee_bps)):
+            if not value.is_finite():
+                # NaN/Infinity would slip past the bound checks below (every
+                # comparison with NaN is False) and then poison fee math and
+                # the portfolio balance — reject it at the door.
+                raise ValueError(f"{label} fee must be a finite number, got {value}")
             if value < 0:
                 raise ValueError(f"{label} fee cannot be negative, got {value} bps")
             if value > MAX_FEE_BPS:

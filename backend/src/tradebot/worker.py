@@ -403,11 +403,19 @@ class Worker:
 
         The shared schedule is mutated in place, so every running engine's
         simulator charges the new fee from its next fill — no restart, no
-        engine rebuild. Validation (non-negative, sane upper bound) lives in
-        :meth:`FeeSchedule.update` and raises ``ValueError`` on bad input.
+        engine rebuild. Validation (finite, non-negative, sane upper bound)
+        lives in :meth:`FeeSchedule.update` and raises ``ValueError`` on bad
+        input. If persistence fails the in-memory schedule is rolled back, so
+        the running fee never diverges from what a restart would reload.
         """
+        previous_buy = self.fee_schedule.buy_fee_bps
+        previous_sell = self.fee_schedule.sell_fee_bps
         self.fee_schedule.update(buy_fee_bps=buy_fee_bps, sell_fee_bps=sell_fee_bps)
-        await self.trading_fees_store.save(buy_fee_bps, sell_fee_bps, datetime.now(UTC))
+        try:
+            await self.trading_fees_store.save(buy_fee_bps, sell_fee_bps, datetime.now(UTC))
+        except Exception:
+            self.fee_schedule.update(buy_fee_bps=previous_buy, sell_fee_bps=previous_sell)
+            raise
         log_event(
             logger,
             logging.INFO,
