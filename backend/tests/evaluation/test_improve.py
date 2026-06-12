@@ -277,6 +277,26 @@ class TestAutoImprover:
         assert len(messages) == 1
         assert "auto-promoted" in messages[0] and "wider_stop" in messages[0]
 
+    async def test_accepted_findings_curate_the_cycle_grid(self) -> None:
+        """Once a human accepts, proposed findings wait their turn."""
+        sweeps = ScriptedSweeps()
+        promoted: list[tuple[str, Mapping[str, Any], int | None, str | None]] = []
+        store = ScriptedStore(
+            "completed",
+            {"verdict": "baseline_best", "winner": "active_trend_20_50"},
+            findings=[
+                make_finding(31, "entries lose money when trend is down", status="accepted"),
+                make_finding(32, "entries chase moves that are already over"),
+            ],
+        )
+        improver = make_improver(sweeps, store, promoted)
+
+        await improver.run_cycle()
+
+        (config,) = sweeps.configs
+        assert config.motivating_finding_ids == (31,)
+        assert all(candidate.name != "anti_chase" for candidate in config.candidates)
+
     async def test_run_loop_survives_a_failing_cycle(self) -> None:
         class ExplodingSweeps:
             async def start(self, config: SweepConfig) -> int:
@@ -305,6 +325,80 @@ async def _never_promote(
     family: str, params: Mapping[str, Any], sweep_id: int | None, note: str | None
 ) -> int:
     raise AssertionError("nothing should be promoted")
+
+
+class TestSelectTargetingFindings:
+    def test_accepted_findings_outrank_proposed(self) -> None:
+        findings = [
+            make_finding(1, "entries lose money when trend is down", "accepted"),
+            make_finding(2, "entries chase moves that are already over", "proposed"),
+            make_finding(3, "held positions ride into their stops", "rejected"),
+        ]
+        from tradebot.evaluation.improve import select_targeting_findings
+
+        assert select_targeting_findings(findings) == [(1, "entries lose money when trend is down")]
+
+    def test_without_verdicts_every_non_rejected_finding_steers(self) -> None:
+        from tradebot.evaluation.improve import select_targeting_findings
+
+        findings = [
+            make_finding(1, "entries lose money when trend is down", "proposed"),
+            make_finding(2, "held positions ride into their stops", "rejected"),
+        ]
+        assert select_targeting_findings(findings) == [(1, "entries lose money when trend is down")]
+
+
+class TestExpandedKnobMap:
+    def test_an_early_exit_finding_adds_trail_and_later_exit_challengers(self) -> None:
+        candidates, motivating = build_improvement_candidates(
+            {}, [(5, "exits cut winners while the move keeps going")]
+        )
+        names = {candidate.name for candidate in candidates}
+        assert "atr_trailing" in names
+        assert "later_reversion_exit" in names
+        assert motivating == (5,)
+        later = next(c for c in candidates if c.name == "later_reversion_exit")
+        assert later.params["exit_rsi"] == 66.0  # 55 * 1.2, under the 80 cap
+        for candidate in candidates:
+            build_candidate_strategy(candidate)
+
+    def test_the_later_exit_is_capped_at_a_sane_rsi(self) -> None:
+        candidates, _ = build_improvement_candidates(
+            {"mean_reversion": {"exit_rsi": 75.0}},
+            [(5, "exits cut winners while the move keeps going")],
+        )
+        later = next(c for c in candidates if c.name == "later_reversion_exit")
+        assert later.params["exit_rsi"] == 80.0  # capped, not 90
+
+    def test_a_missed_opportunity_finding_loosens_the_oversold_gate(self) -> None:
+        candidates, motivating = build_improvement_candidates(
+            {}, [(7, "the bot stays flat through moves worth taking")]
+        )
+        looser = next(c for c in candidates if c.name == "looser_oversold")
+        assert looser.params["oversold_threshold"] == 36.0  # 30 * 1.2
+        assert motivating == (7,)
+        for candidate in candidates:
+            build_candidate_strategy(candidate)
+
+    def test_the_loosened_gate_never_crosses_its_own_exit(self) -> None:
+        """An oversold threshold already near the exit midline is left alone."""
+        candidates, _ = build_improvement_candidates(
+            {"mean_reversion": {"oversold_threshold": 50.0, "exit_rsi": 55.0}},
+            [(7, "the bot stays flat through moves worth taking")],
+        )
+        assert all(candidate.name != "looser_oversold" for candidate in candidates)
+
+    def test_overlapping_findings_share_the_trail_candidate(self) -> None:
+        """Wrong-hold and early-exit both toggle the trail; the grid holds one."""
+        candidates, _ = build_improvement_candidates(
+            {},
+            [
+                (5, "exits cut winners while the move keeps going"),
+                (6, "held positions ride into their stops"),
+            ],
+        )
+        names = [candidate.name for candidate in candidates]
+        assert names.count("atr_trailing") == 1
 
 
 class TestImprovementStatusTracking:
@@ -402,11 +496,13 @@ class TestFindingsDrivenCandidates:
         assert trailing.params["trail_atr_multiple"] == 2.0  # the active stop width
 
     def test_unrelated_findings_add_no_candidates(self) -> None:
+        """Patterns with no mapped knob stay human-facing — e.g. volatility
+        buckets: no production family carries a volatility entry filter."""
         baseline, _ = build_improvement_candidates({})
         candidates, motivating = build_improvement_candidates(
-            {}, findings=[(3, "the bot stays flat through moves worth taking")]
+            {}, findings=[(3, "entries lose money when volatility is low")]
         )
-        assert len(candidates) == len(baseline)  # no knob exists for it yet
+        assert len(candidates) == len(baseline)
         assert motivating == ()
 
 

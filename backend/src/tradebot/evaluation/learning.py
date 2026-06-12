@@ -180,7 +180,9 @@ def _early_exits(run_id: int, records: list[_Record], now: datetime) -> list[Lea
             average_r_impact=_mean(foregone),
             suggestion=(
                 "exit rules sell into strength; consider a trailing stop or a later "
-                "exit condition so winners are given room to finish"
+                "exit condition so winners are given room to finish "
+                "(sweepable knobs: trail_atr_multiple and mean_reversion.exit_rsi — "
+                "the automated improver tests them when this finding appears)"
             ),
             confidence=_confidence(len(early)),
             created_at=now,
@@ -216,7 +218,9 @@ def _missed_opportunities(
             average_r_impact=impact,
             suggestion=(
                 "entry conditions are too strict for these conditions; review the "
-                "evidence scenarios and consider loosening one gate at a time"
+                "evidence scenarios and consider loosening one gate at a time "
+                "(sweepable knob: mean_reversion.oversold_threshold — the automated "
+                "improver tests it when this finding appears)"
             ),
             confidence=_confidence(len(missed)),
             created_at=now,

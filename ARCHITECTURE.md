@@ -23,7 +23,7 @@ This document is the target design. Implementation status as of June 2026
 | Telegram notifications (§6.2) | **Done** — alerts only; command handling missing |
 | Dashboard: status, chart, decisions, proposals, controls (§6.1) | **Done** — per-coin view with coin switcher, trade journal, decision/proposal panels, the bot-builder wizard, and the research screens (evaluate/compare/tune/progress); SSE/WS push still missing (the dashboard polls) |
 | Multi-coin support (§4.2) | **Done** — per-symbol feed+engine, shared account/breakers, per-coin dashboard, runtime add/remove via API + UI (coins persisted in Postgres; env var seeds first boot) |
-| Automated improvement: sweep-validated self-tuning (§12.7) | **Done** — paper-scoped; self-feeding cycle (auto-evaluates when stale, findings target the next sweep's challengers with recorded lineage); promotes only statistically validated sweep winners that also survive the engine-backed confirmation gate (challenger vs incumbent replayed through the production engine — sizing, fees, stop lifecycle, breakers — before any promotion; a vetoed winner is alerted, never applied); versioned settings journal with UI revert; Telegram alert per promotion |
+| Automated improvement: sweep-validated self-tuning (§12.7) | **Done** — paper-scoped; self-feeding cycle (auto-evaluates when stale, findings target the next sweep's challengers with recorded lineage; accepted findings outrank proposed ones, and accepting arms a coalesced accept-triggered sweep so a verdict visibly becomes a test); knob map covers downtrend/ranging, wrong-hold, chasing, early-exit, and missed-opportunity patterns; promotes only statistically validated sweep winners that also survive the engine-backed confirmation gate (challenger vs incumbent replayed through the production engine — sizing, fees, stop lifecycle, breakers — before any promotion; a vetoed winner is alerted, never applied); versioned settings journal with UI revert; Telegram alert per promotion |
 | Evaluation & training: blind walk-forward (§12) | **Done** — foundations, scenario engine (leak-tested), run orchestration + API, research screen, scenario replay viewer, learning findings (mined + human accept/reject), walk-forward parameter sweeps with explicit overfit verdicts, cross-family candidates, multiple validation windows, bootstrap confidence intervals + Bonferroni-corrected significance on every verdict; evaluation runs grade a chosen bot — any lineup entry or custom bot via the research bot selector, defaulting to the production shape (regime-routed families, self-classified per scenario); findings carry recurrence across a bot's runs and the research timeline serves the run/sweep/promotion story (§12.8) |
 | News pipeline, regime gates, signal fusion (§5.2, §5.3) | **Partial** — BTC regime gate done (ADX trend/range + drawdown risk-off; blocks every family only on risk-off/warm-up/stale data, while family routing is the router's preference rather than a gate veto so a healthy regime lets either family enter; exits never gated; verdicts journaled as `gated` decisions); sentiment tighteners done (Fear & Greed extremes, BTC dominance surges, broad negative news flow — advisory, one-way, stale data contributes nothing); news pipeline done defensively (CryptoPanic polling + keyword classifier, negative-news coin flags, env-configured event windows); confirmation filters (order-flow/funding, P2 data) and automated calendar ingestion missing |
 | Breakout strategy family (§5.2, review item 9) | **Research-only** — Donchian-channel entries (close clears the prior N-candle ceiling), turtle-style channel exits, shared ATR stop convention and managed-stop knobs; registered for sweeps/evaluation so research can pit it against the incumbents on identical scenarios, but deliberately unrouted in production: which regime activates it (and at whose expense) is a human decision the sweep evidence should inform, and the worker refuses to promote it until that route exists |
@@ -679,15 +679,37 @@ starved below their minimum-trades bar); its completion mines findings
 from the graded record in Postgres; and the next cycle's sweep adds
 challengers *targeted at those findings* — a losing-downtrend pattern
 toggles the mean-reversion trend filter, a chasing pattern toggles the
-trend family's entry-extension filter — with the finding ids recorded as
-the sweep's motivation. Patterns the bot has no knob for yet remain
+trend family's entry-extension filter, an early-exit pattern toggles the
+ATR trail and tests a later reversion exit, a missed-opportunity pattern
+loosens the oversold gate (clamped below its own exit midline) — with
+the finding ids recorded as the sweep's motivation. Patterns the bot has
+no knob for yet (the volatility/event/timeframe/symbol buckets) remain
 human-facing suggestions.
+
+Human verdicts curate the targeting: once any of a run's findings is
+**accepted**, only accepted findings steer the targeted challengers —
+every extra candidate tightens the Bonferroni bar, so the curated few
+never share their significance budget with patterns still awaiting
+judgement. With no verdicts yet, every non-rejected finding steers (the
+historical behavior); rejected findings never target anything.
+
+Accepting is also a trigger, not just a record
+(`TRADEBOT_ACCEPT_SWEEP_*`): the first acceptance on a run arms a short
+coalescing timer (default 10 minutes, never reset — bounded latency),
+every further acceptance rides the same sweep, and when it fires the
+accepted findings become one targeted sweep on the run's own symbol —
+one Bonferroni budget for the whole curated set, started as soon as the
+single-flight research lane frees up (with a loud give-up after hours of
+contention; the scheduled cycle remains the backstop). The findings API
+reports the chain — queued, sweeping #N, then the sweep's verdict — read
+off the sweep's recorded motivation, and the finding cards render it, so
+a verdict visibly becomes a test.
 
 Manual sweeps share this derivation: a sweep started without explicit
 candidates (the dashboard's "run sweep" button) challenges the actively
-traded parameters with the same findings-targeted grid — never a static
-default grid — so the button tests exactly the knobs the findings on
-screen point at, with the non-rejected finding ids recorded as the
+traded parameters with the same curated findings-targeted grid — never a
+static default grid — so the button tests exactly the knobs the findings
+on screen point at, with the targeting finding ids recorded as the
 sweep's motivation.
 
 Guardrails, in order of importance: promotions apply to the **paper** bot

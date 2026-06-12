@@ -174,6 +174,14 @@ export interface FindingResponse {
   seen_in_prior_runs: number;
   /** The earliest of those runs, for "recurred since run #N"; null when new. */
   first_seen_run_id: number | null;
+  /** True while the run's accept-triggered coalescing timer is armed —
+   * the verdict has been heard and a targeted sweep is about to start. */
+  sweep_queued: boolean;
+  /** The newest sweep this finding motivated (the card's cause-to-effect
+   * chain: accepted → swept → verdict); null when none yet. */
+  latest_sweep_id: number | null;
+  latest_sweep_status: string | null;
+  latest_sweep_verdict: string | null;
 }
 
 /** One research-timeline entry: server-composed prose plus the linkage and
