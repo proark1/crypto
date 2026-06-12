@@ -44,6 +44,16 @@ class MomentumConfig(BaseModel):
     atr_period: int = 14
     atr_stop_multiple: float = 2.0
 
+    volume_ema_period: int = 20
+    """Length of the volume EMA used as the participation baseline."""
+
+    min_volume_ratio: float = 0.0
+    """Volume confirmation (ARCHITECTURE.md §5.2.3): entries require the
+    candle's base-currency volume to reach this multiple of the *prior*
+    candles' volume EMA — a momentum turn without participation behind it
+    is a twitch, not a move. ``0`` disables; while the baseline is still
+    forming, entries wait (fail-safe). Exits are never volume-filtered."""
+
     breakeven_at_r: float = 0.0
     """Stop management: ratchet the stop to entry once the trade has earned
     this many R. ``0`` disables."""
@@ -72,6 +82,7 @@ class MomentumStrategy:
         self._slow = Ema(config.slow_ema_period)
         self._signal_line = Ema(config.signal_ema_period)
         self._atr = Atr(config.atr_period)
+        self._volume_ema = Ema(config.volume_ema_period)
         self._previous_histogram: float | None = None
         self._last_open_time: datetime | None = None
 
@@ -95,6 +106,11 @@ class MomentumStrategy:
         self._last_open_time = candle.open_time
 
         close = float(candle.close_quote)
+        # The participation baseline is prior candles only: the entry
+        # candle's volume must clear a bar it did not set itself.
+        volume = float(candle.volume_base)
+        average_volume = self._volume_ema.value
+        self._volume_ema.update(volume)
         fast = self._fast.update(close)
         slow = self._slow.update(close)
         atr = self._atr.update(float(candle.high_quote), float(candle.low_quote), close)
@@ -133,6 +149,10 @@ class MomentumStrategy:
             return None
         if self._config.require_positive_macd and macd <= 0:
             return None  # a bounce inside a decline, not an advance
+        if self._config.min_volume_ratio > 0 and (
+            average_volume is None or volume < self._config.min_volume_ratio * average_volume
+        ):
+            return None  # momentum without participation is a twitch
         stop = Decimal(str(close - self._config.atr_stop_multiple * atr)).quantize(
             ACCOUNTING_RESOLUTION, rounding=ROUND_HALF_EVEN
         )

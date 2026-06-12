@@ -25,7 +25,7 @@ from decimal import ROUND_HALF_EVEN, Decimal
 from pydantic import BaseModel, ConfigDict
 
 from tradebot.core.models import ACCOUNTING_RESOLUTION, Candle, Side, Signal
-from tradebot.indicators import Atr
+from tradebot.indicators import Atr, Ema
 from tradebot.portfolio import Position
 
 
@@ -48,6 +48,16 @@ class BreakoutConfig(BaseModel):
     min_channel_width_atr: float = 0.0
     """Skip breakouts of channels narrower than this many ATRs — a flat
     channel breaks on noise, not participation. ``0`` disables."""
+
+    volume_ema_period: int = 20
+    """Length of the volume EMA used as the participation baseline."""
+
+    min_volume_ratio: float = 0.0
+    """Volume confirmation (ARCHITECTURE.md §5.2.3): entries require the
+    candle's base-currency volume to reach this multiple of the *prior*
+    candles' volume EMA — a breakout nobody traded is the classic fakeout.
+    ``0`` disables; while the baseline is still forming, entries wait
+    (fail-safe). Exits are never volume-filtered."""
 
     breakeven_at_r: float = 0.0
     """Stop management: ratchet the stop to entry once the trade has earned
@@ -77,6 +87,7 @@ class BreakoutStrategy:
             )
         self._config = config
         self._atr = Atr(config.atr_period)
+        self._volume_ema = Ema(config.volume_ema_period)
         self._highs: deque[float] = deque(maxlen=config.channel_period)
         self._lows: deque[float] = deque(maxlen=config.exit_channel_period)
         self._last_open_time: datetime | None = None
@@ -109,6 +120,11 @@ class BreakoutStrategy:
         exit_floor = min(self._lows) if len(self._lows) == self._lows.maxlen else None
         self._highs.append(float(candle.high_quote))
         self._lows.append(float(candle.low_quote))
+        # The participation baseline, like the channels, is prior candles
+        # only: the breakout's own volume must clear a bar it did not set.
+        volume = float(candle.volume_base)
+        average_volume = self._volume_ema.value
+        self._volume_ema.update(volume)
         if atr is None:
             return None
 
@@ -139,6 +155,10 @@ class BreakoutStrategy:
             and entry_ceiling - entry_floor < self._config.min_channel_width_atr * atr
         ):
             return None  # a flat channel breaks on noise, not participation
+        if self._config.min_volume_ratio > 0 and (
+            average_volume is None or volume < self._config.min_volume_ratio * average_volume
+        ):
+            return None  # a breakout nobody traded is a fakeout in waiting
         stop = Decimal(str(close - self._config.atr_stop_multiple * atr)).quantize(
             ACCOUNTING_RESOLUTION, rounding=ROUND_HALF_EVEN
         )
