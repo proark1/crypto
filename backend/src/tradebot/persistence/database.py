@@ -171,6 +171,18 @@ rows 1-5, custom bots start at 100. Deleting a bot keeps its journals
 (fills/orders/decisions stay queryable under its bot_id) but frees the
 id for nothing: ids are forever."""
 
+bot_capital_table = Table(
+    "bot_capital",
+    metadata,
+    Column("bot_id", Text, primary_key=True),
+    Column("initial_balance_quote", Numeric, nullable=False),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
+)
+"""Operator-set starting capital per bot (production, built-in, or custom).
+Absent until the operator resets a bot's capital; until then the bot uses the
+config default (``AppConfig.paper_initial_balance_quote``). NUMERIC keeps the
+balance exact, matching the Decimal money invariant."""
+
 trading_fees_table = Table(
     "trading_fees",
     metadata,

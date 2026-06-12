@@ -9,6 +9,7 @@ import {
   fetchFills,
   killBot,
   pauseBot,
+  resetBotCapital,
   resumeBot,
 } from "../api/client";
 import type {
@@ -22,6 +23,7 @@ import type {
 import { FillsTable } from "../components/FillsTable";
 import {
   formatFractionPercent,
+  formatMoney,
   formatTime,
   humanizeParamName,
   signClass,
@@ -69,6 +71,101 @@ function StatCard(props: { label: string; value: string; hint?: string; valueCla
         hint={props.hint}
         valueClass={props.valueClass}
       />
+    </Card>
+  );
+}
+
+/** A valid capital draft is a number > 0. Capital is money, but parsing the
+ * draft only to validate (never to compute) is allowed — the exact value is
+ * sent as a string and the backend does all the arithmetic. */
+function capitalDraftError(draft: string): string | null {
+  const text = draft.trim();
+  if (text === "" || Number.isNaN(Number(text))) {
+    return "enter a number";
+  }
+  if (Number(text) <= 0) {
+    return "must be greater than zero";
+  }
+  return null;
+}
+
+/** Per-bot settings: reset the starting capital. Resetting wipes the bot's
+ * trade history and restarts it from the new balance, so it is gated on the
+ * bot being flat and confirmed before it runs. */
+function CapitalSettingsCard(props: {
+  currentCapital: string;
+  flat: boolean;
+  disabled: boolean;
+  onReset: (amount: string) => Promise<void>;
+}) {
+  const [draft, setDraft] = useState(props.currentCapital);
+  // Keep the field in step with the live value until the user edits it.
+  useEffect(() => {
+    setDraft(props.currentCapital);
+  }, [props.currentCapital]);
+
+  const draftError = capitalDraftError(draft);
+  const changed = draft.trim() !== props.currentCapital;
+
+  return (
+    <Card padding="lg">
+      <SectionHeader
+        title="Settings"
+        description="this bot's starting capital (paper account)"
+      />
+      <p className="mb-3 text-sm text-zinc-600 dark:text-zinc-400">
+        Currently started from{" "}
+        <span className="font-medium text-zinc-900 dark:text-zinc-100">
+          {formatMoney(props.currentCapital)}
+        </span>
+        . Changing it <strong>resets this bot&apos;s account</strong> — its balance restarts
+        from the new amount and its trade history is cleared. The bot must be flat (no open
+        positions or orders) first.
+      </p>
+      <div className="flex flex-wrap items-end gap-3">
+        <label className="block">
+          <span className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
+            Starting capital
+          </span>
+          <input
+            type="number"
+            step="any"
+            min="0"
+            inputMode="decimal"
+            aria-label="Starting capital"
+            aria-invalid={draftError !== null}
+            value={draft}
+            disabled={props.disabled || !props.flat}
+            onChange={(event) => {
+              setDraft(event.target.value);
+            }}
+            className="mt-1 block w-40 rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-sm text-zinc-900 disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
+          />
+        </label>
+        <ConfirmButton
+          label="reset capital"
+          confirmLabel="confirm: reset account & clear history"
+          title={
+            props.flat
+              ? "reset this bot's balance and wipe its trade history"
+              : "the bot must be flat first — stop it, then reset"
+          }
+          variant="dangerOutline"
+          disabled={props.disabled || !props.flat || draftError !== null || !changed}
+          stopPropagation={false}
+          onConfirm={() => void props.onReset(draft.trim())}
+        />
+      </div>
+      {draftError !== null && changed && (
+        <span className="mt-1 block text-[11px] text-red-600 dark:text-red-400">
+          {draftError}
+        </span>
+      )}
+      {!props.flat && (
+        <span className="mt-2 block text-xs text-amber-700 dark:text-amber-400">
+          This bot holds a position — stop it (which sells at the next price), then reset.
+        </span>
+      )}
     </Card>
   );
 }
@@ -439,6 +536,13 @@ export function BotDetailScreen(props: {
           hint={`completed round trips (${String(summary.entry_fills)} entries)`}
         />
       </div>
+
+      <CapitalSettingsCard
+        currentCapital={summary.initial_balance_quote}
+        flat={!holdsSomething}
+        disabled={commandPending}
+        onReset={(amount) => runCommand(() => resetBotCapital(botId, amount))}
+      />
 
       <StrategySection strategy={strategy} options={options} />
 

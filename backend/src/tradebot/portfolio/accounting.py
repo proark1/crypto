@@ -61,6 +61,20 @@ class Portfolio:
         self._positions: dict[str, Position] = {}
         self._realized_pnl: dict[str, Decimal] = {}
 
+    def reset(self, initial_balance_quote: Decimal) -> None:
+        """Discard all positions and PnL and restart from a fresh balance.
+
+        For an operator *account reset* only (a new starting capital) — never
+        part of normal trading, which only ever mutates state through
+        :meth:`apply_fill`. The caller is responsible for ensuring the account
+        is flat first; this clears whatever is here regardless.
+        """
+        if initial_balance_quote < 0:
+            raise ValueError("initial balance cannot be negative")
+        self._quote_balance = initial_balance_quote
+        self._positions = {}
+        self._realized_pnl = {}
+
     @property
     def quote_balance(self) -> Decimal:
         """Free quote currency available for new buys."""

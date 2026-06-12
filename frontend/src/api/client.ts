@@ -238,6 +238,18 @@ export function deleteBot(botId: string): Promise<CommandResponse> {
   return request<CommandResponse>(`/bots/${encodeURIComponent(botId)}`, "DELETE");
 }
 
+/** Reset a bot's paper account to a new starting capital (quote currency).
+ * Destructive: purges the bot's journals and restarts it clean. 400 for a
+ * negative amount, 404 unknown, 409 while the bot holds a position/orders. */
+export function resetBotCapital(
+  botId: string,
+  initialBalanceQuote: string,
+): Promise<CommandResponse> {
+  return request<CommandResponse>(`/bots/${encodeURIComponent(botId)}/capital`, "PUT", {
+    initial_balance_quote: initialBalanceQuote,
+  });
+}
+
 /** The buy/sell trading fees applied to every live paper fill. */
 export function fetchTradingFees(): Promise<TradingFeesResponse> {
   return request<TradingFeesResponse>("/settings/fees", "GET");

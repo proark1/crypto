@@ -107,6 +107,9 @@ class StubBot:
         # contract tests — worker tests cover the real lifecycle.
         self.custom_bots: dict[str, dict[str, Any]] = {}
         self.paused_bots: set[str] = set()
+        # Per-bot starting capital overrides (bot_id -> balance); empty means
+        # every bot uses the config default.
+        self.bot_capital: dict[str, Decimal] = {}
         # In-memory trading fees, seeded from config defaults (10 bps a side).
         self.fees: dict[str, Decimal] = {
             "buy_fee_bps": self.config.buy_fee_bps,
@@ -121,7 +124,7 @@ class StubBot:
         return self.feed_healths.get(symbol, _StubFeedHealth(True, None))
 
     def _snapshot_row(self, bot_id: str, label: str, description: str, kind: str) -> dict[str, Any]:
-        initial = self.config.paper_initial_balance_quote
+        initial = self.bot_capital.get(bot_id, self.config.paper_initial_balance_quote)
         equity = self.portfolio.quote_balance
         return {
             "bot_id": bot_id,
@@ -206,6 +209,15 @@ class StubBot:
         if bot_id not in self.custom_bots:
             raise KeyError(f"no custom bot {bot_id!r}")
         del self.custom_bots[bot_id]
+
+    async def reset_bot_capital(self, bot_id: str, new_balance_quote: Decimal) -> None:
+        if new_balance_quote < 0:
+            raise ValueError("starting capital cannot be negative")
+        if bot_id != "production" and bot_id not in self.custom_bots:
+            raise KeyError(f"no competition bot {bot_id!r}")
+        if self.portfolio.positions:
+            raise RuntimeError(f"{bot_id} holds a position; stop or flatten it first")
+        self.bot_capital[bot_id] = new_balance_quote
 
     def trading_fees(self) -> Mapping[str, Decimal]:
         return dict(self.fees)
@@ -1336,6 +1348,44 @@ class TestFills:
         assert body[0]["value_quote"] == "200"  # price * quantity, fee excluded
         assert body[0]["side"] == "buy"
         assert body[0]["filled_at"] == BASE_TIME.isoformat()
+
+
+class TestBotCapital:
+    async def test_reset_updates_the_starting_capital(self, database: Database) -> None:
+        bot = StubBot(database)
+        async with make_client(bot) as client:
+            response = await client.put(
+                "/bots/production/capital", json={"initial_balance_quote": "5000"}
+            )
+            assert response.status_code == 200
+            rows = (await client.get("/competition")).json()["competitors"]
+        production = next(row for row in rows if row["bot_id"] == "production")
+        assert production["initial_balance_quote"] == "5000"
+
+    async def test_negative_capital_is_rejected(self, database: Database) -> None:
+        bot = StubBot(database)
+        async with make_client(bot) as client:
+            response = await client.put(
+                "/bots/production/capital", json={"initial_balance_quote": "-1"}
+            )
+        assert response.status_code == 400
+
+    async def test_reset_refuses_while_holding_a_position(self, database: Database) -> None:
+        bot = StubBot(database)
+        bot.portfolio.apply_fill(make_fill())  # opens a BTC position
+        async with make_client(bot) as client:
+            response = await client.put(
+                "/bots/production/capital", json={"initial_balance_quote": "5000"}
+            )
+        assert response.status_code == 409
+
+    async def test_unknown_bot_is_404(self, database: Database) -> None:
+        bot = StubBot(database)
+        async with make_client(bot) as client:
+            response = await client.put(
+                "/bots/ghost/capital", json={"initial_balance_quote": "5000"}
+            )
+        assert response.status_code == 404
 
 
 class TestTradingFees:

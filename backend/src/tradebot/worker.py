@@ -64,6 +64,7 @@ from tradebot.execution import FeeSchedule, FillSimulatorConfig, SimulatedExecut
 from tradebot.marketdata.live_feed import LiveMarketDataFeed, OhlcvExchange
 from tradebot.news import CryptoPanicSource, EventCalendar, NewsFlags, NewsGate, NewsMonitor
 from tradebot.persistence import (
+    BotCapitalStore,
     CandleStore,
     CoinStore,
     CustomBotStore,
@@ -233,6 +234,11 @@ class Worker:
         self.fee_schedule = FeeSchedule(
             buy_fee_bps=config.buy_fee_bps, sell_fee_bps=config.sell_fee_bps
         )
+        # Operator-set starting capital per bot; loaded in initialize(). An
+        # absent bot uses ``config.paper_initial_balance_quote``. Read by the
+        # leaderboard (for return %) and applied to portfolios before replay.
+        self.bot_capital_store = BotCapitalStore(database)
+        self._bot_capital: dict[str, Decimal] = {}
         # The active (possibly auto-promoted) parameters per strategy
         # family; loaded from Postgres in initialize(), empty means
         # defaults. Engines, scenarios, and sweeps all read this one dict
@@ -429,6 +435,76 @@ class Worker:
             sell_fee_bps=str(sell_fee_bps),
         )
 
+    def _portfolios_by_bot(self) -> Iterator[tuple[str, Portfolio]]:
+        """Yield ``(bot_id, portfolio)`` for the production bot and every challenger."""
+        yield PRODUCTION_BOT_ID, self.portfolio
+        for runtime in self.challengers.values():
+            yield runtime.spec.bot_id, runtime.portfolio
+
+    def _starting_capital(self, bot_id: str) -> Decimal:
+        """One bot's configured starting capital, or the config default."""
+        return self._bot_capital.get(bot_id, self.config.paper_initial_balance_quote)
+
+    async def reset_bot_capital(self, bot_id: str, new_balance_quote: Decimal) -> None:
+        """Reset a bot's paper account to a new starting capital.
+
+        This is destructive by design: the bot's fills, orders, and decisions
+        are purged and its breakers cleared, so it starts clean from
+        ``new_balance_quote``. Refused unless the bot is flat with no open
+        orders (``RuntimeError``) — exactly like delete — because resetting
+        capital under an open position would orphan it. ``ValueError`` for a
+        negative balance, ``KeyError`` for an unknown bot. The portfolio and
+        risk manager are mutated in place, so the live engines that reference
+        them pick up the fresh state without a rebuild.
+        """
+        if new_balance_quote < 0:
+            raise ValueError("starting capital cannot be negative")
+        if bot_id == PRODUCTION_BOT_ID:
+            portfolio = self.portfolio
+            risk_manager = self.risk_manager
+            fill_store, order_store, decision_store = (
+                self.fill_store,
+                self.order_store,
+                self.decision_store,
+            )
+            engines: Mapping[str, TradingEngine] = self.engines
+        else:
+            runtime = self._runtime_for(bot_id)  # KeyError if unknown
+            portfolio = runtime.portfolio
+            risk_manager = runtime.risk_manager
+            fill_store, order_store, decision_store = (
+                runtime.fill_store,
+                runtime.order_store,
+                runtime.decision_store,
+            )
+            engines = runtime.engines
+        if portfolio.positions:
+            held = ", ".join(sorted(portfolio.positions))
+            raise RuntimeError(
+                f"{bot_id} holds a position ({held}); stop or flatten it first, then reset capital"
+            )
+        if any(engine.open_orders() for engine in engines.values()):
+            raise RuntimeError(
+                f"{bot_id} has open orders; stop it first (its orders clear), then reset capital"
+            )
+        await self.bot_capital_store.set(bot_id, new_balance_quote, datetime.now(UTC))
+        self._bot_capital[bot_id] = new_balance_quote
+        # Journals gone, in-memory state cleared: a true fresh account.
+        await fill_store.purge()
+        await order_store.purge()
+        await decision_store.purge()
+        portfolio.reset(new_balance_quote)
+        risk_manager.reset()
+        # Persist the now-fresh breaker snapshot so a restart agrees.
+        await self.persist_risk_state()
+        log_event(
+            logger,
+            logging.INFO,
+            "bot_capital_reset",
+            bot_id=bot_id,
+            initial_balance_quote=str(new_balance_quote),
+        )
+
     async def competition_snapshot(self) -> list[dict[str, Any]]:
         """One leaderboard row per competitor, best equity first.
 
@@ -444,7 +520,6 @@ class Worker:
             candle = await self.candle_store.latest_candle(symbol, CandleInterval.M1)
             if candle is not None:
                 marks[symbol] = candle.close_quote
-        initial = self.config.paper_initial_balance_quote
         rows: list[dict[str, Any]] = []
         production_spec = spec_for(PRODUCTION_BOT_ID)
         accounts: list[
@@ -483,6 +558,7 @@ class Worker:
                     break
                 unrealized += position.unrealized_pnl_quote(mark)
             equity = portfolio.equity_quote(marks) if all_marked else None
+            initial = self._starting_capital(spec.bot_id)
             fill_counts = await fill_store.count_by_side()
             rows.append(
                 {
@@ -1193,6 +1269,15 @@ class Worker:
                 symbol=self.regime_detector.symbol,
                 regime_label=self.regime_detector.regime.label,
             )
+        # Per-bot starting capital, applied to each empty portfolio *before*
+        # the journal replays fills on top of it — so a bot whose capital was
+        # reset starts the replay from its configured balance, not the global
+        # default. Portfolios are still empty here (built in __init__).
+        self._bot_capital = await self.bot_capital_store.all()
+        for bot_id, portfolio in self._portfolios_by_bot():
+            balance = self._bot_capital.get(bot_id)
+            if balance is not None:
+                portfolio.reset(balance)
         await self._restore_risk_state()
         replayed = await self.replay_journal()
         await self._replay_missed_candles()
