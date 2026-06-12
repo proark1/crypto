@@ -1,6 +1,13 @@
 import { afterEach, describe, expect, it } from "vitest";
 
-import { applyTheme, getStoredTheme, initialTheme, storeTheme, systemTheme } from "./theme";
+import {
+  applyTheme,
+  getStoredTheme,
+  initialTheme,
+  isDarkClassActive,
+  storeTheme,
+  systemTheme,
+} from "./theme";
 
 afterEach(() => {
   localStorage.clear();
@@ -27,5 +34,12 @@ describe("theme", () => {
     expect(document.documentElement.classList.contains("dark")).toBe(true);
     applyTheme("light");
     expect(document.documentElement.classList.contains("dark")).toBe(false);
+  });
+
+  it("reports the active dark class, tracking applyTheme", () => {
+    applyTheme("dark");
+    expect(isDarkClassActive()).toBe(true);
+    applyTheme("light");
+    expect(isDarkClassActive()).toBe(false);
   });
 });

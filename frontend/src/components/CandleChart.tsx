@@ -13,6 +13,7 @@ import { useEffect, useRef, useState } from "react";
 
 import type { CandleResponse } from "../api/types";
 import { toChartCandles } from "../lib/chart";
+import { isDarkClassActive } from "../lib/theme";
 
 /** Chart chrome per theme — lightweight-charts is canvas, so Tailwind's
  * `dark:` classes cannot reach it; we mirror the zinc palette by hand. */
@@ -32,10 +33,14 @@ function layoutOptions(dark: boolean) {
 /** Track the `.dark` class on <html> so the canvas follows the app theme
  * without threading theme props through every screen that shows a chart. */
 function useDarkClass(): boolean {
-  const [dark, setDark] = useState(() => document.documentElement.classList.contains("dark"));
+  const [dark, setDark] = useState(isDarkClassActive);
   useEffect(() => {
+    // No DOM (SSR/pre-render): nothing to observe, and `document` is absent.
+    if (typeof document === "undefined") {
+      return;
+    }
     const observer = new MutationObserver(() => {
-      setDark(document.documentElement.classList.contains("dark"));
+      setDark(isDarkClassActive());
     });
     observer.observe(document.documentElement, {
       attributes: true,
