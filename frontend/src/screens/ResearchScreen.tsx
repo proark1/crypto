@@ -10,6 +10,7 @@ import {
   fetchEvaluationSuggestions,
   fetchFindings,
   fetchImprovementStatus,
+  fetchResearchTimeline,
   fetchScenarioReplay,
   fetchScenarios,
   fetchStrategyVersions,
@@ -31,6 +32,7 @@ import type {
   StrategyVersionResponse,
   SuggestedEvaluationResponse,
   SweepResponse,
+  TimelineEventResponse,
 } from "../api/types";
 import { formatFractionPercent, formatMoney, formatTime } from "../lib/format";
 import { Alert, GLOSSARY, InfoTooltip, StatTile, type GlossaryTerm } from "../ui";
@@ -38,6 +40,7 @@ import { ComparisonPanel } from "../components/ComparisonPanel";
 import { FindingsPanel } from "../components/FindingsPanel";
 import { ImprovementsPanel } from "../components/ImprovementsPanel";
 import { ImproverStatusCard } from "../components/ImproverStatusCard";
+import { ResearchTimeline } from "../components/ResearchTimeline";
 import { ScenarioReplay } from "../components/ScenarioReplay";
 import { SweepPanel } from "../components/SweepPanel";
 import {
@@ -65,14 +68,16 @@ const FALLBACK_STRATEGIES: EvaluationStrategyResponse[] = [
   },
 ];
 
-/** The research workspace splits into three jobs so the page is not one long
- * scroll: run and read evaluations, compare strategies head to head, and tune
- * the production strategy (sweeps and the version history they promote). */
-type ResearchTab = "evaluate" | "compare" | "tune";
+/** The research workspace splits into four jobs so the page is not one long
+ * scroll: run and read evaluations, compare strategies head to head, tune
+ * the production strategy (sweeps and the version history they promote),
+ * and follow the learning loop's progress as one story. */
+type ResearchTab = "evaluate" | "compare" | "tune" | "progress";
 const RESEARCH_TABS: { id: ResearchTab; label: string }[] = [
   { id: "evaluate", label: "Evaluate" },
   { id: "compare", label: "Compare" },
   { id: "tune", label: "Tune" },
+  { id: "progress", label: "Progress" },
 ];
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -350,6 +355,7 @@ export function ResearchScreen() {
   const [strategy, setStrategy] = useState("production");
   const [strategies, setStrategies] = useState<EvaluationStrategyResponse[]>([]);
   const [improver, setImprover] = useState<ImprovementStatusResponse | null>(null);
+  const [timeline, setTimeline] = useState<TimelineEventResponse[]>([]);
   const [notice, setNotice] = useState<string | null>(null);
   const [scenarios, setScenarios] = useState<ScenarioSummaryResponse[]>([]);
   const [findings, setFindings] = useState<FindingResponse[]>([]);
@@ -378,6 +384,7 @@ export function ResearchScreen() {
       // or deleted, and the improver card follows the loop's cycles.
       setStrategies(await fetchEvaluationStrategies());
       setImprover(await fetchImprovementStatus());
+      setTimeline(await fetchResearchTimeline());
       // Suggestions ride the poll only until the first success: stored
       // history depth moves a day at a time, so once loaded they stay put —
       // but a fetch that failed (token not entered yet, transient outage)
@@ -759,6 +766,16 @@ export function ResearchScreen() {
           groups={comparisons}
           onStart={handleStartComparison}
           startDisabled={comparisonPending || comparisonRunning}
+        />
+      )}
+
+      {researchTab === "progress" && (
+        <ResearchTimeline
+          events={timeline}
+          onSelectRun={(runId) => {
+            setSelectedId(runId);
+            setResearchTab("evaluate");
+          }}
         />
       )}
 

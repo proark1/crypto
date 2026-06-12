@@ -235,6 +235,36 @@ class TestFindings:
         assert loaded.pattern == finding.pattern  # facts stay frozen
         assert await store.fetch_finding(9999) is None
 
+    async def test_fetch_for_runs_groups_one_query_by_run(self, database: Database) -> None:
+        store = EvaluationStore(database)
+        first_run = await make_run(store)
+        second_run = await make_run(store)
+
+        def finding(run_id: int, pattern: str) -> LearningFinding:
+            return LearningFinding(
+                run_id=run_id,
+                pattern=pattern,
+                evidence_scenario_ids=(1,),
+                affected_count=1,
+                average_r_impact=Decimal("-0.4"),
+                suggestion="test",
+                confidence="low",
+                created_at=BASE_TIME,
+            )
+
+        first_id = await store.insert_finding(finding(first_run, "pattern a"))
+        await store.insert_finding(finding(second_run, "pattern b"))
+        await store.insert_finding(finding(second_run, "pattern c"))
+
+        grouped = await store.fetch_findings_for_runs([first_run, second_run, 9999])
+
+        assert set(grouped) == {first_run, second_run}  # absent runs are absent
+        assert [(pair[0], pair[1].pattern) for pair in grouped[first_run]] == [
+            (first_id, "pattern a")
+        ]
+        assert [pair[1].pattern for pair in grouped[second_run]] == ["pattern b", "pattern c"]
+        assert await store.fetch_findings_for_runs([]) == {}
+
 
 class TestSweeps:
     async def test_sweep_lifecycle_round_trips(self, database: Database) -> None:

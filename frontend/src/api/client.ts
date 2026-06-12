@@ -31,6 +31,7 @@ import type {
   StrategyVersionResponse,
   SuggestedEvaluationResponse,
   SweepResponse,
+  TimelineEventResponse,
   TradingFeesResponse,
   WalletResponse,
 } from "./types";
@@ -362,4 +363,10 @@ export function startSweep(
 
 export function cancelSweep(sweepId: number): Promise<CommandResponse> {
   return request<CommandResponse>(`/sweeps/${String(sweepId)}/cancel`, "POST");
+}
+
+/** The research story, newest first: completed runs (with their finding
+ * diffs), sweep verdicts, and settings promotions as one feed. */
+export function fetchResearchTimeline(limit = 50): Promise<TimelineEventResponse[]> {
+  return request<TimelineEventResponse[]>(`/research/timeline?limit=${String(limit)}`, "GET");
 }

@@ -1079,6 +1079,189 @@ class TestEvaluations:
         assert fetched["strategy"] == bot_id
 
 
+async def seed_completed_run(
+    bot: StubBot,
+    *,
+    strategy: str = "production",
+    created_at: datetime,
+    patterns: Mapping[str, str] | None = None,
+    summary: dict[str, Any] | None = None,
+) -> tuple[int, dict[str, int]]:
+    """Insert one completed run with findings; returns (run_id, ids by pattern)."""
+    from tradebot.evaluation.models import LearningFinding
+
+    run_id = await bot.evaluation_store.create_run(
+        symbols=["BTC/USDT"],
+        timeframes=["1h"],
+        config={},
+        code_version="test",
+        progress_total=10,
+        created_at=created_at,
+        strategy=strategy,
+    )
+    await bot.evaluation_store.complete_run(
+        run_id, summary or {"expectancy_r": "-0.1296", "trade_count": 187}
+    )
+    finding_ids: dict[str, int] = {}
+    for pattern, finding_status in (patterns or {}).items():
+        finding_id = await bot.evaluation_store.insert_finding(
+            LearningFinding(
+                run_id=run_id,
+                pattern=pattern,
+                evidence_scenario_ids=(1,),
+                affected_count=1,
+                average_r_impact=Decimal("-0.4"),
+                suggestion="test",
+                confidence="low",
+                status=finding_status,
+                created_at=created_at,
+            )
+        )
+        finding_ids[pattern] = finding_id
+    return run_id, finding_ids
+
+
+class TestFindingRecurrence:
+    async def test_findings_carry_their_history_across_runs(self, database: Database) -> None:
+        bot = StubBot(database)
+        old_run, _ = await seed_completed_run(
+            bot,
+            created_at=BASE_TIME,
+            patterns={"entries lose money when trend is down": "accepted"},
+        )
+        await seed_completed_run(
+            bot,
+            created_at=BASE_TIME + timedelta(hours=1),
+            patterns={
+                "entries lose money when trend is down": "proposed",
+                "held positions ride into their stops": "proposed",
+            },
+        )
+        async with make_client(bot) as client:
+            run_id = (await client.get("/evaluations")).json()[0]["id"]
+            findings = (await client.get(f"/evaluations/{run_id}/findings")).json()
+
+        by_pattern = {finding["pattern"]: finding for finding in findings}
+        recurring = by_pattern["entries lose money when trend is down"]
+        assert recurring["seen_in_prior_runs"] == 1
+        assert recurring["first_seen_run_id"] == old_run
+        fresh = by_pattern["held positions ride into their stops"]
+        assert fresh["seen_in_prior_runs"] == 0
+        assert fresh["first_seen_run_id"] is None
+
+    async def test_other_bots_runs_do_not_count_as_history(self, database: Database) -> None:
+        bot = StubBot(database)
+        await seed_completed_run(
+            bot,
+            strategy="breakout",
+            created_at=BASE_TIME,
+            patterns={"entries lose money when trend is down": "proposed"},
+        )
+        await seed_completed_run(
+            bot,
+            created_at=BASE_TIME + timedelta(hours=1),
+            patterns={"entries lose money when trend is down": "proposed"},
+        )
+
+        async with make_client(bot) as client:
+            run_id = (await client.get("/evaluations")).json()[0]["id"]
+            (finding,) = (await client.get(f"/evaluations/{run_id}/findings")).json()
+
+        assert finding["seen_in_prior_runs"] == 0
+
+    async def test_a_verdict_keeps_the_recurrence_annotations(self, database: Database) -> None:
+        """Accepting must not visually reset a recurred pattern to "new"."""
+        bot = StubBot(database)
+        await seed_completed_run(
+            bot,
+            created_at=BASE_TIME,
+            patterns={"entries lose money when trend is down": "proposed"},
+        )
+        _, finding_ids = await seed_completed_run(
+            bot,
+            created_at=BASE_TIME + timedelta(hours=1),
+            patterns={"entries lose money when trend is down": "proposed"},
+        )
+        finding_id = finding_ids["entries lose money when trend is down"]
+
+        async with make_client(bot) as client:
+            decided = (await client.post(f"/evaluations/findings/{finding_id}/accept")).json()
+
+        assert decided["status"] == "accepted"
+        assert decided["seen_in_prior_runs"] == 1
+
+
+class TestResearchTimeline:
+    async def test_runs_sweeps_and_promotions_merge_newest_first(self, database: Database) -> None:
+        bot = StubBot(database)
+        await seed_completed_run(
+            bot,
+            created_at=BASE_TIME,
+            patterns={"entries lose money when trend is down": "accepted"},
+        )
+        await seed_completed_run(
+            bot,
+            created_at=BASE_TIME + timedelta(hours=1),
+            patterns={"held positions ride into their stops": "proposed"},
+        )
+        sweep_id = await bot.evaluation_store.create_sweep(
+            symbol="BTC/USDT",
+            timeframe="1h",
+            config={},
+            motivating_finding_ids=[1],
+            created_at=BASE_TIME + timedelta(hours=2),
+        )
+        await bot.evaluation_store.complete_sweep(
+            sweep_id,
+            {
+                "verdict": "validated",
+                "winner": "tighter_stop",
+                "explanation": "tighter_stop beat the baseline",
+            },
+        )
+        version_id = await bot.strategy_settings_store.record(
+            "trend_following",
+            {"atr_stop_multiple": 1.5},
+            BASE_TIME + timedelta(hours=3),
+            sweep_id,
+            "auto-promoted: tighter_stop beat the baseline",
+        )
+
+        async with make_client(bot) as client:
+            events = (await client.get("/research/timeline")).json()
+
+        assert [event["kind"] for event in events] == [
+            "promotion",
+            "sweep",
+            "evaluation",
+            "evaluation",
+        ]
+        promotion = events[0]
+        assert promotion["version_id"] == version_id
+        assert promotion["sweep_id"] == sweep_id
+        assert "settings v" in promotion["headline"]
+        sweep = events[1]
+        assert sweep["verdict"] == "validated"
+        assert "motivated by 1 finding(s)" in sweep["detail"]
+        newest_run = events[2]
+        assert newest_run["expectancy_r"] == "-0.1296"
+        # The second run dropped the first run's pattern and mined a new one.
+        assert newest_run["new_patterns"] == ["held positions ride into their stops"]
+        assert newest_run["resolved_patterns"] == ["entries lose money when trend is down"]
+
+    async def test_limit_caps_the_feed(self, database: Database) -> None:
+        bot = StubBot(database)
+        for hour in range(3):
+            await seed_completed_run(bot, created_at=BASE_TIME + timedelta(hours=hour))
+
+        async with make_client(bot) as client:
+            events = (await client.get("/research/timeline?limit=2")).json()
+            bad = await client.get("/research/timeline?limit=0")
+
+        assert len(events) == 2
+        assert bad.status_code == 422  # validated query bound, not a silent clamp
+
+
 class TestImprovementStatus:
     async def test_status_serializes_the_loop_snapshot(self, database: Database) -> None:
         bot = StubBot(database)

@@ -15,6 +15,8 @@ const FINDING: FindingResponse = {
   confidence: "low",
   status: "proposed",
   created_at: "2026-06-10T12:00:00+00:00",
+  seen_in_prior_runs: 0,
+  first_seen_run_id: null,
 };
 
 describe("FindingsPanel", () => {
@@ -64,6 +66,28 @@ describe("FindingsPanel", () => {
     );
     fireEvent.click(screen.getByText("#12"));
     expect(onReplay).toHaveBeenCalledWith(12);
+  });
+
+  it("labels a first-time pattern and a recurring one differently", () => {
+    render(
+      <FindingsPanel
+        findings={[
+          FINDING,
+          {
+            ...FINDING,
+            id: 4,
+            pattern: "old wound",
+            seen_in_prior_runs: 3,
+            first_seen_run_id: 44,
+          },
+        ]}
+        onAccept={() => undefined}
+        onReject={() => undefined}
+        onReplayEvidence={() => undefined}
+      />,
+    );
+    expect(screen.getByText("new pattern")).toBeDefined();
+    expect(screen.getByText("recurred · 4 runs since #44")).toBeDefined();
   });
 
   it("renders nothing when a run has no findings", () => {

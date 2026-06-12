@@ -417,6 +417,32 @@ class EvaluationStore:
             rows = (await connection.execute(statement)).mappings().all()
         return [(row["id"], LearningFinding.model_validate(dict(row))) for row in rows]
 
+    async def fetch_findings_for_runs(
+        self, run_ids: Sequence[int]
+    ) -> dict[int, list[tuple[int, LearningFinding]]]:
+        """Return (id, finding) pairs grouped by run, in creation order.
+
+        One query for a whole window of runs: the research timeline and the
+        recurrence annotations compare findings across many runs, and a
+        per-run round trip would scale those pages with their history.
+        Runs without findings are simply absent from the result.
+        """
+        if not run_ids:
+            return {}
+        statement = (
+            select(learning_findings_table)
+            .where(learning_findings_table.c.run_id.in_(list(run_ids)))
+            .order_by(learning_findings_table.c.id)
+        )
+        async with self._database.engine.connect() as connection:
+            rows = (await connection.execute(statement)).mappings().all()
+        grouped: dict[int, list[tuple[int, LearningFinding]]] = {}
+        for row in rows:
+            grouped.setdefault(row["run_id"], []).append(
+                (row["id"], LearningFinding.model_validate(dict(row)))
+            )
+        return grouped
+
     async def fetch_finding(self, finding_id: int) -> LearningFinding | None:
         """Return one finding, or ``None`` if unknown."""
         statement = select(learning_findings_table).where(
