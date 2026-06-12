@@ -65,6 +65,8 @@ export interface FillResponse {
   side: string;
   price_quote: string;
   quantity_base: string;
+  /** Gross notional (price * quantity) in quote currency; fee excluded. */
+  value_quote: string;
   fee_quote: string;
   filled_at: string;
 }

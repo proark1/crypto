@@ -1316,6 +1316,8 @@ class TestFills:
 
         assert len(body) == 1
         assert body[0]["price_quote"] == "100"
+        assert body[0]["quantity_base"] == "2"
+        assert body[0]["value_quote"] == "200"  # price * quantity, fee excluded
         assert body[0]["side"] == "buy"
         assert body[0]["filled_at"] == BASE_TIME.isoformat()
 

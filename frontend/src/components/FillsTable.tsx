@@ -1,5 +1,5 @@
 import type { FillResponse } from "../api/types";
-import { formatTime, trimAmount } from "../lib/format";
+import { formatMoney, formatTime, trimAmount } from "../lib/format";
 import { useMediaQuery } from "../lib/useMediaQuery";
 import { ArrowDownIcon, ArrowUpIcon, Card, SectionHeader } from "../ui";
 
@@ -25,8 +25,9 @@ function Side(props: { side: string }) {
 
 /**
  * The trade journal: every executed buy and sell, newest first. Renders a
- * table on desktop and stacked cards on phones so the seven columns never
- * force a horizontal scroll. Display formatting only.
+ * table on desktop and stacked cards on phones so the columns never force a
+ * horizontal scroll. Display formatting only — the trade value (notional in
+ * quote currency) arrives precomputed from the backend.
  */
 export function FillsTable(props: { fills: FillResponse[] }) {
   const isMobile = useMediaQuery("(max-width: 639px)");
@@ -59,8 +60,9 @@ export function FillsTable(props: { fills: FillResponse[] }) {
                 {trimAmount(fill.quantity_base)} @ {trimAmount(fill.price_quote)}
               </div>
               <div className="mt-0.5 text-xs text-zinc-500">
-                {formatTime(fill.filled_at)} · fee {trimAmount(fill.fee_quote)}
+                {formatMoney(fill.value_quote)} value · fee {trimAmount(fill.fee_quote)}
               </div>
+              <div className="mt-0.5 text-xs text-zinc-500">{formatTime(fill.filled_at)}</div>
             </li>
           ))}
         </ul>
@@ -74,6 +76,7 @@ export function FillsTable(props: { fills: FillResponse[] }) {
                 <th className="px-4 py-3">side</th>
                 <th className="px-4 py-3">quantity</th>
                 <th className="px-4 py-3">price</th>
+                <th className="px-4 py-3">value</th>
                 <th className="px-4 py-3">fee</th>
                 <th className="px-4 py-3">order</th>
               </tr>
@@ -96,6 +99,9 @@ export function FillsTable(props: { fills: FillResponse[] }) {
                   </td>
                   <td className="px-4 py-2 text-zinc-900 dark:text-zinc-100">
                     {trimAmount(fill.price_quote)}
+                  </td>
+                  <td className="px-4 py-2 text-zinc-900 dark:text-zinc-100">
+                    {formatMoney(fill.value_quote)}
                   </td>
                   <td className="px-4 py-2 text-zinc-600 dark:text-zinc-400">
                     {trimAmount(fill.fee_quote)}

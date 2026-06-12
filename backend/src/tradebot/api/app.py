@@ -758,13 +758,19 @@ def _candle_response(candle: Candle | ChartCandle) -> CandleResponse:
 
 
 class FillResponse(BaseModel):
-    """One journaled fill, amounts as strings."""
+    """One journaled fill, amounts as strings.
+
+    ``value_quote`` is the gross notional of the trade (price * quantity) in
+    quote currency, computed here as ``Decimal`` so the frontend never does
+    money arithmetic; it excludes ``fee_quote``.
+    """
 
     client_order_id: str
     symbol: str
     side: str
     price_quote: str
     quantity_base: str
+    value_quote: str
     fee_quote: str
     filled_at: str
 
@@ -1814,6 +1820,7 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
                 side=fill.side.value,
                 price_quote=str(fill.price_quote),
                 quantity_base=str(fill.quantity_base),
+                value_quote=str(fill.price_quote * fill.quantity_base),
                 fee_quote=str(fill.fee_quote),
                 filled_at=fill.filled_at.isoformat(),
             )

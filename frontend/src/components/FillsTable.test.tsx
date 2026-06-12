@@ -11,6 +11,7 @@ function makeFill(overrides: Partial<FillResponse>): FillResponse {
     side: "buy",
     price_quote: "62000.50",
     quantity_base: "0.0100",
+    value_quote: "620.005",
     fee_quote: "0.62",
     filled_at: "2026-06-10T12:00:00+00:00",
     ...overrides,
@@ -55,6 +56,9 @@ describe("FillsTable", () => {
     expect(rows[2]?.textContent).toContain("100");
     // Trailing zeros are trimmed for the eye (200.00 -> 200).
     expect(screen.queryByText("200.00")).toBeNull();
+    // The trade value (notional) column is shown, formatted with grouping.
+    expect(screen.getByText("value")).toBeTruthy();
+    expect(screen.getAllByText("620").length).toBeGreaterThan(0);
   });
 
   it("renders stacked cards instead of a table on a narrow screen", () => {
