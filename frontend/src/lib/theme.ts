@@ -46,3 +46,12 @@ export function initialTheme(): Theme {
 export function applyTheme(theme: Theme): void {
   document.documentElement.classList.toggle("dark", theme === "dark");
 }
+
+/** Whether the `.dark` class is currently on <html>. False when there is no
+ * DOM (SSR, pre-render, non-DOM tests) rather than throwing on `document`. */
+export function isDarkClassActive(): boolean {
+  if (typeof document === "undefined") {
+    return false;
+  }
+  return document.documentElement.classList.contains("dark");
+}
