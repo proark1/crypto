@@ -264,6 +264,11 @@ class Worker:
         self._feed_tasks: dict[str, asyncio.Task[None]] = {}
         self._task_group: asyncio.TaskGroup | None = None
         self._stop_requested = asyncio.Event()
+        # Tripped when a safety-critical background service (the control plane)
+        # dies: a supervisor inside the run TaskGroup reacts by muting the
+        # production bot's entries — see :meth:`_pause_for_failed_service`.
+        self._safety_pause_requested = asyncio.Event()
+        self._safety_pause_reason: str | None = None
         self._exchange = exchange
         self.evaluations = EvaluationManager(
             EvaluationRunner(
@@ -557,6 +562,76 @@ class Worker:
             engine.resume()
         await self.persist_risk_state()
         log_event(logger, logging.INFO, "bot_resumed", bot_id=bot_id)
+
+    def _trip_safety_pause(self, service: str) -> None:
+        """Signal the safety supervisor that ``service`` died (idempotent, sync).
+
+        Called from a task done-callback, which cannot await — it only sets
+        the event the supervisor in :meth:`run`'s TaskGroup is waiting on, so
+        the actual pause runs on the event loop, never inside the callback.
+        The first trip wins: a later crash must not overwrite the reason a
+        human will read in the alert.
+        """
+        if self._safety_pause_requested.is_set():
+            return
+        self._safety_pause_reason = service
+        self._safety_pause_requested.set()
+
+    async def _run_safety_supervisor(self) -> None:
+        """Pause trading once a safety-critical service trips the latch.
+
+        Runs inside the run TaskGroup, which only closes when every task is
+        done — so this must also return on a normal stop, not just on a trip,
+        or shutdown would hang forever waiting for a crash that never comes.
+        One-shot: once entries are muted there is nothing more to do until a
+        human restarts.
+        """
+        waiters = [
+            asyncio.ensure_future(self._safety_pause_requested.wait()),
+            asyncio.ensure_future(self._stop_requested.wait()),
+        ]
+        try:
+            await asyncio.wait(waiters, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            for waiter in waiters:
+                waiter.cancel()
+        if self._safety_pause_requested.is_set():
+            await self._pause_for_failed_service(self._safety_pause_reason or "unknown")
+
+    async def _pause_for_failed_service(self, service: str) -> None:
+        """Flatten-safe halt when a safety-critical background service dies.
+
+        Mutes the production bot's entries — its protective stops and exits
+        keep running, so capital is never trapped — and raises a loud alert.
+        Deliberately does not stop the worker: a dead control plane means the
+        operator is blind to new risk, so the safe response is to take none
+        until they restart and resume, not to abandon open positions to an
+        unattended shutdown. The pause is persisted, so it survives the
+        restart and waits for an explicit human resume.
+        """
+        log_event(logger, logging.ERROR, "safety_pause_tripped", service=service)
+        try:
+            await self.pause_bot(PRODUCTION_BOT_ID)
+        except Exception:
+            # The in-memory mute already took effect (pause_bot mutes before it
+            # persists); a failed persist must still raise the alert, not swallow
+            # the one event the operator needs to see.
+            log_event(
+                logger, logging.ERROR, "safety_pause_persist_failed", service=service, exc_info=True
+            )
+        try:
+            await self._notify(
+                f"⚠️ tradebot paused: the {service} service crashed; new entries are "
+                "halted (protective stops and exits still run). Restart the worker and "
+                "resume the bot once the control plane is back."
+            )
+        except Exception:
+            # This runs in the run TaskGroup's supervisor: a failed alert (a
+            # slow or down Telegram) must not crash the group and take the
+            # worker — already-tripped-and-muted — down with it.
+            log_event(
+                logger, logging.ERROR, "safety_pause_alert_failed", service=service, exc_info=True
+            )
 
     async def kill_bot(self, bot_id: str) -> tuple[int, list[str]]:
         """Halt one bot and flatten its positions at market.
@@ -1737,6 +1812,9 @@ class Worker:
             async with asyncio.TaskGroup() as task_group:
                 self._task_group = task_group
                 task_group.create_task(self._stop_requested.wait())
+                # Mutes entries if a safety-critical service (the control
+                # plane) crashes; idle for the worker's whole life otherwise.
+                task_group.create_task(self._run_safety_supervisor())
                 for symbol, feed in self._feeds.items():
                     self._feed_tasks[symbol] = task_group.create_task(feed.run())
         finally:
@@ -2058,20 +2136,35 @@ class Worker:
         server = NoSignalCaptureServer(
             uvicorn.Config(app, host="0.0.0.0", port=self.config.api_port, log_level="warning")
         )
-        task = asyncio.create_task(server.serve())
+        task = self._supervise_control_api(asyncio.create_task(server.serve()))
+        log_event(logger, logging.INFO, "http_server_listening", port=self.config.api_port)
+        return task
 
-        def log_api_outcome(finished: asyncio.Task[None]) -> None:
-            # A crashed API (port conflict, bad config) must be loud: the bot
-            # would otherwise trade on with its control plane silently dead.
+    def _supervise_control_api(self, task: asyncio.Task[None]) -> asyncio.Task[None]:
+        """Trip the safety pause if the control-plane task ends unexpectedly.
+
+        A dead control plane (port conflict, bad config, an unhandled server
+        error, or the server simply returning) leaves the operator unable to
+        pause, kill, or approve — so the bot must stop taking new risk on its
+        own. The task is meant to run for the worker's whole life; any end
+        other than shutdown cancellation is a failure, a clean return
+        included. Returns ``task`` for chaining.
+        """
+
+        def on_api_outcome(finished: asyncio.Task[None]) -> None:
             try:
                 finished.result()
             except asyncio.CancelledError:
-                pass
+                return  # cancelled at shutdown — the one expected ending
             except Exception:
                 log_event(logger, logging.ERROR, "control_api_server_crashed", exc_info=True)
+            else:
+                if self._stop_requested.is_set():
+                    return  # the server returned as part of a clean shutdown
+                log_event(logger, logging.ERROR, "control_api_server_exited")
+            self._trip_safety_pause("control_api")
 
-        task.add_done_callback(log_api_outcome)
-        log_event(logger, logging.INFO, "http_server_listening", port=self.config.api_port)
+        task.add_done_callback(on_api_outcome)
         return task
 
     def stop(self) -> None:
