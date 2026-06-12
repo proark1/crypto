@@ -16,6 +16,7 @@ from __future__ import annotations
 import gzip
 import hashlib
 import hmac
+import io
 import json
 import logging
 from datetime import UTC, datetime
@@ -41,22 +42,35 @@ async def dump_tables(database: Database) -> bytes:
     Decimals and datetimes are stringified; the restore side rebuilds them
     from the column types, so the round trip is exact — a backup that
     silently floats money would be worse than none.
+
+    Rows stream from a server-side cursor straight into the gzip stream one
+    at a time, so peak memory stays flat however large the tables grow —
+    years of candles must never have to fit in RAM at once. The byte format
+    is unchanged: a header line, then one ``{"table", "row"}`` line per row,
+    each newline-terminated.
     """
-    lines = [
-        json.dumps(
-            {
-                "backup_version": BACKUP_FORMAT_VERSION,
-                "created_at": datetime.now(tz=UTC).isoformat(),
-                "tables": [table.name for table in metadata.sorted_tables],
-            }
-        )
-    ]
-    async with database.engine.connect() as connection:
-        for table in metadata.sorted_tables:
-            rows = (await connection.execute(select(table))).mappings().all()
-            for row in rows:
-                lines.append(json.dumps({"table": table.name, "row": dict(row)}, default=str))
-    return gzip.compress(("\n".join(lines) + "\n").encode())
+    header = json.dumps(
+        {
+            "backup_version": BACKUP_FORMAT_VERSION,
+            "created_at": datetime.now(tz=UTC).isoformat(),
+            "tables": [table.name for table in metadata.sorted_tables],
+        }
+    )
+    buffer = io.BytesIO()
+    # mtime=0 keeps the gzip header free of a wall-clock stamp, so identical
+    # data dumps to identical bytes.
+    with gzip.GzipFile(fileobj=buffer, mode="wb", mtime=0) as archive:
+        archive.write((header + "\n").encode())
+        # begin(), not connect(): server-side cursors (stream) live inside a
+        # transaction, so open one explicitly rather than lean on the dialect
+        # to imply it. Reads only — the commit on exit is a no-op.
+        async with database.engine.begin() as connection:
+            for table in metadata.sorted_tables:
+                result = await connection.stream(select(table))
+                async for row in result.mappings():
+                    line = json.dumps({"table": table.name, "row": dict(row)}, default=str)
+                    archive.write((line + "\n").encode())
+    return buffer.getvalue()
 
 
 async def restore_tables(database: Database, archive: bytes) -> dict[str, int]:

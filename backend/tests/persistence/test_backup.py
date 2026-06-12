@@ -88,6 +88,49 @@ class TestDumpAndRestore:
         (fill,) = await FillStore(database).fetch_all()
         assert fill.fee_quote == Decimal("0.005005")
 
+    async def test_round_trip_streams_many_rows_across_tables(self, database: Database) -> None:
+        """Multi-row tables must dump and restore in full, not just a first chunk."""
+        candle_store = CandleStore(database)
+        await candle_store.insert_batch(
+            [
+                Candle(
+                    symbol="BTC/USDT",
+                    interval=CandleInterval.M1,
+                    open_time=BASE_TIME + timedelta(minutes=minute),
+                    close_time=BASE_TIME + timedelta(minutes=minute + 1),
+                    open_quote=Decimal("100"),
+                    high_quote=Decimal("101"),
+                    low_quote=Decimal("99"),
+                    close_quote=Decimal(f"100.{minute:02d}"),
+                    volume_base=Decimal("1"),
+                )
+                for minute in range(50)
+            ]
+        )
+        fill_store = FillStore(database)
+        for index in range(20):
+            await fill_store.append(
+                Fill(
+                    client_order_id=f"ord-{index}",
+                    symbol="BTC/USDT",
+                    side=Side.BUY,
+                    price_quote=Decimal("100"),
+                    quantity_base=Decimal("0.01"),
+                    fee_quote=Decimal("0.001"),
+                    filled_at=BASE_TIME + timedelta(minutes=index),
+                )
+            )
+
+        archive = await dump_tables(database)
+        async with database.engine.begin() as connection:
+            await connection.run_sync(metadata.drop_all)
+            await connection.run_sync(metadata.create_all)
+        counts = await restore_tables(database, archive)
+
+        assert counts == {"candles": 50, "fills": 20}
+        assert len(await candle_store.fetch_recent("BTC/USDT", CandleInterval.M1, 100)) == 50
+        assert len(await FillStore(database).fetch_all()) == 20
+
     async def test_unknown_version_is_refused(self, database: Database) -> None:
         bogus = gzip.compress(b'{"backup_version": 99}\n')
         with pytest.raises(ValueError, match="unsupported backup version"):
