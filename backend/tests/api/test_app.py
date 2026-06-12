@@ -107,6 +107,11 @@ class StubBot:
         # contract tests — worker tests cover the real lifecycle.
         self.custom_bots: dict[str, dict[str, Any]] = {}
         self.paused_bots: set[str] = set()
+        # In-memory trading fees, seeded from config defaults (10 bps a side).
+        self.fees: dict[str, Decimal] = {
+            "buy_fee_bps": self.config.buy_fee_bps,
+            "sell_fee_bps": self.config.sell_fee_bps,
+        }
 
     def all_engines(self) -> Iterator[TradingEngine]:
         yield from self.engines.values()
@@ -201,6 +206,17 @@ class StubBot:
         if bot_id not in self.custom_bots:
             raise KeyError(f"no custom bot {bot_id!r}")
         del self.custom_bots[bot_id]
+
+    def trading_fees(self) -> Mapping[str, Decimal]:
+        return dict(self.fees)
+
+    async def update_trading_fees(self, *, buy_fee_bps: Decimal, sell_fee_bps: Decimal) -> None:
+        from tradebot.execution import FeeSchedule
+
+        # Reuse the real validation so the stub rejects exactly what the
+        # worker would (negative, or above the sanity cap).
+        FeeSchedule(buy_fee_bps=buy_fee_bps, sell_fee_bps=sell_fee_bps)
+        self.fees = {"buy_fee_bps": buy_fee_bps, "sell_fee_bps": sell_fee_bps}
 
     def fill_store_for(self, bot_id: str) -> FillStore:
         if bot_id != "production" and bot_id not in self.custom_bots:
@@ -1320,6 +1336,41 @@ class TestFills:
         assert body[0]["value_quote"] == "200"  # price * quantity, fee excluded
         assert body[0]["side"] == "buy"
         assert body[0]["filled_at"] == BASE_TIME.isoformat()
+
+
+class TestTradingFees:
+    async def test_defaults_are_returned_as_percent_and_bps(self, database: Database) -> None:
+        bot = StubBot(database)
+        async with make_client(bot) as client:
+            body = (await client.get("/settings/fees")).json()
+
+        assert body["buy_fee_percent"] == "0.1"  # 10 bps
+        assert body["sell_fee_percent"] == "0.1"
+        assert body["buy_fee_bps"] == "10"
+        assert body["sell_fee_bps"] == "10"
+
+    async def test_update_converts_percent_to_bps_and_persists(self, database: Database) -> None:
+        bot = StubBot(database)
+        async with make_client(bot) as client:
+            response = await client.put(
+                "/settings/fees",
+                json={"buy_fee_percent": "0.2", "sell_fee_percent": "0.25"},
+            )
+            assert response.status_code == 200
+            assert response.json()["buy_fee_bps"] == "20"
+            assert response.json()["sell_fee_bps"] == "25"
+            # The change is reflected on the next read.
+            after = (await client.get("/settings/fees")).json()
+            assert after["sell_fee_percent"] == "0.25"
+
+    async def test_absurd_fee_is_rejected(self, database: Database) -> None:
+        bot = StubBot(database)
+        async with make_client(bot) as client:
+            response = await client.put(
+                "/settings/fees",
+                json={"buy_fee_percent": "50", "sell_fee_percent": "0.1"},  # 5000 bps
+            )
+        assert response.status_code == 400
 
 
 class TestStrategyVersions:

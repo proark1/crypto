@@ -36,6 +36,7 @@ from tradebot.persistence.database import (
     orders_table,
     risk_state_table,
     strategy_settings_table,
+    trading_fees_table,
 )
 from tradebot.risk.breakers import BreakerState
 
@@ -601,6 +602,49 @@ class RiskStateStore:
         data.pop("id")
         data.pop("updated_at")
         return BreakerState.model_validate(data), paused
+
+
+class TradingFeesStore:
+    """The single-row operator-set trading fees (buy/sell, in basis points).
+
+    Absent until an operator first saves fees: until then the worker uses the
+    boot defaults from config. Buy and sell fees are kept exact as ``Decimal``
+    bps, never floats, like every other money-touching value.
+    """
+
+    ROW_ID = 1
+
+    def __init__(self, database: Database) -> None:
+        """Bind the store to ``database``."""
+        self._database = database
+
+    async def save(self, buy_fee_bps: Decimal, sell_fee_bps: Decimal, at: datetime) -> None:
+        """Upsert the one trading-fees row."""
+        _require_aware(at)
+        row = {
+            "id": self.ROW_ID,
+            "buy_fee_bps": buy_fee_bps,
+            "sell_fee_bps": sell_fee_bps,
+            "updated_at": at,
+        }
+        statement = pg_insert(trading_fees_table)
+        statement = statement.on_conflict_do_update(
+            index_elements=["id"],
+            set_={name: statement.excluded[name] for name in row if name != "id"},
+        )
+        async with self._database.engine.begin() as connection:
+            await connection.execute(statement, [row])
+
+    async def load(self) -> tuple[Decimal, Decimal] | None:
+        """Return ``(buy_fee_bps, sell_fee_bps)``, or ``None`` if never set."""
+        statement = select(
+            trading_fees_table.c.buy_fee_bps, trading_fees_table.c.sell_fee_bps
+        ).where(trading_fees_table.c.id == self.ROW_ID)
+        async with self._database.engine.connect() as connection:
+            row = (await connection.execute(statement)).first()
+        if row is None:
+            return None
+        return Decimal(row[0]), Decimal(row[1])
 
 
 class StrategySettingsStore:

@@ -4,7 +4,7 @@ from decimal import Decimal
 import pytest
 
 from tradebot.core.models import Candle, CandleInterval, Fill, Order, OrderType, Side
-from tradebot.execution import FillSimulatorConfig, SimulatedExecutionAdapter
+from tradebot.execution import FeeSchedule, FillSimulatorConfig, SimulatedExecutionAdapter
 
 BASE_TIME = datetime(2026, 1, 2, 0, 0, tzinfo=UTC)
 
@@ -392,3 +392,70 @@ class TestExecutionFidelity:
         await adapter.process_candle(make_candle(minutes_after_base=2, open_quote="103"))
         (fill,) = collector.fills
         assert fill.filled_at == BASE_TIME + timedelta(minutes=2)
+
+
+class TestFeeSchedule:
+    """The live per-side fee schedule and how the simulator uses it."""
+
+    def test_fee_bps_for_picks_the_side(self) -> None:
+        schedule = FeeSchedule(buy_fee_bps=Decimal(20), sell_fee_bps=Decimal(30))
+        assert schedule.fee_bps_for(Side.BUY) == Decimal(20)
+        assert schedule.fee_bps_for(Side.SELL) == Decimal(30)
+
+    def test_standard_is_ten_bps_a_side(self) -> None:
+        standard = FeeSchedule.standard()
+        assert standard.buy_fee_bps == Decimal(10)
+        assert standard.sell_fee_bps == Decimal(10)
+
+    def test_update_rejects_negative_and_absurd_fees(self) -> None:
+        schedule = FeeSchedule.standard()
+        with pytest.raises(ValueError, match="cannot be negative"):
+            schedule.update(buy_fee_bps=Decimal(-1), sell_fee_bps=Decimal(10))
+        with pytest.raises(ValueError, match="sanity cap"):
+            schedule.update(buy_fee_bps=Decimal(10), sell_fee_bps=Decimal(2000))
+        # The rejected update left the previous fees intact.
+        assert schedule.buy_fee_bps == Decimal(10)
+
+    def test_update_rejects_non_finite_fees(self) -> None:
+        # NaN slips past < and > checks (every NaN comparison is False), so it
+        # must be rejected explicitly before it can poison fee math.
+        schedule = FeeSchedule.standard()
+        with pytest.raises(ValueError, match="finite"):
+            schedule.update(buy_fee_bps=Decimal("NaN"), sell_fee_bps=Decimal(10))
+        with pytest.raises(ValueError, match="finite"):
+            schedule.update(buy_fee_bps=Decimal(10), sell_fee_bps=Decimal("Infinity"))
+        assert schedule.buy_fee_bps == Decimal(10)
+
+    async def test_schedule_fee_overrides_config_per_side(self) -> None:
+        # Config says taker 10 bps, but a live schedule of 20/30 wins, by side.
+        config = FillSimulatorConfig(taker_fee_bps=Decimal(10), market_slippage_bps=Decimal(0))
+        schedule = FeeSchedule(buy_fee_bps=Decimal(20), sell_fee_bps=Decimal(30))
+        adapter = SimulatedExecutionAdapter(config, fees=schedule)
+        collector = FillCollector()
+        adapter.set_fill_handler(collector)
+
+        await adapter.submit(make_order(Side.BUY, OrderType.MARKET, client_order_id="b"))
+        await adapter.process_candle(make_candle(open_quote="100"))
+        await adapter.submit(make_order(Side.SELL, OrderType.MARKET, client_order_id="s"))
+        await adapter.process_candle(make_candle(open_quote="100", minutes_after_base=1))
+
+        buy_fill, sell_fill = collector.fills
+        assert buy_fill.fee_quote == Decimal("0.2")  # 100 notional * 20 bps
+        assert sell_fill.fee_quote == Decimal("0.3")  # 100 notional * 30 bps
+
+    async def test_updating_the_schedule_changes_the_next_fill(self) -> None:
+        config = FillSimulatorConfig(market_slippage_bps=Decimal(0))
+        schedule = FeeSchedule(buy_fee_bps=Decimal(10), sell_fee_bps=Decimal(10))
+        adapter = SimulatedExecutionAdapter(config, fees=schedule)
+        collector = FillCollector()
+        adapter.set_fill_handler(collector)
+
+        await adapter.submit(make_order(Side.BUY, OrderType.MARKET, client_order_id="first"))
+        await adapter.process_candle(make_candle(open_quote="100"))
+        schedule.update(buy_fee_bps=Decimal(50), sell_fee_bps=Decimal(50))
+        await adapter.submit(make_order(Side.BUY, OrderType.MARKET, client_order_id="second"))
+        await adapter.process_candle(make_candle(open_quote="100", minutes_after_base=1))
+
+        first, second = collector.fills
+        assert first.fee_quote == Decimal("0.1")  # 100 notional * 10 bps
+        assert second.fee_quote == Decimal("0.5")  # live change, no rebuild: 50 bps

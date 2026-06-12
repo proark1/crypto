@@ -29,6 +29,7 @@ import type {
   StrategyVersionResponse,
   SuggestedEvaluationResponse,
   SweepResponse,
+  TradingFeesResponse,
   WalletResponse,
 } from "./types";
 
@@ -235,6 +236,23 @@ export function killBot(botId: string): Promise<CommandResponse> {
  * position or orders ("stop the bot first"), 404 unknown. */
 export function deleteBot(botId: string): Promise<CommandResponse> {
   return request<CommandResponse>(`/bots/${encodeURIComponent(botId)}`, "DELETE");
+}
+
+/** The buy/sell trading fees applied to every live paper fill. */
+export function fetchTradingFees(): Promise<TradingFeesResponse> {
+  return request<TradingFeesResponse>("/settings/fees", "GET");
+}
+
+/** Set the buy/sell fees, as percentages of notional ("0.1" = 0.1%). Takes
+ * effect on the next fill across every bot. 400 on a negative or absurd fee. */
+export function updateTradingFees(
+  buyFeePercent: string,
+  sellFeePercent: string,
+): Promise<TradingFeesResponse> {
+  return request<TradingFeesResponse>("/settings/fees", "PUT", {
+    buy_fee_percent: buyFeePercent,
+    sell_fee_percent: sellFeePercent,
+  });
 }
 
 /** Start one evaluation run per strategy over identical scenario sets.

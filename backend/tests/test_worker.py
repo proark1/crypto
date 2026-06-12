@@ -243,6 +243,27 @@ class TestWorker:
         assert position.quantity_base == Decimal("2")
         assert worker.portfolio.quote_balance == Decimal("9799.8")
 
+    async def test_trading_fees_persist_and_reload_across_restart(self, database: Database) -> None:
+        await database.create_schema()
+        worker = Worker(make_config(), database, ScriptedExchange([]))
+        # Boot defaults: 10 bps a side, shared by every engine's simulator.
+        assert worker.trading_fees() == {
+            "buy_fee_bps": Decimal("10"),
+            "sell_fee_bps": Decimal("10"),
+        }
+
+        await worker.update_trading_fees(buy_fee_bps=Decimal("20"), sell_fee_bps=Decimal("30"))
+        assert worker.fee_schedule.fee_bps_for(Side.BUY) == Decimal("20")
+        assert worker.fee_schedule.fee_bps_for(Side.SELL) == Decimal("30")
+
+        # A fresh process starts from config defaults, then initialize() loads
+        # the operator's persisted fees over them.
+        restarted = Worker(make_config(), database, ScriptedExchange([]))
+        assert restarted.fee_schedule.buy_fee_bps == Decimal("10")
+        await restarted.initialize()
+        assert restarted.fee_schedule.buy_fee_bps == Decimal("20")
+        assert restarted.fee_schedule.sell_fee_bps == Decimal("30")
+
     async def test_restart_restores_open_orders_into_their_engines(
         self, database: Database
     ) -> None:

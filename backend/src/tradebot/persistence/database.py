@@ -171,6 +171,19 @@ rows 1-5, custom bots start at 100. Deleting a bot keeps its journals
 (fills/orders/decisions stay queryable under its bot_id) but frees the
 id for nothing: ids are forever."""
 
+trading_fees_table = Table(
+    "trading_fees",
+    metadata,
+    Column("id", Integer, primary_key=True),
+    Column("buy_fee_bps", Numeric, nullable=False),
+    Column("sell_fee_bps", Numeric, nullable=False),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
+)
+"""Operator-set trading fees, one row (id=1). Buy and sell fees in basis
+points, applied to every live paper fill. Absent until the operator saves
+fees in the UI; until then the boot defaults (``AppConfig.buy/sell_fee_bps``)
+apply. NUMERIC keeps the rate exact, matching the Decimal money invariant."""
+
 strategy_settings_table = Table(
     "strategy_settings",
     metadata,

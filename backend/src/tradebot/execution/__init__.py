@@ -8,10 +8,15 @@ invariant in concrete form.
 """
 
 from tradebot.execution.adapter import ExecutionAdapter, FillHandler
-from tradebot.execution.simulator import FillSimulatorConfig, SimulatedExecutionAdapter
+from tradebot.execution.simulator import (
+    FeeSchedule,
+    FillSimulatorConfig,
+    SimulatedExecutionAdapter,
+)
 
 __all__ = [
     "ExecutionAdapter",
+    "FeeSchedule",
     "FillHandler",
     "FillSimulatorConfig",
     "SimulatedExecutionAdapter",
