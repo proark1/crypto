@@ -566,11 +566,19 @@ class Worker:
             log_event(
                 logger, logging.ERROR, "safety_pause_persist_failed", service=service, exc_info=True
             )
-        await self._notify(
-            f"⚠️ tradebot paused: the {service} service crashed; new entries are "
-            "halted (protective stops and exits still run). Restart the worker and "
-            "resume the bot once the control plane is back."
-        )
+        try:
+            await self._notify(
+                f"⚠️ tradebot paused: the {service} service crashed; new entries are "
+                "halted (protective stops and exits still run). Restart the worker and "
+                "resume the bot once the control plane is back."
+            )
+        except Exception:
+            # This runs in the run TaskGroup's supervisor: a failed alert (a
+            # slow or down Telegram) must not crash the group and take the
+            # worker — already-tripped-and-muted — down with it.
+            log_event(
+                logger, logging.ERROR, "safety_pause_alert_failed", service=service, exc_info=True
+            )
 
     async def kill_bot(self, bot_id: str) -> tuple[int, list[str]]:
         """Halt one bot and flatten its positions at market.
@@ -2067,22 +2075,28 @@ class Worker:
         return task
 
     def _supervise_control_api(self, task: asyncio.Task[None]) -> asyncio.Task[None]:
-        """Trip the safety pause if the control-plane task crashes.
+        """Trip the safety pause if the control-plane task ends unexpectedly.
 
         A dead control plane (port conflict, bad config, an unhandled server
-        error) leaves the operator unable to pause, kill, or approve — so the
-        bot must stop taking new risk on its own. Cancellation at shutdown is
-        the expected path and never trips. Returns ``task`` for chaining.
+        error, or the server simply returning) leaves the operator unable to
+        pause, kill, or approve — so the bot must stop taking new risk on its
+        own. The task is meant to run for the worker's whole life; any end
+        other than shutdown cancellation is a failure, a clean return
+        included. Returns ``task`` for chaining.
         """
 
         def on_api_outcome(finished: asyncio.Task[None]) -> None:
             try:
                 finished.result()
             except asyncio.CancelledError:
-                pass
+                return  # cancelled at shutdown — the one expected ending
             except Exception:
                 log_event(logger, logging.ERROR, "control_api_server_crashed", exc_info=True)
-                self._trip_safety_pause("control_api")
+            else:
+                if self._stop_requested.is_set():
+                    return  # the server returned as part of a clean shutdown
+                log_event(logger, logging.ERROR, "control_api_server_exited")
+            self._trip_safety_pause("control_api")
 
         task.add_done_callback(on_api_outcome)
         return task

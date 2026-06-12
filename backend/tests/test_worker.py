@@ -1171,3 +1171,25 @@ class TestSafetyPause:
 
         assert worker._safety_pause_reason == "control_api"
         assert worker.engines["BTC/USDT"].paused is True
+
+    async def test_control_api_clean_exit_also_trips_the_pause(
+        self, database: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A control-API task that returns on its own is a dead plane too."""
+        exchange = CrashOnceApiExchange()
+        worker = Worker(make_config(api_port=8933), database, exchange)
+        exchange.worker = worker
+
+        async def clean_exit() -> None:
+            return  # the server returned without being cancelled — unexpected
+
+        monkeypatch.setattr(
+            worker,
+            "_start_api",
+            lambda: worker._supervise_control_api(asyncio.create_task(clean_exit())),
+        )
+
+        await worker.run()
+
+        assert worker._safety_pause_reason == "control_api"
+        assert worker.engines["BTC/USDT"].paused is True
