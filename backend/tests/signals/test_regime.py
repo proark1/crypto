@@ -79,13 +79,15 @@ class TestDetector:
         assert verdict.allowed is True
         assert any("ADX" in reason for reason in verdict.reasons)
 
-    def test_chop_is_ranging_and_blocks_trend_entries(self) -> None:
+    def test_chop_is_ranging_but_still_allows_entries(self) -> None:
         detector = MarketRegimeDetector("BTC/USDT", CONFIG)
         feed(detector, [100.0 + (1.0 if i % 2 == 0 else -1.0) for i in range(20)])
 
+        # Ranging is a healthy regime: family routing is the router's
+        # preference, not a gate veto, so a trend entry is still allowed.
         assert detector.regime.label == RANGING
         verdict = RegimeGate(detector).evaluate(make_signal(20))
-        assert verdict.allowed is False
+        assert verdict.allowed is True
         assert any("ranging" in reason for reason in verdict.reasons)
 
     def test_crash_below_the_peak_is_risk_off_even_while_trending(self) -> None:
@@ -127,7 +129,7 @@ class TestDetector:
 
 
 class TestFamilyRouting:
-    def test_ranging_allows_reversion_and_blocks_trend(self) -> None:
+    def test_ranging_allows_both_families(self) -> None:
         detector = MarketRegimeDetector("BTC/USDT", CONFIG)
         feed(detector, [100.0 + (1.0 if i % 2 == 0 else -1.0) for i in range(20)])
         gate = RegimeGate(detector)
@@ -135,10 +137,13 @@ class TestFamilyRouting:
         reversion = make_signal(20).model_copy(update={"strategy_name": "mean_reversion"})
         trend = make_signal(20)
 
+        # A healthy regime no longer vetoes the non-preferred family: the
+        # router favours reversion while ranging, but the gate lets a trend
+        # entry through too (it starved the single-coin production bot).
         assert gate.evaluate(reversion).allowed is True
-        assert gate.evaluate(trend).allowed is False
+        assert gate.evaluate(trend).allowed is True
 
-    def test_trending_allows_trend_and_blocks_reversion(self) -> None:
+    def test_trending_allows_both_families(self) -> None:
         detector = MarketRegimeDetector("BTC/USDT", CONFIG)
         feed(detector, [100.0 + 2 * i for i in range(12)])
         gate = RegimeGate(detector)
@@ -147,9 +152,7 @@ class TestFamilyRouting:
         trend = make_signal(12)
 
         assert gate.evaluate(trend).allowed is True
-        blocked = gate.evaluate(reversion)
-        assert blocked.allowed is False
-        assert any("mean-reversion entries disabled" in r for r in blocked.reasons)
+        assert gate.evaluate(reversion).allowed is True
 
     def test_risk_off_blocks_both_families(self) -> None:
         detector = MarketRegimeDetector("BTC/USDT", CONFIG)

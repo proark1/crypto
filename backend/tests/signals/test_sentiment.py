@@ -127,19 +127,20 @@ class TestGateIntegration:
         trend_signal = signal.model_copy(
             update={"signal_id": "test:4", "strategy_name": "trend_following"}
         )
-        # The trend family stays gated here by the regime itself (ranging),
-        # so fear never even gets asked — the family exemption widens
-        # nothing for trend entries.
+        # The trend family is no longer gated by a ranging regime, but
+        # extreme fear still pauses it: the mean-reversion exemption widens
+        # nothing for trend entries, so the fear veto applies here.
         assert gate.evaluate(trend_signal).allowed is False
 
     def test_sentiment_never_overrides_a_blocking_regime(self) -> None:
-        """One-way valve: greedy-but-ranging stays blocked."""
-        detector = MarketRegimeDetector(
-            "BTC/USDT", RegimeConfig(timeframe=CandleInterval.M1, adx_period=3)
-        )
-        feed(detector, [100.0 + (1.0 if i % 2 == 0 else -1.0) for i in range(20)])
+        """One-way valve: greed cannot reopen a risk-off market."""
+        detector = MarketRegimeDetector("BTC/USDT", REGIME_CONFIG)
+        # A strong climb then a fast slide >20% below the peak: risk-off.
+        closes = [100.0 + 5 * i for i in range(10)] + [145.0 - 12 * i for i in range(1, 6)]
+        feed(detector, closes)
+        signal_time = datetime(2026, 1, 2, 0, 0, tzinfo=UTC) + timedelta(minutes=len(closes))
         sentiment = MarketSentiment()
-        sentiment.record_fear_greed(50, datetime(2026, 1, 2, 0, 21, tzinfo=UTC))  # neutral
+        sentiment.record_fear_greed(50, signal_time)  # neutral — no veto, no loosening
         gate = RegimeGate(detector, sentiment)
         signal = Signal(
             signal_id="test:2",
@@ -149,9 +150,9 @@ class TestGateIntegration:
             confidence=0.8,
             stop_price_quote=Decimal("95"),
             reasons=(),
-            created_at=datetime(2026, 1, 2, 0, 21, tzinfo=UTC),
+            created_at=signal_time,
         )
-        assert gate.evaluate(signal).allowed is False  # still ranging
+        assert gate.evaluate(signal).allowed is False  # still risk-off
 
 
 class TestSentimentMonitor:

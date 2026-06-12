@@ -1,17 +1,23 @@
 """Regime-driven routing between strategy families (ARCHITECTURE.md 5.2).
 
-The regime decides *which family is active* — trend following in trending
-markets, mean reversion in ranging ones. Both strategies consume every
-candle so their indicators stay warm across regime changes; only the
-active family's entries pass through. Exits pass from **either** family
-whenever a position is open: a regime flip must never orphan a position
-with its exit logic switched off.
+The regime decides *which family is preferred* — trend following in
+trending markets, mean reversion in ranging ones. Both strategies consume
+every candle so their indicators stay warm across regime changes; the
+preferred family's entry is forwarded first, and the other family's entry
+is forwarded when the preferred one is silent. Exits pass from **either**
+family whenever a position is open: a regime flip must never orphan a
+position with its exit logic switched off.
+
+Preference here is the *only* family routing: the regime gate no longer
+vetoes the non-preferred family in a healthy regime (that veto starved the
+single-coin production account — see ARCHITECTURE.md 5.2). The gate still
+blocks every family on risk-off, warm-up, and stale data, so this router
+stays mode- and venue-ignorant and never has to know the market is hostile.
 
 The router is itself a ``Strategy``, so engines, backtests, and the
 evaluator can use it without changes — and it takes the regime as a plain
 callable, keeping this module as mode- and venue-ignorant as every other
-strategy (the gate, not the router, remains the §5.2 enforcer; routing
-here just avoids generating signals the gate would have to discard).
+strategy.
 """
 
 from __future__ import annotations
@@ -55,10 +61,11 @@ class RegimeStrategyRouter:
         (trend family checked first) wins, whatever the regime says —
         getting out is never regime-gated. When flat, the regime picks
         which family's BUY is *preferred*; the other family's BUY is still
-        forwarded when the preferred one is silent, because the regime
-        gate — not the router — is the §5.2 enforcer, and a veto there is
-        journaled where a signal suppressed here would vanish without a
-        trace.
+        forwarded when the preferred one is silent, so a healthy market is
+        never left untraded just because the preferred family was quiet (the
+        gate allows either family in a healthy regime, and any genuine block
+        there is journaled where a signal suppressed here would vanish
+        without a trace).
         """
         trend_signal = self._trend.on_candle(candle, position)
         reversion_signal = self._reversion.on_candle(candle, position)

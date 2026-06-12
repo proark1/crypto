@@ -2,9 +2,14 @@
 
 The reference market (BTC by convention) is classified on a coarse
 timeframe into TRENDING / RANGING / RISK_OFF, and the gate decides whether
-*any* coin may open a new position: trend-following entries are allowed
-only while the reference market trends, and nothing opens during risk-off.
-Exits are never gated.
+*any* coin may open a new position: the gate blocks new entries only while
+the market is genuinely hostile or unreadable — risk-off (a deep drawdown
+from the recent peak), warm-up (no regime formed yet), or stale data — and
+sentiment may tighten it further. Which *family* a healthy regime favours
+(trend in trending markets, mean reversion in ranging ones) is the
+router's preference, not a gate veto: blocking the non-preferred family
+here starved the production bot on a single-coin account, where the one
+traded market is also the regime reference. Exits are never gated.
 
 This first increment classifies from price alone (ADX for trend strength,
 drawdown from the recent peak for risk-off). The Fear & Greed and BTC
@@ -229,10 +234,14 @@ class MarketRegimeDetector:
 class RegimeGate:
     """Entry gate over the reference market's regime (pipeline step 1, §5.2).
 
-    The regime routes strategy families: trend entries pass only while the
-    reference market trends, mean-reversion entries only while it ranges.
-    Risk-off, warm-up, and stale data block every family — when the gate
-    cannot see the market, it fails toward not trading.
+    The gate blocks new entries only while the market is hostile or
+    unreadable: risk-off (a deep drawdown from the peak), warm-up (no regime
+    formed yet), and stale data block every family — when the gate cannot
+    see the market, it fails toward not trading. A healthy regime (trending
+    or ranging) lets both families enter; which family a regime *favours* is
+    the router's preference, not enforced here, so the production bot is not
+    starved on a single-coin account where its one market is also the
+    reference. Sentiment may still tighten the gate (it can only veto).
     """
 
     def __init__(
@@ -277,20 +286,12 @@ class RegimeGate:
                 allowed=False,
                 reasons=("regime gate: entries disabled — " + regime.reasons[0],),
             )
-        # Family routing (§5.2): the regime decides which strategy family
-        # may enter. Unknown strategy names are treated as trend family —
-        # the conservative default for the family that exists today.
+        # Family routing is the router's preference, not a gate veto: a
+        # healthy regime (trending or ranging) lets either family enter.
+        # ``is_reversion`` is still resolved for the sentiment tightener
+        # below, which exempts the mean-reversion family from the extreme-
+        # fear pause. Unknown strategy names count as trend family.
         is_reversion = signal.strategy_name in REVERSION_STRATEGY_NAMES
-        if regime.label == TRENDING and is_reversion:
-            return GateDecision(
-                allowed=False,
-                reasons=("regime gate: mean-reversion entries disabled — " + regime.reasons[0],),
-            )
-        if regime.label == RANGING and not is_reversion:
-            return GateDecision(
-                allowed=False,
-                reasons=("regime gate: trend entries disabled — " + regime.reasons[0],),
-            )
         if self._sentiment is not None:
             # Family-aware tightening: extreme fear pauses trend entries
             # only — mean-reversion is the family built to buy fear, and a

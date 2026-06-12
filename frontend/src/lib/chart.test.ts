@@ -18,6 +18,7 @@ const BUY: FillResponse = {
   side: "buy",
   price_quote: "100",
   quantity_base: "0.05",
+  value_quote: "5",
   fee_quote: "0.1",
   filled_at: "2026-01-02T00:05:00+00:00",
 };
