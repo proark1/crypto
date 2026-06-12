@@ -169,6 +169,32 @@ export interface FindingResponse {
   confidence: string;
   status: string;
   created_at: string;
+  /** How many earlier completed runs of the same bot mined this same
+   * pattern — 0 means the pattern is new in this run. */
+  seen_in_prior_runs: number;
+  /** The earliest of those runs, for "recurred since run #N"; null when new. */
+  first_seen_run_id: number | null;
+}
+
+/** One research-timeline entry: server-composed prose plus the linkage and
+ * tones the feed renders ("evaluation" | "sweep" | "promotion"). */
+export interface TimelineEventResponse {
+  at: string;
+  kind: string;
+  headline: string;
+  detail: string | null;
+  status: string | null;
+  strategy: string | null;
+  run_id: number | null;
+  sweep_id: number | null;
+  version_id: number | null;
+  expectancy_r: string | null;
+  verdict: string | null;
+  /** Patterns mined in this run but absent from the same bot's previous
+   * completed run (capped server-side). */
+  new_patterns: string[];
+  /** Patterns the previous run mined that this run no longer does. */
+  resolved_patterns: string[];
 }
 
 export interface HoldingResponse {

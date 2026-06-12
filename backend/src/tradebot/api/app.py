@@ -41,6 +41,8 @@ from tradebot.evaluation.sweep import (
     SweepCandidate,
     SweepConfig,
 )
+from tradebot.evaluation.timeline import WINDOW as TIMELINE_WINDOW
+from tradebot.evaluation.timeline import build_timeline
 from tradebot.news import NewsFlags
 from tradebot.persistence import (
     CHART_BUCKET_UNITS,
@@ -818,9 +820,21 @@ class FindingResponse(BaseModel):
     confidence: str
     status: str
     created_at: str
+    seen_in_prior_runs: int = 0
+    """How many earlier completed runs of the same bot mined this same
+    pattern (within the timeline's bounded window) — recurrence is the
+    pattern text itself, deterministic per miner (§12.2)."""
+
+    first_seen_run_id: int | None = None
+    """The earliest of those runs, for "recurred since run #N" prose."""
 
 
-def _finding_response(finding_id: int, finding: LearningFinding) -> FindingResponse:
+def _finding_response(
+    finding_id: int,
+    finding: LearningFinding,
+    seen_in_prior_runs: int = 0,
+    first_seen_run_id: int | None = None,
+) -> FindingResponse:
     """Serialize one finding for the API."""
     return FindingResponse(
         id=finding_id,
@@ -833,7 +847,29 @@ def _finding_response(finding_id: int, finding: LearningFinding) -> FindingRespo
         confidence=finding.confidence,
         status=finding.status,
         created_at=finding.created_at.isoformat(),
+        seen_in_prior_runs=seen_in_prior_runs,
+        first_seen_run_id=first_seen_run_id,
     )
+
+
+class TimelineEventResponse(BaseModel):
+    """One research-timeline entry (§12.8): server-composed prose + linkage."""
+
+    at: str
+    kind: str
+    """"evaluation" | "sweep" | "promotion" — drives the UI's badges."""
+
+    headline: str
+    detail: str | None
+    status: str | None
+    strategy: str | None
+    run_id: int | None
+    sweep_id: int | None
+    version_id: int | None
+    expectancy_r: str | None
+    verdict: str | None
+    new_patterns: list[str]
+    resolved_patterns: list[str]
 
 
 def _candle_response(candle: Candle | ChartCandle) -> CandleResponse:
@@ -1758,15 +1794,51 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
             horizon=[_candle_response(candle) for candle in horizon],
         )
 
+    async def finding_recurrence(run: dict[str, Any]) -> dict[str, tuple[int, int]]:
+        """Map pattern -> (prior-run count, first-seen run id) for ``run``'s bot.
+
+        Recurrence is the pattern text itself — deterministic per miner
+        (§12.2) — counted across earlier completed runs of the same
+        strategy within the timeline's bounded window. Patterns are mined
+        at most once per run, so occurrences equal runs.
+        """
+        prior_ids = [
+            other["id"]
+            for other in await state.evaluation_store.list_runs(TIMELINE_WINDOW)
+            if other["strategy"] == run["strategy"]
+            and other["status"] == RunStatus.COMPLETED.value
+            and other["id"] < run["id"]
+        ]
+        findings_by_run = await state.evaluation_store.fetch_findings_for_runs(prior_ids)
+        history: dict[str, tuple[int, int]] = {}
+        for prior_run_id in sorted(findings_by_run):
+            for _, prior in findings_by_run[prior_run_id]:
+                count, first = history.get(prior.pattern, (0, prior_run_id))
+                history[prior.pattern] = (count + 1, first)
+        return history
+
     @protected.get("/evaluations/{run_id}/findings")
     async def list_evaluation_findings(run_id: int) -> list[FindingResponse]:
         """List the run's mined mistake patterns, each awaiting accept/reject."""
-        if await state.evaluation_store.fetch_run(run_id) is None:
+        run = await state.evaluation_store.fetch_run(run_id)
+        if run is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail=f"no evaluation run {run_id}"
             )
         findings = await state.evaluation_store.fetch_findings(run_id)
-        return [_finding_response(finding_id, finding) for finding_id, finding in findings]
+        history = await finding_recurrence(run)
+        responses = []
+        for finding_id, finding in findings:
+            seen, first = history.get(finding.pattern, (0, 0))
+            responses.append(
+                _finding_response(
+                    finding_id,
+                    finding,
+                    seen_in_prior_runs=seen,
+                    first_seen_run_id=first if seen > 0 else None,
+                )
+            )
+        return responses
 
     async def decide_finding(finding_id: int, verdict: str) -> FindingResponse:
         """Apply the human verdict; first answer wins, repeats are conflicts."""
@@ -1783,7 +1855,46 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
                 detail=f"finding {finding_id} is already {finding.status}",
             )
         await state.evaluation_store.set_finding_status(finding_id, verdict)
-        return _finding_response(finding_id, finding.model_copy(update={"status": verdict}))
+        decided = finding.model_copy(update={"status": verdict})
+        # The response replaces the finding card in place, so it must carry
+        # the same recurrence annotations the list response did — a verdict
+        # click must not visually reset a recurred pattern to "new".
+        run = await state.evaluation_store.fetch_run(finding.run_id)
+        history = await finding_recurrence(run) if run is not None else {}
+        seen, first = history.get(finding.pattern, (0, 0))
+        return _finding_response(
+            finding_id,
+            decided,
+            seen_in_prior_runs=seen,
+            first_seen_run_id=first if seen > 0 else None,
+        )
+
+    @protected.get("/research/timeline")
+    async def research_timeline(
+        limit: int = Query(default=50, ge=1, le=200),
+    ) -> list[TimelineEventResponse]:
+        """Serve the §12.8 research story: runs, sweeps, promotions, one feed."""
+        events = await build_timeline(
+            state.evaluation_store, state.strategy_settings_store, limit=limit
+        )
+        return [
+            TimelineEventResponse(
+                at=event.at.isoformat(),
+                kind=event.kind,
+                headline=event.headline,
+                detail=event.detail,
+                status=event.status,
+                strategy=event.strategy,
+                run_id=event.run_id,
+                sweep_id=event.sweep_id,
+                version_id=event.version_id,
+                expectancy_r=event.expectancy_r,
+                verdict=event.verdict,
+                new_patterns=list(event.new_patterns),
+                resolved_patterns=list(event.resolved_patterns),
+            )
+            for event in events
+        ]
 
     @protected.post("/evaluations/findings/{finding_id}/accept")
     async def accept_finding(finding_id: int) -> FindingResponse:

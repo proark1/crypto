@@ -21,10 +21,10 @@ This document is the target design. Implementation status as of June 2026
 | Control API: status, pause/resume, kill, data endpoints (§6.4) | **Done** — bearer auth, public /health, CORS; SSE/WS push missing (dashboard polls) |
 | Co-pilot mode: proposal queue, approve/reject, TTL + drift guards (§6.3) | **Done** — entries only; exits never wait for approval |
 | Telegram notifications (§6.2) | **Done** — alerts only; command handling missing |
-| Dashboard: status, chart, decisions, proposals, controls (§6.1) | **Done** — per-coin view with coin switcher, trade journal, decision/proposal panels, the bot-builder wizard, and the research screens (evaluate/compare/tune); SSE/WS push still missing (the dashboard polls) |
+| Dashboard: status, chart, decisions, proposals, controls (§6.1) | **Done** — per-coin view with coin switcher, trade journal, decision/proposal panels, the bot-builder wizard, and the research screens (evaluate/compare/tune/progress); SSE/WS push still missing (the dashboard polls) |
 | Multi-coin support (§4.2) | **Done** — per-symbol feed+engine, shared account/breakers, per-coin dashboard, runtime add/remove via API + UI (coins persisted in Postgres; env var seeds first boot) |
 | Automated improvement: sweep-validated self-tuning (§12.7) | **Done** — paper-scoped; self-feeding cycle (auto-evaluates when stale, findings target the next sweep's challengers with recorded lineage); promotes only statistically validated sweep winners that also survive the engine-backed confirmation gate (challenger vs incumbent replayed through the production engine — sizing, fees, stop lifecycle, breakers — before any promotion; a vetoed winner is alerted, never applied); versioned settings journal with UI revert; Telegram alert per promotion |
-| Evaluation & training: blind walk-forward (§12) | **Done** — foundations, scenario engine (leak-tested), run orchestration + API, research screen, scenario replay viewer, learning findings (mined + human accept/reject), walk-forward parameter sweeps with explicit overfit verdicts, cross-family candidates, multiple validation windows, bootstrap confidence intervals + Bonferroni-corrected significance on every verdict; evaluation runs grade the production strategy shape (regime-routed families, self-classified per scenario) |
+| Evaluation & training: blind walk-forward (§12) | **Done** — foundations, scenario engine (leak-tested), run orchestration + API, research screen, scenario replay viewer, learning findings (mined + human accept/reject), walk-forward parameter sweeps with explicit overfit verdicts, cross-family candidates, multiple validation windows, bootstrap confidence intervals + Bonferroni-corrected significance on every verdict; evaluation runs grade a chosen bot — any lineup entry or custom bot via the research bot selector, defaulting to the production shape (regime-routed families, self-classified per scenario); findings carry recurrence across a bot's runs and the research timeline serves the run/sweep/promotion story (§12.8) |
 | News pipeline, regime gates, signal fusion (§5.2, §5.3) | **Partial** — BTC regime gate done (ADX trend/range + drawdown risk-off; blocks every family only on risk-off/warm-up/stale data, while family routing is the router's preference rather than a gate veto so a healthy regime lets either family enter; exits never gated; verdicts journaled as `gated` decisions); sentiment tighteners done (Fear & Greed extremes, BTC dominance surges, broad negative news flow — advisory, one-way, stale data contributes nothing); news pipeline done defensively (CryptoPanic polling + keyword classifier, negative-news coin flags, env-configured event windows); confirmation filters (order-flow/funding, P2 data) and automated calendar ingestion missing |
 | Breakout strategy family (§5.2, review item 9) | **Research-only** — Donchian-channel entries (close clears the prior N-candle ceiling), turtle-style channel exits, shared ATR stop convention and managed-stop knobs; registered for sweeps/evaluation so research can pit it against the incumbents on identical scenarios, but deliberately unrouted in production: which regime activates it (and at whose expense) is a human decision the sweep evidence should inform, and the worker refuses to promote it until that route exists |
 | Mean-reversion strategy family (§5.2 routing) | **Done** — RSI oversold-recovery entries, midline exits, same ATR stop convention as trend; optional trend-filter EMA (skip falling knives) as a sweepable knob; regime-routed per coin, both families' indicators always warm, exits pass from either family in any regime |
@@ -707,6 +707,33 @@ schedule and the last cycle's outcome in the loop's own plain words
 "auto-promoted …"), including an in-progress marker while a sweep runs,
 and the research screen's Tune tab renders it as a status card — so "is
 the bot learning?" has an answer on screen instead of in the logs.
+
+### 12.8 Learning memory & the research timeline
+
+Progress must be visible to be trusted. Two read-side surfaces compose it
+from the persisted record — nothing new is written, so they can never
+disagree with the journals:
+
+- **Finding recurrence.** A finding's pattern text is deterministic for a
+  given mistake (frozen miners, §12.2), so the same pattern across a
+  bot's completed runs *is* its lifecycle — no extra schema. The findings
+  API annotates each finding with how many earlier completed runs of the
+  same bot mined it and since when ("recurred · 4 runs since #44" versus
+  "new pattern"), computed within a bounded window of recent runs.
+- **The research timeline** (`GET /research/timeline`, the research
+  screen's Progress tab): terminal evaluation runs (with expectancy and
+  which patterns appeared or stopped firing versus the same bot's
+  previous completed run), sweep verdicts with their motivating-finding
+  lineage, and settings promotions — merged newest-first into one
+  plain-words feed whose headlines are composed server-side, so the
+  feed, the logs, and Telegram tell the same sentence. In-flight work is
+  deliberately absent (the §12.7 status card carries it); the timeline
+  is the record. Failed and interrupted work appears rather than hides.
+
+A pattern "no longer firing" in the run after a promotion is the honest
+before/after read this system can offer — two runs sample different
+history windows, so proving an improvement statistically remains the
+sweep's job (§12.5); the timeline only reports what changed.
 
 ### 12.6 Delivery status
 

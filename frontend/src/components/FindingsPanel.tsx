@@ -42,6 +42,16 @@ export function FindingsPanel(props: {
                 {finding.affected_count} scenarios · {finding.average_r_impact}R ·{" "}
                 {finding.confidence} confidence
               </span>
+              {finding.seen_in_prior_runs > 0 ? (
+                <Badge tone="amber">
+                  recurred · {finding.seen_in_prior_runs + 1} runs
+                  {finding.first_seen_run_id !== null
+                    ? ` since #${String(finding.first_seen_run_id)}`
+                    : ""}
+                </Badge>
+              ) : (
+                <Badge tone="sky">new pattern</Badge>
+              )}
               {finding.status !== "proposed" && (
                 <Badge tone={finding.status === "accepted" ? "emerald" : "zinc"}>
                   {finding.status}
