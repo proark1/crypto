@@ -124,9 +124,21 @@ export function fetchWallet(): Promise<WalletResponse> {
 }
 
 /** The trade journal: account-wide by default (spans every coin), or one
- * competing bot's own journal when its bot_id is given. */
-export function fetchFills(bot?: string): Promise<FillResponse[]> {
-  return request<FillResponse[]>(withQuery("/fills", { bot }), "GET");
+ * competing bot's own journal when its bot_id is given. Bounded to the newest
+ * `limit` fills; pass `beforeId` (the smallest id already seen) to page back
+ * through older history. Each page arrives oldest-first. */
+export function fetchFills(
+  bot?: string,
+  options?: { limit?: number; beforeId?: number },
+): Promise<FillResponse[]> {
+  return request<FillResponse[]>(
+    withQuery("/fills", {
+      bot,
+      limit: options?.limit?.toString(),
+      before_id: options?.beforeId?.toString(),
+    }),
+    "GET",
+  );
 }
 
 export function fetchDecisions(symbol?: string, bot?: string): Promise<DecisionResponse[]> {

@@ -1343,11 +1343,28 @@ class TestFills:
             body = (await client.get("/fills")).json()
 
         assert len(body) == 1
+        assert isinstance(body[0]["id"], int)  # the cursor for paging
         assert body[0]["price_quote"] == "100"
         assert body[0]["quantity_base"] == "2"
         assert body[0]["value_quote"] == "200"  # price * quantity, fee excluded
         assert body[0]["side"] == "buy"
         assert body[0]["filled_at"] == BASE_TIME.isoformat()
+
+    async def test_fills_are_bounded_by_limit_and_paged_by_cursor(self, database: Database) -> None:
+        bot = StubBot(database)
+        for index in range(5):
+            await bot.fill_store.append(
+                make_fill().model_copy(update={"client_order_id": f"ord-{index}"})
+            )
+
+        async with make_client(bot) as client:
+            newest = (await client.get("/fills", params={"limit": 2})).json()
+            # The two newest fills, oldest-first within the page (the journal's
+            # own render flips to newest-first).
+            assert [fill["client_order_id"] for fill in newest] == ["ord-3", "ord-4"]
+            cursor = newest[0]["id"]  # smallest id on the page
+            older = (await client.get("/fills", params={"limit": 2, "before_id": cursor})).json()
+            assert [fill["client_order_id"] for fill in older] == ["ord-1", "ord-2"]
 
 
 class TestBotCapital:

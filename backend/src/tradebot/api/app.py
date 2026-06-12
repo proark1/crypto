@@ -809,9 +809,12 @@ class FillResponse(BaseModel):
 
     ``value_quote`` is the gross notional of the trade (price * quantity) in
     quote currency, computed here as ``Decimal`` so the frontend never does
-    money arithmetic; it excludes ``fee_quote``.
+    money arithmetic; it excludes ``fee_quote``. ``id`` is the journal row's
+    surrogate key, opaque to the client except as the ``before_id`` cursor for
+    fetching the next older page.
     """
 
+    id: int
     client_order_id: str
     symbol: str
     side: str
@@ -1902,12 +1905,17 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
 
     @protected.get("/fills")
     async def get_fills(
-        symbol: str | None = Query(None), bot: str | None = Query(None)
+        symbol: str | None = Query(None),
+        bot: str | None = Query(None),
+        limit: int = Query(200, ge=1, le=1000),
+        before_id: int | None = Query(None, ge=1),
     ) -> list[FillResponse]:
         # The journal view spans the production account by default; ``bot``
         # selects a competition account's journal instead. Any symbol may
         # narrow it — including ones no longer configured: fills are
         # history, and history must stay queryable after a coin is removed.
+        # Bounded by ``limit`` and paged backward through ``before_id`` (the
+        # smallest id already seen), so a years-long journal never loads whole.
         store = state.fill_store
         if bot is not None:
             try:
@@ -1916,9 +1924,10 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND, detail=str(error)
                 ) from error
-        fills = await store.fetch_all(symbol)
+        page = await store.fetch_page(symbol, limit, before_id)
         return [
             FillResponse(
+                id=fill_id,
                 client_order_id=fill.client_order_id,
                 symbol=fill.symbol,
                 side=fill.side.value,
@@ -1928,7 +1937,7 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
                 fee_quote=str(fill.fee_quote),
                 filled_at=fill.filled_at.isoformat(),
             )
-            for fill in fills
+            for fill_id, fill in page
         ]
 
     app.include_router(protected)

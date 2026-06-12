@@ -6,6 +6,7 @@ import { FillsTable } from "./FillsTable";
 
 function makeFill(overrides: Partial<FillResponse>): FillResponse {
   return {
+    id: 1,
     client_order_id: "ord-1",
     symbol: "BTC/USDT",
     side: "buy",

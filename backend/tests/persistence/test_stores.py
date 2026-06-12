@@ -227,6 +227,39 @@ class TestFillStore:
 
         assert len(await store.fetch_all("ETH/USDT")) == 1
 
+    async def test_fetch_page_returns_the_newest_window_in_execution_order(
+        self, database: Database
+    ) -> None:
+        store = FillStore(database)
+        for minute in range(5):
+            await store.append(make_fill(f"ord-{minute}", minute=minute))
+
+        page = await store.fetch_page(limit=2)
+        # The two newest fills, but still oldest-first within the page.
+        assert [fill.client_order_id for _, fill in page] == ["ord-3", "ord-4"]
+
+    async def test_fetch_page_cursor_walks_backward(self, database: Database) -> None:
+        store = FillStore(database)
+        for minute in range(5):
+            await store.append(make_fill(f"ord-{minute}", minute=minute))
+
+        first = await store.fetch_page(limit=2)
+        cursor = first[0][0]  # smallest id on the page
+        older = await store.fetch_page(limit=2, before_id=cursor)
+        assert [fill.client_order_id for _, fill in older] == ["ord-1", "ord-2"]
+        # Walking off the start yields the remaining fills and then nothing.
+        assert [
+            fill.client_order_id for _, fill in await store.fetch_page(before_id=older[0][0])
+        ] == ["ord-0"]
+
+    async def test_fetch_page_symbol_filter(self, database: Database) -> None:
+        store = FillStore(database)
+        await store.append(make_fill("ord-btc"))
+        await store.append(make_fill("ord-eth").model_copy(update={"symbol": "ETH/USDT"}))
+
+        page = await store.fetch_page("ETH/USDT")
+        assert [fill.client_order_id for _, fill in page] == ["ord-eth"]
+
 
 def make_order(
     order_id: str = "ord-1",

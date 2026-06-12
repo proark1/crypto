@@ -60,6 +60,8 @@ export interface StatusResponse {
 }
 
 export interface FillResponse {
+  /** Journal row id; opaque except as the `beforeId` cursor for older pages. */
+  id: number;
   client_order_id: string;
   symbol: string;
   side: string;
