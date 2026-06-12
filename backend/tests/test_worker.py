@@ -314,11 +314,13 @@ class TestWorker:
         with pytest.raises(RuntimeError, match="holds a position"):
             await worker.reset_bot_capital(PRODUCTION_BOT_ID, Decimal("5000"))
 
-    async def test_reset_bot_capital_rejects_negative(self, database: Database) -> None:
+    async def test_reset_bot_capital_rejects_negative_or_zero(self, database: Database) -> None:
         await database.create_schema()
         worker = Worker(make_config(), database, ScriptedExchange([]))
-        with pytest.raises(ValueError, match="negative"):
+        with pytest.raises(ValueError, match="greater than zero"):
             await worker.reset_bot_capital(PRODUCTION_BOT_ID, Decimal("-1"))
+        with pytest.raises(ValueError, match="greater than zero"):
+            await worker.reset_bot_capital(PRODUCTION_BOT_ID, Decimal("0"))
 
     async def test_restart_restores_open_orders_into_their_engines(
         self, database: Database

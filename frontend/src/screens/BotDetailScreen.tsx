@@ -105,7 +105,6 @@ function CapitalSettingsCard(props: {
   }, [props.currentCapital]);
 
   const draftError = capitalDraftError(draft);
-  const changed = draft.trim() !== props.currentCapital;
 
   return (
     <Card padding="lg">
@@ -151,12 +150,12 @@ function CapitalSettingsCard(props: {
               : "the bot must be flat first — stop it, then reset"
           }
           variant="dangerOutline"
-          disabled={props.disabled || !props.flat || draftError !== null || !changed}
+          disabled={props.disabled || !props.flat || draftError !== null}
           stopPropagation={false}
           onConfirm={() => void props.onReset(draft.trim())}
         />
       </div>
-      {draftError !== null && changed && (
+      {draftError !== null && (
         <span className="mt-1 block text-[11px] text-red-600 dark:text-red-400">
           {draftError}
         </span>

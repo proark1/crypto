@@ -1206,8 +1206,8 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
         """Reset a bot's account to a new starting capital (must be flat first).
 
         Destructive: the bot's fills/orders/decisions are purged and it
-        restarts clean. 400 for a negative amount, 404 unknown, 409 while the
-        bot holds a position or has open orders.
+        restarts clean. 400 for a non-positive amount, 404 unknown, 409 while
+        the bot holds a position, has open orders, or has pending proposals.
         """
         try:
             await state.reset_bot_capital(bot_id, request.initial_balance_quote)

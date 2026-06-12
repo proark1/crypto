@@ -453,12 +453,12 @@ class Worker:
         ``new_balance_quote``. Refused unless the bot is flat with no open
         orders (``RuntimeError``) — exactly like delete — because resetting
         capital under an open position would orphan it. ``ValueError`` for a
-        negative balance, ``KeyError`` for an unknown bot. The portfolio and
-        risk manager are mutated in place, so the live engines that reference
-        them pick up the fresh state without a rebuild.
+        non-positive balance, ``KeyError`` for an unknown bot. The portfolio
+        and risk manager are mutated in place, so the live engines that
+        reference them pick up the fresh state without a rebuild.
         """
-        if new_balance_quote < 0:
-            raise ValueError("starting capital cannot be negative")
+        if new_balance_quote <= 0:
+            raise ValueError("starting capital must be greater than zero")
         if bot_id == PRODUCTION_BOT_ID:
             portfolio = self.portfolio
             risk_manager = self.risk_manager
@@ -487,12 +487,21 @@ class Worker:
             raise RuntimeError(
                 f"{bot_id} has open orders; stop it first (its orders clear), then reset capital"
             )
-        await self.bot_capital_store.set(bot_id, new_balance_quote, datetime.now(UTC))
-        self._bot_capital[bot_id] = new_balance_quote
-        # Journals gone, in-memory state cleared: a true fresh account.
+        if any(engine.pending_proposals() for engine in engines.values()):
+            # Co-pilot mode only: approving a stale proposal after the reset
+            # would open a position into a "fresh, flat" account.
+            raise RuntimeError(
+                f"{bot_id} has pending proposals; approve or reject them first, then reset capital"
+            )
+        # Purge the journals *before* persisting the new capital: if any write
+        # fails we must not leave a new starting balance with old fills behind
+        # it, which a restart would replay into a corrupted equity. Worst case
+        # here is purged history with the old balance — clean, just not applied.
         await fill_store.purge()
         await order_store.purge()
         await decision_store.purge()
+        await self.bot_capital_store.set(bot_id, new_balance_quote, datetime.now(UTC))
+        self._bot_capital[bot_id] = new_balance_quote
         portfolio.reset(new_balance_quote)
         risk_manager.reset()
         # Persist the now-fresh breaker snapshot so a restart agrees.

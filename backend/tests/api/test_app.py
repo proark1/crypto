@@ -211,8 +211,8 @@ class StubBot:
         del self.custom_bots[bot_id]
 
     async def reset_bot_capital(self, bot_id: str, new_balance_quote: Decimal) -> None:
-        if new_balance_quote < 0:
-            raise ValueError("starting capital cannot be negative")
+        if new_balance_quote <= 0:
+            raise ValueError("starting capital must be greater than zero")
         if bot_id != "production" and bot_id not in self.custom_bots:
             raise KeyError(f"no competition bot {bot_id!r}")
         if self.portfolio.positions:
@@ -1362,13 +1362,15 @@ class TestBotCapital:
         production = next(row for row in rows if row["bot_id"] == "production")
         assert production["initial_balance_quote"] == "5000"
 
-    async def test_negative_capital_is_rejected(self, database: Database) -> None:
+    async def test_invalid_capital_is_rejected(self, database: Database) -> None:
         bot = StubBot(database)
         async with make_client(bot) as client:
-            response = await client.put(
+            negative = await client.put(
                 "/bots/production/capital", json={"initial_balance_quote": "-1"}
             )
-        assert response.status_code == 400
+            zero = await client.put("/bots/production/capital", json={"initial_balance_quote": "0"})
+        assert negative.status_code == 400
+        assert zero.status_code == 400
 
     async def test_reset_refuses_while_holding_a_position(self, database: Database) -> None:
         bot = StubBot(database)
