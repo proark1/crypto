@@ -73,10 +73,11 @@ class TestRouting:
         routed = router.on_candle(make_candle(1), None)
         assert routed is not None and routed.strategy_name == "mean_reversion"
 
-    def test_inactive_family_is_forwarded_for_the_gate_to_veto(self) -> None:
-        """The gate journals vetoes; a router that swallowed the signal
-        would erase the explainability trail (§5.2: every gate decision is
-        logged with the signal)."""
+    def test_inactive_family_is_forwarded_when_preferred_is_silent(self) -> None:
+        """The non-preferred family's entry is still forwarded when the
+        preferred one is quiet: a healthy regime allows either family, so
+        forwarding it is what keeps the bot trading instead of idle (and any
+        genuine gate block is journaled with the signal — §5.2)."""
         trend = ScriptedStrategy("trend_following", None)
         reversion = ScriptedStrategy("mean_reversion", make_signal("mean_reversion", Side.BUY))
         router = RegimeStrategyRouter(trend, reversion, lambda: "trending")

@@ -25,7 +25,7 @@ This document is the target design. Implementation status as of June 2026
 | Multi-coin support (§4.2) | **Done** — per-symbol feed+engine, shared account/breakers, per-coin dashboard, runtime add/remove via API + UI (coins persisted in Postgres; env var seeds first boot) |
 | Automated improvement: sweep-validated self-tuning (§12.7) | **Done** — paper-scoped; self-feeding cycle (auto-evaluates when stale, findings target the next sweep's challengers with recorded lineage); promotes only statistically validated sweep winners that also survive the engine-backed confirmation gate (challenger vs incumbent replayed through the production engine — sizing, fees, stop lifecycle, breakers — before any promotion; a vetoed winner is alerted, never applied); versioned settings journal with UI revert; Telegram alert per promotion |
 | Evaluation & training: blind walk-forward (§12) | **Done** — foundations, scenario engine (leak-tested), run orchestration + API, research screen, scenario replay viewer, learning findings (mined + human accept/reject), walk-forward parameter sweeps with explicit overfit verdicts, cross-family candidates, multiple validation windows, bootstrap confidence intervals + Bonferroni-corrected significance on every verdict; evaluation runs grade the production strategy shape (regime-routed families, self-classified per scenario) |
-| News pipeline, regime gates, signal fusion (§5.2, §5.3) | **Partial** — BTC regime gate done (ADX trend/range + drawdown risk-off; family routing: trend entries in trends, mean-reversion entries in ranges; exits never gated; verdicts journaled as `gated` decisions); sentiment tighteners done (Fear & Greed extremes, BTC dominance surges, broad negative news flow — advisory, one-way, stale data contributes nothing); news pipeline done defensively (CryptoPanic polling + keyword classifier, negative-news coin flags, env-configured event windows); confirmation filters (order-flow/funding, P2 data) and automated calendar ingestion missing |
+| News pipeline, regime gates, signal fusion (§5.2, §5.3) | **Partial** — BTC regime gate done (ADX trend/range + drawdown risk-off; blocks every family only on risk-off/warm-up/stale data, while family routing is the router's preference rather than a gate veto so a healthy regime lets either family enter; exits never gated; verdicts journaled as `gated` decisions); sentiment tighteners done (Fear & Greed extremes, BTC dominance surges, broad negative news flow — advisory, one-way, stale data contributes nothing); news pipeline done defensively (CryptoPanic polling + keyword classifier, negative-news coin flags, env-configured event windows); confirmation filters (order-flow/funding, P2 data) and automated calendar ingestion missing |
 | Breakout strategy family (§5.2, review item 9) | **Research-only** — Donchian-channel entries (close clears the prior N-candle ceiling), turtle-style channel exits, shared ATR stop convention and managed-stop knobs; registered for sweeps/evaluation so research can pit it against the incumbents on identical scenarios, but deliberately unrouted in production: which regime activates it (and at whose expense) is a human decision the sweep evidence should inform, and the worker refuses to promote it until that route exists |
 | Mean-reversion strategy family (§5.2 routing) | **Done** — RSI oversold-recovery entries, midline exits, same ATR stop convention as trend; optional trend-filter EMA (skip falling knives) as a sweepable knob; regime-routed per coin, both families' indicators always warm, exits pass from either family in any regime |
 | Momentum strategy family (§13) | **Research + competition** — MACD histogram-crossover entries (12/26/9 defaults, zero-line filter on by default), histogram-flip exits, shared ATR stop convention; built from the TA-Lib-verified incremental EMA; sweepable and evaluated like every family, traded solo by its competition account, unrouted in production until a human routes it |
@@ -274,8 +274,17 @@ A trade decision is a pipeline of gates, not a vote among equals:
    new risk without trapping an open position behind its still-working stop.
    The block is journaled as a `gated` decision like every other gate.
 1. **Regime gate (market-wide):** BTC regime (trend/range/risk-off via ADX + Fear &
-   Greed extremes + BTC dominance shifts) decides *whether* altcoin entries are
-   allowed at all and which strategy family (trend vs. mean-reversion) is active.
+   Greed extremes + BTC dominance shifts) decides *whether* entries are allowed at
+   all: it blocks every family only when the market is genuinely hostile or
+   unreadable — risk-off (a deep drawdown from the recent peak), warm-up (no regime
+   formed yet), or stale data. Which family a healthy regime *favours* (trend in
+   trends, mean reversion in ranges) is the router's preference, not a gate veto:
+   enforcing the family schedule as a veto starved the single-coin production
+   account, where the one traded market is also the regime reference, so trend
+   crossovers (firing in chop) and oversold bounces (firing in selloffs) were each
+   blocked by the regime the other family wanted. The router still routes by
+   preference; the gate no longer vetoes the non-preferred family in a healthy
+   regime. (Solo competition challengers remain fully ungated by the regime gate.)
    The sentiment tighteners are family-aware where it matters: extreme *greed*,
    dominance surges, and broad negative news pause every family's entries, but
    extreme *fear* pauses only trend entries — mean-reversion exists to buy fear
