@@ -207,6 +207,14 @@ class BotState(Protocol):
         """Start a run (``RuntimeError`` if one is in flight, ``ValueError`` bad config)."""
         ...
 
+    def evaluation_strategies(self) -> list[dict[str, str]]:
+        """Every bot a run can grade: id, label, description, kind."""
+        ...
+
+    def improvement_status(self) -> dict[str, Any]:
+        """Report the §12.7 automated-improvement loop's schedule and last outcome."""
+        ...
+
     def cancel_evaluation(self, run_id: int) -> bool:
         """Cancel the in-flight run; False when it is not running."""
         ...
@@ -404,6 +412,9 @@ class EvaluationStartRequest(BaseModel):
     lookback_candles: int = 200
     horizon_candles: int = 60
     seed: int = 7
+    strategy: str = "production"
+    """Which bot the run grades: a lineup entry or a custom bot id (see
+    ``GET /evaluations/strategies``). The default is the incumbent."""
 
 
 class EvaluationStartResponse(BaseModel):
@@ -427,6 +438,34 @@ class SuggestedEvaluationResponse(BaseModel):
     scenario_count: int
     title: str
     rationale: str
+
+
+class EvaluationStrategyResponse(BaseModel):
+    """One bot an evaluation run can grade — the research bot selector."""
+
+    id: str
+    label: str
+    description: str
+    kind: str
+    """"production" | "builtin" | "custom" — mirrors the competition badges."""
+
+
+class ImprovementStatusResponse(BaseModel):
+    """The automated improvement loop's schedule and latest outcome (§12.7).
+
+    ``last_outcome`` is the loop's own plain-words sentence; a cycle is in
+    progress when ``last_cycle_started_at`` is newer than
+    ``last_cycle_finished_at``. All times are ISO-8601 UTC.
+    """
+
+    enabled: bool
+    interval_hours: int
+    history_days: int
+    timeframe: str
+    last_cycle_started_at: str | None
+    last_cycle_finished_at: str | None
+    last_outcome: str | None
+    next_cycle_at: str | None
 
 
 class EvaluationRunResponse(BaseModel):
@@ -671,6 +710,11 @@ class ScenarioReplayResponse(BaseModel):
 def _optional_str(value: Any) -> str | None:
     """Stringify a nullable Decimal column without inventing a zero."""
     return None if value is None else str(value)
+
+
+def _optional_iso(value: datetime | None) -> str | None:
+    """ISO-format a nullable timestamp without inventing an epoch."""
+    return None if value is None else value.isoformat()
 
 
 def _scenario_summary(row: Mapping[str, Any]) -> ScenarioSummaryResponse:
@@ -1549,6 +1593,7 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
             lookback_candles=request.lookback_candles,
             horizon_candles=request.horizon_candles,
             seed=request.seed,
+            strategy=request.strategy,
         )
         try:
             run_id = await state.start_evaluation(config)
@@ -1563,6 +1608,35 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
     @protected.get("/evaluations")
     async def list_evaluations() -> list[EvaluationRunResponse]:
         return [_run_response(run) for run in await state.evaluation_store.list_runs()]
+
+    @protected.get("/evaluations/strategies")
+    async def list_evaluation_strategies() -> list[EvaluationStrategyResponse]:
+        """Every bot a run can grade — the research screen's bot selector.
+
+        Declared before ``/evaluations/{run_id}`` so the literal segment is
+        matched as a path, not parsed as a run id.
+        """
+        return [EvaluationStrategyResponse(**entry) for entry in state.evaluation_strategies()]
+
+    @protected.get("/improvement")
+    async def get_improvement_status() -> ImprovementStatusResponse:
+        """Report the §12.7 self-improvement loop: schedule and last outcome.
+
+        Always answers — when the loop is disabled the schedule still
+        reports with the cycle fields null, so the dashboard can say "off"
+        instead of guessing.
+        """
+        raw = state.improvement_status()
+        return ImprovementStatusResponse(
+            enabled=raw["enabled"],
+            interval_hours=raw["interval_hours"],
+            history_days=raw["history_days"],
+            timeframe=raw["timeframe"],
+            last_cycle_started_at=_optional_iso(raw["last_cycle_started_at"]),
+            last_cycle_finished_at=_optional_iso(raw["last_cycle_finished_at"]),
+            last_outcome=raw["last_outcome"],
+            next_cycle_at=_optional_iso(raw["next_cycle_at"]),
+        )
 
     @protected.get("/evaluations/suggestions")
     async def list_evaluation_suggestions() -> list[SuggestedEvaluationResponse]:

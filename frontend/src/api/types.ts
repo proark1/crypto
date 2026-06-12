@@ -227,6 +227,29 @@ export interface EvaluationRunResponse {
  * built-in single-strategy challenger, or a user-built custom recipe. */
 export type BotKind = "production" | "builtin" | "custom";
 
+/** One bot an evaluation run can grade — the research bot selector's rows
+ * (the fixed lineup plus any custom bots currently competing). */
+export interface EvaluationStrategyResponse {
+  id: string;
+  label: string;
+  description: string;
+  kind: BotKind;
+}
+
+/** The automated improvement loop's schedule and latest outcome. A cycle is
+ * in progress when last_cycle_started_at is newer than
+ * last_cycle_finished_at; last_outcome is the loop's own plain-words line. */
+export interface ImprovementStatusResponse {
+  enabled: boolean;
+  interval_hours: number;
+  history_days: number;
+  timeframe: string;
+  last_cycle_started_at: string | null;
+  last_cycle_finished_at: string | null;
+  last_outcome: string | null;
+  next_cycle_at: string | null;
+}
+
 /** One paper bot in the strategy competition: the production regime router,
  * a single-strategy challenger, or a custom bot — each its own account. */
 export interface CompetitorResponse {

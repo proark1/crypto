@@ -6,8 +6,10 @@ import {
   cancelSweep,
   fetchComparisons,
   fetchEvaluations,
+  fetchEvaluationStrategies,
   fetchEvaluationSuggestions,
   fetchFindings,
+  fetchImprovementStatus,
   fetchScenarioReplay,
   fetchScenarios,
   fetchStrategyVersions,
@@ -21,7 +23,9 @@ import {
 import type {
   ComparisonGroupResponse,
   EvaluationRunResponse,
+  EvaluationStrategyResponse,
   FindingResponse,
+  ImprovementStatusResponse,
   ScenarioReplayResponse,
   ScenarioSummaryResponse,
   StrategyVersionResponse,
@@ -33,6 +37,7 @@ import { Alert, GLOSSARY, InfoTooltip, StatTile, type GlossaryTerm } from "../ui
 import { ComparisonPanel } from "../components/ComparisonPanel";
 import { FindingsPanel } from "../components/FindingsPanel";
 import { ImprovementsPanel } from "../components/ImprovementsPanel";
+import { ImproverStatusCard } from "../components/ImproverStatusCard";
 import { ScenarioReplay } from "../components/ScenarioReplay";
 import { SweepPanel } from "../components/SweepPanel";
 import {
@@ -48,6 +53,17 @@ import {
 
 const POLL_INTERVAL_MS = 3000;
 const TIMEFRAMES = ["1m", "5m", "15m", "1h", "4h", "1d"];
+
+/** Before the selector's options load (or while offline) the form stays
+ * usable: the incumbent always exists on the backend. */
+const FALLBACK_STRATEGIES: EvaluationStrategyResponse[] = [
+  {
+    id: "production",
+    label: "production (default)",
+    description: "the strategy the bot trades right now",
+    kind: "production",
+  },
+];
 
 /** The research workspace splits into three jobs so the page is not one long
  * scroll: run and read evaluations, compare strategies head to head, and tune
@@ -328,6 +344,12 @@ export function ResearchScreen() {
   const [days, setDays] = useState("365");
   const [count, setCount] = useState("1600");
   const [timeframe, setTimeframe] = useState("1h");
+  // Which bot the run grades; "production" (the incumbent) is the backend's
+  // default and always exists, so it is a safe initial value even before
+  // the selector's options have loaded.
+  const [strategy, setStrategy] = useState("production");
+  const [strategies, setStrategies] = useState<EvaluationStrategyResponse[]>([]);
+  const [improver, setImprover] = useState<ImprovementStatusResponse | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [scenarios, setScenarios] = useState<ScenarioSummaryResponse[]>([]);
   const [findings, setFindings] = useState<FindingResponse[]>([]);
@@ -352,6 +374,10 @@ export function ResearchScreen() {
       setSweeps(await fetchSweeps());
       setVersions(await fetchStrategyVersions());
       setComparisons(await fetchComparisons());
+      // Cheap and current: the selector follows custom bots being created
+      // or deleted, and the improver card follows the loop's cycles.
+      setStrategies(await fetchEvaluationStrategies());
+      setImprover(await fetchImprovementStatus());
       // Suggestions ride the poll only until the first success: stored
       // history depth moves a day at a time, so once loaded they stay put —
       // but a fetch that failed (token not entered yet, transient outage)
@@ -424,6 +450,9 @@ export function ResearchScreen() {
       timeframes: [suggestion.timeframe],
       history_days: suggestion.history_days,
       scenario_count: suggestion.scenario_count,
+      // Suggestions size the window; the bot under test stays whatever the
+      // form's selector says, so "evaluate breakout on this coin" is one click.
+      strategy,
     }).then(
       (started) => {
         setNotice(started.detail);
@@ -569,6 +598,7 @@ export function ResearchScreen() {
                     timeframes: [timeframe],
                     history_days: Number(days) || 365,
                     scenario_count: Number(count) || 1600,
+                    strategy,
                   });
                   setNotice(started.detail);
                   setSelectedId(started.run_id);
@@ -580,9 +610,28 @@ export function ResearchScreen() {
             }}
           >
             <p className="w-full text-xs text-zinc-500">
-              custom evaluation — replays past moments and grades every decision the bot would
-              have made; the suggestions above are usually the better start
+              custom evaluation — replays past moments and grades every decision the chosen bot
+              would have made; the suggestions above are usually the better start
             </p>
+            <label className="text-xs text-zinc-600 dark:text-zinc-400">
+              bot
+              <select
+                value={strategy}
+                onChange={(event) => {
+                  setStrategy(event.target.value);
+                }}
+                className="mt-1 block max-w-48 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-950 px-2 py-1.5 text-sm text-zinc-900 dark:text-zinc-100"
+              >
+                {(strategies.length > 0 ? strategies : FALLBACK_STRATEGIES).map((option) => (
+                  <option key={option.id} value={option.id} title={option.description}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+              <span className="mt-0.5 block text-[11px] text-zinc-400 dark:text-zinc-600">
+                whose strategy the run grades
+              </span>
+            </label>
             <label className="text-xs text-zinc-600 dark:text-zinc-400">
               history (days)
               <input
@@ -656,8 +705,8 @@ export function ResearchScreen() {
                     >
                       run #{run.id} · {run.status}
                       <span className="block text-xs text-zinc-500">
-                        {run.symbols.join(", ")} · {run.timeframes.join(", ")} ·{" "}
-                        {run.progress_done}/{run.progress_total}
+                        {run.strategy} · {run.symbols.join(", ")} · {run.timeframes.join(", ")}{" "}
+                        · {run.progress_done}/{run.progress_total}
                       </span>
                     </button>
                     {run.status === "running" && (
@@ -685,6 +734,9 @@ export function ResearchScreen() {
                 />
               ) : selected ? (
                 <div className="space-y-4">
+                  <div className="text-xs text-zinc-500">
+                    run #{selected.id} · bot: {selected.strategy}
+                  </div>
                   <RunReport run={selected} />
                   <FindingsPanel
                     findings={findings}
@@ -712,6 +764,7 @@ export function ResearchScreen() {
 
       {researchTab === "tune" && (
         <>
+          <ImproverStatusCard status={improver} />
           <ImprovementsPanel
             versions={versions}
             onRevert={(versionId) => {

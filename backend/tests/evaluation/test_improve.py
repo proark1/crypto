@@ -307,6 +307,62 @@ async def _never_promote(
     raise AssertionError("nothing should be promoted")
 
 
+class TestImprovementStatusTracking:
+    """The status surface mirrors what each cycle did, in plain words."""
+
+    async def test_a_promotion_lands_in_the_status(self) -> None:
+        sweeps = ScriptedSweeps()
+        promoted: list[tuple[str, Mapping[str, Any], int | None, str | None]] = []
+        store = ScriptedStore(
+            "completed",
+            {"verdict": "validated", "winner": "tighter_stop", "explanation": "it won"},
+        )
+        improver = make_improver(sweeps, store, promoted)
+
+        await improver.run_cycle()
+
+        assert improver.status.last_outcome is not None
+        assert "auto-promoted" in improver.status.last_outcome
+        assert improver.status.last_cycle_started_at is not None
+        assert improver.status.last_cycle_finished_at is not None
+        assert improver.status.last_cycle_finished_at >= improver.status.last_cycle_started_at
+
+    async def test_a_kept_configuration_names_the_verdict(self) -> None:
+        sweeps = ScriptedSweeps()
+        promoted: list[tuple[str, Mapping[str, Any], int | None, str | None]] = []
+        store = ScriptedStore("completed", {"verdict": "overfit", "winner": "tighter_stop"})
+        improver = make_improver(sweeps, store, promoted)
+
+        await improver.run_cycle()
+
+        assert improver.status.last_outcome is not None
+        assert "kept the active configuration" in improver.status.last_outcome
+        assert "overfit" in improver.status.last_outcome
+
+    async def test_a_busy_sweep_reports_the_skip(self) -> None:
+        sweeps = ScriptedSweeps(running=True)
+        promoted: list[tuple[str, Mapping[str, Any], int | None, str | None]] = []
+        store = ScriptedStore("completed", None)
+        improver = make_improver(sweeps, store, promoted)
+
+        await improver.run_cycle()
+
+        assert improver.status.last_outcome is not None
+        assert "another sweep is already in flight" in improver.status.last_outcome
+
+    async def test_a_refresh_evaluation_reports_the_run_id(self) -> None:
+        sweeps = ScriptedSweeps()
+        promoted: list[tuple[str, Mapping[str, Any], int | None, str | None]] = []
+        store = ScriptedStore("completed", None, runs=[])  # nothing to learn from yet
+        evaluations = ScriptedEvaluations()
+        improver = make_improver(sweeps, store, promoted, evaluations=evaluations)
+
+        await improver.run_cycle()
+
+        assert improver.status.last_outcome is not None
+        assert "started evaluation run #1" in improver.status.last_outcome
+
+
 class TestFindingsDrivenCandidates:
     def test_a_downtrend_finding_adds_the_trend_filter_challenger(self) -> None:
         candidates, motivating = build_improvement_candidates(

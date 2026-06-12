@@ -17,6 +17,8 @@ import type {
   ComparisonStartResponse,
   CompetitionResponse,
   EvaluationRunResponse,
+  EvaluationStrategyResponse,
+  ImprovementStatusResponse,
   CommandResponse,
   DecisionResponse,
   FillResponse,
@@ -197,9 +199,24 @@ export function startEvaluation(body: {
   timeframes: string[];
   history_days: number;
   scenario_count: number;
+  /** Which bot the run grades (see fetchEvaluationStrategies); omitting it
+   * means the backend's default: production, the incumbent. */
+  strategy?: string;
 }): Promise<{ run_id: number; detail: string }> {
   // Omitting symbols means the backend's default: every active coin.
   return request<{ run_id: number; detail: string }>("/evaluations", "POST", body);
+}
+
+/** Every bot an evaluation run can grade: the fixed lineup plus custom
+ * bots currently in the competition. Production leads the list. */
+export function fetchEvaluationStrategies(): Promise<EvaluationStrategyResponse[]> {
+  return request<EvaluationStrategyResponse[]>("/evaluations/strategies", "GET");
+}
+
+/** The automated improvement loop's schedule and latest outcome — always
+ * answers, with enabled=false when the loop is off. */
+export function fetchImprovementStatus(): Promise<ImprovementStatusResponse> {
+  return request<ImprovementStatusResponse>("/improvement", "GET");
 }
 
 /** The strategy-competition leaderboard. Competitors arrive already ranked

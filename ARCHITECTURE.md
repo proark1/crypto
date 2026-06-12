@@ -701,6 +701,13 @@ touching positions, orders, stops, or risk state. Evaluations, sweeps,
 and live engines all read the same active-parameters source, so research
 always grades the configuration actually being traded.
 
+The loop is visible, not just journaled: `GET /improvement` reports its
+schedule and the last cycle's outcome in the loop's own plain words
+("sweep #N kept the active configuration (verdict: overfit)",
+"auto-promoted …"), including an in-progress marker while a sweep runs,
+and the research screen's Tune tab renders it as a status card — so "is
+the bot learning?" has an answer on screen instead of in the logs.
+
 ### 12.6 Delivery status
 
 All six steps are implemented: foundations (this section, aggregation
@@ -722,14 +729,18 @@ intervals and a Bonferroni-corrected superiority test
 *validated* (now meaning statistically validated), *overfit* ("wins only
 on the data it was tuned on"), *baseline best*, or *insufficient
 evidence* (including a real but statistically unproven edge). Evaluation
-runs grade a named competition lineup entry (§13) — by default the
-incumbent, i.e. the strategy shape production trades: the regime-routed
-family router, with the regime self-classified from each scenario's own
-candles (`evaluation/strategy.py` documents the divergence from the live
-reference-market detector, which scenarios must not read). Findings
-always only recommend. Sweep verdicts feed the automated improvement loop
-(§12.7): in paper mode a *validated* challenger is promoted automatically;
-anything touching live trading remains a human action.
+runs grade a named bot — any competition lineup entry (§13) or custom bot
+(§13.5, graded by its recipe, captured at run start) — chosen per run
+through the research screen's bot selector (`GET /evaluations/strategies`
+lists what is gradeable; the request validates the id before any run row
+exists). The default is the incumbent, i.e. the strategy shape production
+trades: the regime-routed family router, with the regime self-classified
+from each scenario's own candles (`evaluation/strategy.py` documents the
+divergence from the live reference-market detector, which scenarios must
+not read). Findings always only recommend. Sweep verdicts feed the
+automated improvement loop (§12.7): in paper mode a *validated*
+challenger is promoted automatically; anything touching live trading
+remains a human action.
 
 ---
 
