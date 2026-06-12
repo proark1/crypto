@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable, Mapping, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 
@@ -50,6 +51,24 @@ SWEEP_TIMEOUT = timedelta(hours=8)
 """A sweep silent for this long is abandoned (the next cycle retries)."""
 
 _TERMINAL = {RunStatus.COMPLETED.value, RunStatus.FAILED.value, RunStatus.INTERRUPTED.value}
+
+
+@dataclass
+class ImprovementStatus:
+    """Live snapshot of the improvement loop for the status surface (§12.7).
+
+    Mutable on purpose: the improver updates it in place as a cycle
+    progresses and the control API reads it at request time. All times are
+    UTC. ``last_outcome`` is one plain-words sentence — the same text the
+    log carries — so the dashboard can show what the loop last did and why
+    without the operator reading logs. A cycle is in progress when
+    ``last_cycle_started_at`` is newer than ``last_cycle_finished_at``.
+    """
+
+    last_cycle_started_at: datetime | None = None
+    last_cycle_finished_at: datetime | None = None
+    last_outcome: str | None = None
+    next_cycle_at: datetime | None = None
 
 
 class SweepStarter(Protocol):
@@ -260,6 +279,7 @@ class AutoImprover:
         self._timeframe = timeframe
         self._notify = notify
         self._rotation = 0
+        self.status = ImprovementStatus()
 
     async def run(self) -> None:
         """Cycle forever; one failed cycle never stops the loop.
@@ -269,6 +289,7 @@ class AutoImprover:
         candidates on a moving target.
         """
         while True:
+            self.status.next_cycle_at = datetime.now(UTC) + self._interval
             await asyncio.sleep(self._interval.total_seconds())
             try:
                 await self.run_cycle()
@@ -276,6 +297,12 @@ class AutoImprover:
                 raise
             except Exception:
                 logger.exception("improvement cycle failed; retrying next interval")
+                self._finish_cycle("cycle failed; retrying next interval (see logs)")
+
+    def _finish_cycle(self, outcome: str) -> None:
+        """Record a cycle's plain-words outcome for the status surface."""
+        self.status.last_outcome = outcome
+        self.status.last_cycle_finished_at = datetime.now(UTC)
 
     async def run_cycle(self) -> int | None:
         """Run one cycle: evaluate when stale, otherwise sweep and promote.
@@ -285,8 +312,10 @@ class AutoImprover:
         refreshed first — its completion mines the findings — and the next
         cycle sweeps challengers targeted at those findings.
         """
+        self.status.last_cycle_started_at = datetime.now(UTC)
         symbols = self._symbols()
         if not symbols:
+            self._finish_cycle("skipped: no active coins to research")
             return None
         latest_run = await self._latest_completed_run()
         if latest_run is None:
@@ -303,8 +332,13 @@ class AutoImprover:
                     "improvement cycle started evaluation run %d: no fresh run to learn from",
                     run_id,
                 )
+                self._finish_cycle(
+                    f"started evaluation run #{run_id}: no fresh run to learn from; "
+                    "the next cycle sweeps its findings"
+                )
             except RuntimeError:
                 logger.info("improvement cycle skipped: an evaluation run is already in flight")
+                self._finish_cycle("skipped: an evaluation run is already in flight")
             return None
         findings = [
             (finding_id, finding.pattern)
@@ -326,10 +360,17 @@ class AutoImprover:
             sweep_id = await self._sweeps.start(config)
         except RuntimeError:
             logger.info("improvement cycle skipped: another sweep is already in flight")
+            self._finish_cycle("skipped: another sweep is already in flight")
             return None
         logger.info("improvement cycle started sweep %d on %s", sweep_id, symbol)
+        # Interim state, not a finished outcome: a sweep can run for hours,
+        # and the status surface should say so rather than look idle.
+        self.status.last_outcome = (
+            f"sweep #{sweep_id} running on {symbol} ({len(candidates)} candidates)"
+        )
         report = await self._wait_for_report(sweep_id)
         if report is None:
+            self._finish_cycle(f"sweep #{sweep_id} ended without a verdict; nothing promoted")
             return sweep_id
         verdict = report.get("verdict")
         if verdict != PROMOTION_VERDICT:
@@ -337,6 +378,9 @@ class AutoImprover:
                 "improvement sweep %d kept the active configuration (verdict: %s)",
                 sweep_id,
                 verdict,
+            )
+            self._finish_cycle(
+                f"sweep #{sweep_id} kept the active configuration (verdict: {verdict})"
             )
             return sweep_id
         winner = next(
@@ -347,6 +391,7 @@ class AutoImprover:
             # "validated" with the baseline as winner cannot happen by the
             # sweep contract; refuse rather than re-promote the incumbent.
             logger.warning("improvement sweep %d validated no challenger; skipping", sweep_id)
+            self._finish_cycle(f"sweep #{sweep_id} validated no challenger; nothing promoted")
             return sweep_id
         explanation = str(report.get("explanation", ""))
         if self._confirm is not None:
@@ -357,6 +402,7 @@ class AutoImprover:
                     f"confirmation vetoed the promotion: {veto_reason}"
                 )
                 logger.warning("%s", message)
+                self._finish_cycle(message)
                 if self._notify is not None:
                     await self._notify(message)
                 return sweep_id
@@ -368,6 +414,7 @@ class AutoImprover:
             f"({winner.name}) from sweep #{sweep_id}: {explanation}"
         )
         logger.info("%s", message)
+        self._finish_cycle(message)
         if self._notify is not None:
             await self._notify(message)
         return sweep_id

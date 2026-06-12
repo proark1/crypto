@@ -10,7 +10,7 @@ from decimal import Decimal
 import httpx
 import pytest
 
-from tradebot.competition import PRODUCTION_BOT_ID
+from tradebot.competition import PRODUCTION_BOT_ID, CompetitorSpec, validate_rules
 from tradebot.core.config import AppConfig, TradingMode
 from tradebot.core.events import CandleClosed
 from tradebot.core.models import (
@@ -22,6 +22,7 @@ from tradebot.core.models import (
     ProtectiveExitPlan,
     Side,
 )
+from tradebot.evaluation.runner import EvaluationRunConfig
 from tradebot.marketdata.live_feed import OhlcvRow
 from tradebot.persistence import Database, FillStore, OrderStore
 from tradebot.persistence.database import metadata
@@ -1035,6 +1036,58 @@ class TestResearchOnlyFamilies:
         await worker.initialize()
         with pytest.raises(ValueError, match="research-only"):
             await worker.apply_strategy_params("breakout", {"channel_period": 20})
+
+
+class TestEvaluationStrategySelection:
+    """Runs grade a named bot: the lineup always, custom bots while they compete."""
+
+    @staticmethod
+    def add_custom_bot(worker: Worker) -> str:
+        """Register a recipe runtime directly (no engines — research only)."""
+        spec = CompetitorSpec(
+            bot_id="my-recipe",
+            label="My recipe",
+            family=None,
+            risk_state_row_id=100,
+            description="confluence test bot",
+        )
+        worker.challengers["my-recipe"] = worker._new_runtime(
+            spec, rules=validate_rules({"families": {"trend_following": {}}})
+        )
+        return "my-recipe"
+
+    async def test_the_lineup_and_custom_bots_are_offered(self, database: Database) -> None:
+        worker = Worker(make_config(), database, ScriptedExchange([]))
+        bot_id = self.add_custom_bot(worker)
+
+        rows = worker.evaluation_strategies()
+
+        by_id = {row["id"]: row for row in rows}
+        assert rows[0]["id"] == PRODUCTION_BOT_ID  # the default leads the list
+        assert by_id["breakout"]["kind"] == "builtin"
+        assert by_id[bot_id]["kind"] == "custom"
+        assert by_id[bot_id]["label"] == "My recipe"
+        # Built-in challengers appear once (from the lineup), never twice.
+        assert len(rows) == len(by_id)
+
+    async def test_custom_bots_get_a_recipe_evaluator(self, database: Database) -> None:
+        worker = Worker(make_config(), database, ScriptedExchange([]))
+        bot_id = self.add_custom_bot(worker)
+
+        worker._scenario_evaluator_for(bot_id)  # builds without raising
+        with pytest.raises(ValueError, match="unknown competitor"):
+            worker._scenario_evaluator_for("nope")
+
+    async def test_start_evaluation_rejects_an_unknown_bot_before_any_row(
+        self, database: Database
+    ) -> None:
+        worker = Worker(make_config(), database, ScriptedExchange([]))
+
+        with pytest.raises(ValueError, match="unknown strategy"):
+            await worker.start_evaluation(
+                EvaluationRunConfig(symbols=("BTC/USDT",), strategy="nope")
+            )
+        assert await worker.evaluation_store.list_runs() == []
 
 
 class TestCompetition:

@@ -1,6 +1,16 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
+import {
+  fetchComparisons,
+  fetchEvaluations,
+  fetchEvaluationStrategies,
+  fetchEvaluationSuggestions,
+  fetchImprovementStatus,
+  fetchStrategyVersions,
+  fetchSweeps,
+  startEvaluation,
+} from "../api/client";
 import type { EvaluationRunResponse } from "../api/types";
 import { ResearchScreen, RunReport } from "./ResearchScreen";
 
@@ -13,7 +23,9 @@ vi.mock("../api/client", () => {
     fetchSweeps: rejecting(),
     fetchStrategyVersions: rejecting(),
     fetchComparisons: rejecting(),
+    fetchEvaluationStrategies: rejecting(),
     fetchEvaluationSuggestions: rejecting(),
+    fetchImprovementStatus: rejecting(),
     fetchScenarios: rejecting(),
     fetchFindings: rejecting(),
     fetchScenarioReplay: rejecting(),
@@ -110,5 +122,55 @@ describe("ResearchScreen", () => {
     // And back again brings it into view.
     fireEvent.click(screen.getByRole("button", { name: "Evaluate" }));
     expect(screen.getByRole("button", { name: "start evaluation" })).toBeDefined();
+  });
+
+  it("offers every gradeable bot and submits the chosen one", async () => {
+    // The selector loads with the poll, so the whole chain must succeed here.
+    vi.mocked(fetchEvaluations).mockResolvedValue([]);
+    vi.mocked(fetchSweeps).mockResolvedValue([]);
+    vi.mocked(fetchStrategyVersions).mockResolvedValue([]);
+    vi.mocked(fetchComparisons).mockResolvedValue([]);
+    vi.mocked(fetchEvaluationSuggestions).mockResolvedValue([]);
+    vi.mocked(fetchImprovementStatus).mockResolvedValue({
+      enabled: false,
+      interval_hours: 12,
+      history_days: 365,
+      timeframe: "1h",
+      last_cycle_started_at: null,
+      last_cycle_finished_at: null,
+      last_outcome: null,
+      next_cycle_at: null,
+    });
+    vi.mocked(fetchEvaluationStrategies).mockResolvedValue([
+      {
+        id: "production",
+        label: "Regime router",
+        description: "the incumbent",
+        kind: "production",
+      },
+      {
+        id: "breakout",
+        label: "Breakout",
+        description: "Donchian-channel entries",
+        kind: "builtin",
+      },
+    ]);
+    vi.mocked(startEvaluation).mockResolvedValue({ run_id: 7, detail: "evaluation started" });
+    render(<ResearchScreen />);
+
+    // Options arrive from the backend, never hardcoded in the frontend.
+    await waitFor(() => {
+      expect(screen.getByRole("option", { name: "Breakout" })).toBeDefined();
+    });
+    fireEvent.change(screen.getByRole("combobox", { name: /whose strategy the run grades/ }), {
+      target: { value: "breakout" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "start evaluation" }));
+
+    await waitFor(() => {
+      expect(vi.mocked(startEvaluation)).toHaveBeenCalledWith(
+        expect.objectContaining({ strategy: "breakout" }),
+      );
+    });
   });
 });

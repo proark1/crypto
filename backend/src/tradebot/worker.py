@@ -338,6 +338,10 @@ class Worker:
         self.metrics = MetricsCollector()
         self.metrics.attach_to(self.bus)
         self._notifier: TelegramNotifier | None = None
+        # The §12.7 improvement loop, kept for its status surface; ``None``
+        # until _start_improver_if_enabled builds it (or forever when the
+        # loop is disabled — the status endpoint then reports schedule only).
+        self._improver: AutoImprover | None = None
         # Validated at boot, not first cycle: a bad timeframe must fail the
         # deploy, not the first improvement attempt half a day later.
         CandleInterval(config.auto_improve_timeframe)
@@ -365,8 +369,69 @@ class Worker:
         return self._task_group.create_task(coroutine)
 
     async def start_evaluation(self, config: EvaluationRunConfig) -> int:
-        """Start a blind walk-forward evaluation run (one at a time)."""
+        """Start a blind walk-forward evaluation run (one at a time).
+
+        The graded bot is validated here, before any run row exists: a
+        typo'd id must fail the request, never silently grade the wrong
+        strategy (the run-time factory re-checks, but by then a row shows).
+        """
+        known = {entry["id"] for entry in self.evaluation_strategies()}
+        if config.strategy not in known:
+            raise ValueError(f"unknown strategy {config.strategy!r}; known: {sorted(known)}")
         return await self.evaluations.start(config)
+
+    def evaluation_strategies(self) -> list[dict[str, str]]:
+        """Every bot an evaluation run can grade, lineup first, then custom.
+
+        The fixed lineup is always evaluable (its strategies build from
+        code plus the active promoted parameters); custom bots are
+        evaluable while they compete, graded by their recipe. The same
+        list backs the research screen's bot selector and the
+        ``start_evaluation`` validation, so the two can never drift.
+        """
+        rows = [
+            {
+                "id": spec.bot_id,
+                "label": spec.label,
+                "description": spec.description,
+                "kind": "production" if spec.bot_id == PRODUCTION_BOT_ID else "builtin",
+            }
+            for spec in LINEUP
+        ]
+        for bot_id in sorted(self.challengers):
+            runtime = self.challengers[bot_id]
+            if runtime.rules is None:
+                continue  # built-in challengers are already in the lineup rows
+            rows.append(
+                {
+                    "id": bot_id,
+                    "label": runtime.spec.label,
+                    "description": runtime.spec.description,
+                    "kind": "custom",
+                }
+            )
+        return rows
+
+    def improvement_status(self) -> dict[str, Any]:
+        """Report the §12.7 loop's schedule and last outcome, for the dashboard.
+
+        Always answers: when the loop is disabled (or not yet started) the
+        schedule still reports, with the cycle fields ``None`` — the status
+        card must say "off" rather than 404.
+        """
+        status = self._improver.status if self._improver is not None else None
+        return {
+            "enabled": self.config.auto_improve_enabled,
+            "interval_hours": self.config.auto_improve_interval_hours,
+            "history_days": self.config.auto_improve_history_days,
+            "timeframe": self.config.auto_improve_timeframe,
+            "last_cycle_started_at": status.last_cycle_started_at if status is not None else None,
+            "last_cycle_finished_at": (
+                status.last_cycle_finished_at if status is not None else None
+            ),
+            "last_outcome": status.last_outcome if status is not None else None,
+            "next_cycle_at": status.next_cycle_at if status is not None else None,
+        }
 
     async def start_comparison(self, config: EvaluationRunConfig) -> list[int]:
         """Grade the whole competition lineup on identical scenarios.
@@ -1070,15 +1135,24 @@ class Worker:
         return build_challenger_strategy(runtime.spec, self.strategy_params)
 
     def _scenario_evaluator_for(self, strategy_id: str) -> ScenarioEvaluator:
-        """One evaluator grading the named lineup entry on fresh instances.
+        """One evaluator grading the named bot on fresh instances.
 
-        Scenario strategies self-classify the regime from their own candles
-        instead of reading the live detector (whose wall-clock state would
-        leak the present into a historical decision); see
-        ``tradebot.evaluation.strategy`` for the documented divergence.
-        ``ValueError`` for an unknown id — a typo'd run must fail before a
-        row exists, never silently grade the wrong strategy.
+        Custom bots are graded by their recipe, captured at evaluator
+        creation: editing the bot mid-run must not change what the run is
+        grading. Lineup entries build from code plus the active promoted
+        parameters. Scenario strategies self-classify the regime from
+        their own candles instead of reading the live detector (whose
+        wall-clock state would leak the present into a historical
+        decision); see ``tradebot.evaluation.strategy`` for the documented
+        divergence. ``ValueError`` for an unknown id — a typo'd run must
+        fail before a row exists, never silently grade the wrong strategy.
         """
+        runtime = self.challengers.get(strategy_id)
+        if runtime is not None and runtime.rules is not None:
+            # Bare, unscoped instances: scenario decisions are graded, not
+            # journaled, so the live bot_id signal namespace does not apply.
+            rules = dict(runtime.rules)
+            return ScenarioEvaluator(lambda: build_rules_strategy(rules))
         spec = spec_for(strategy_id)
         return ScenarioEvaluator(
             lambda: build_scenario_strategy(
@@ -2217,6 +2291,7 @@ class Worker:
             timeframe=self.config.auto_improve_timeframe,
             notify=self._notify,
         )
+        self._improver = improver
         task = asyncio.create_task(improver.run())
 
         def log_improver_outcome(finished: asyncio.Task[None]) -> None:

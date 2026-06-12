@@ -275,8 +275,49 @@ class StubBot:
             f"manual revert to version #{version_id}",
         )
 
+    def evaluation_strategies(self) -> list[dict[str, str]]:
+        # The worker's shape: the fixed lineup plus any stub custom bots.
+        rows = [
+            {
+                "id": spec.bot_id,
+                "label": spec.label,
+                "description": spec.description,
+                "kind": "production" if spec.bot_id == "production" else "builtin",
+            }
+            for spec in LINEUP
+        ]
+        for bot_id, bot in self.custom_bots.items():
+            rows.append(
+                {
+                    "id": bot_id,
+                    "label": bot["label"],
+                    "description": bot["description"],
+                    "kind": "custom",
+                }
+            )
+        return rows
+
+    def improvement_status(self) -> dict[str, Any]:
+        # Scripted mid-loop snapshot in the worker's shape (datetimes, not
+        # strings — the route serializes them).
+        return {
+            "enabled": True,
+            "interval_hours": 12,
+            "history_days": 365,
+            "timeframe": "1h",
+            "last_cycle_started_at": BASE_TIME,
+            "last_cycle_finished_at": BASE_TIME + timedelta(minutes=30),
+            "last_outcome": "sweep #1 kept the active configuration (verdict: overfit)",
+            "next_cycle_at": BASE_TIME + timedelta(hours=12),
+        }
+
     async def start_evaluation(self, config: EvaluationRunConfig) -> int:
-        config.intervals()  # same validation order as the real manager
+        # Same validation order as the worker: the graded bot first (before
+        # any row exists), then the manager's timeframe check.
+        known = {entry["id"] for entry in self.evaluation_strategies()}
+        if config.strategy not in known:
+            raise ValueError(f"unknown strategy {config.strategy!r}; known: {sorted(known)}")
+        config.intervals()
         if self._evaluation_running:
             raise RuntimeError("evaluation run 1 is already in progress")
         self._evaluation_running = True
@@ -287,6 +328,7 @@ class StubBot:
             code_version="test",
             progress_total=config.scenario_count,
             created_at=BASE_TIME,
+            strategy=config.strategy,
         )
 
     def cancel_evaluation(self, run_id: int) -> bool:
@@ -990,6 +1032,68 @@ class TestEvaluations:
         assert cancelled.status_code == 200
         assert again.status_code == 409  # nothing in flight any more
         assert missing.status_code == 404
+
+    async def test_strategies_offer_the_lineup_and_custom_bots(self, database: Database) -> None:
+        bot = StubBot(database)
+        bot_id = await bot.create_custom_bot("My Recipe", "", {"families": {"trend_following": {}}})
+        async with make_client(bot) as client:
+            response = await client.get("/evaluations/strategies")
+
+        assert response.status_code == 200
+        rows = response.json()
+        ids = [row["id"] for row in rows]
+        assert ids[0] == "production"  # the default leads the selector
+        assert {spec.bot_id for spec in LINEUP} <= set(ids)
+        custom = next(row for row in rows if row["id"] == bot_id)
+        assert custom["kind"] == "custom"
+        assert custom["label"] == "My Recipe"
+
+    async def test_run_grades_the_requested_bot(self, database: Database) -> None:
+        bot = StubBot(database)
+        async with make_client(bot) as client:
+            started = await client.post("/evaluations", json={"strategy": "breakout"})
+            run_id = started.json()["run_id"]
+            fetched = (await client.get(f"/evaluations/{run_id}")).json()
+
+        assert started.status_code == 200
+        assert fetched["strategy"] == "breakout"
+
+    async def test_unknown_strategy_is_400_and_creates_no_run(self, database: Database) -> None:
+        bot = StubBot(database)
+        async with make_client(bot) as client:
+            response = await client.post("/evaluations", json={"strategy": "nope"})
+            listed = (await client.get("/evaluations")).json()
+
+        assert response.status_code == 400
+        assert "unknown strategy" in response.json()["detail"]
+        assert listed == []  # the typo'd run never left a row behind
+
+    async def test_a_custom_bot_is_evaluable_by_id(self, database: Database) -> None:
+        bot = StubBot(database)
+        bot_id = await bot.create_custom_bot("My Recipe", "", {"families": {"trend_following": {}}})
+        async with make_client(bot) as client:
+            started = await client.post("/evaluations", json={"strategy": bot_id})
+            fetched = (await client.get(f"/evaluations/{started.json()['run_id']}")).json()
+
+        assert started.status_code == 200
+        assert fetched["strategy"] == bot_id
+
+
+class TestImprovementStatus:
+    async def test_status_serializes_the_loop_snapshot(self, database: Database) -> None:
+        bot = StubBot(database)
+        async with make_client(bot) as client:
+            response = await client.get("/improvement")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["enabled"] is True
+        assert body["interval_hours"] == 12
+        assert body["timeframe"] == "1h"
+        assert "kept the active configuration" in body["last_outcome"]
+        # Datetimes cross the boundary as ISO-8601 strings.
+        assert body["last_cycle_started_at"] == BASE_TIME.isoformat()
+        assert body["next_cycle_at"] == (BASE_TIME + timedelta(hours=12)).isoformat()
 
 
 class TestScenarioReplay:
