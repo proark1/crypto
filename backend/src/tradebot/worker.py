@@ -538,12 +538,23 @@ class Worker:
     async def _run_safety_supervisor(self) -> None:
         """Pause trading once a safety-critical service trips the latch.
 
-        Held open inside the run TaskGroup like the stop keeper; cancelled at
-        shutdown if no service ever crashes. One-shot on purpose: once entries
-        are muted there is nothing more to do until a human restarts.
+        Runs inside the run TaskGroup, which only closes when every task is
+        done — so this must also return on a normal stop, not just on a trip,
+        or shutdown would hang forever waiting for a crash that never comes.
+        One-shot: once entries are muted there is nothing more to do until a
+        human restarts.
         """
-        await self._safety_pause_requested.wait()
-        await self._pause_for_failed_service(self._safety_pause_reason or "unknown")
+        waiters = [
+            asyncio.ensure_future(self._safety_pause_requested.wait()),
+            asyncio.ensure_future(self._stop_requested.wait()),
+        ]
+        try:
+            await asyncio.wait(waiters, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            for waiter in waiters:
+                waiter.cancel()
+        if self._safety_pause_requested.is_set():
+            await self._pause_for_failed_service(self._safety_pause_reason or "unknown")
 
     async def _pause_for_failed_service(self, service: str) -> None:
         """Flatten-safe halt when a safety-critical background service dies.
