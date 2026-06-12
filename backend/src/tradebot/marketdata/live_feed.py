@@ -194,27 +194,62 @@ class LiveMarketDataFeed:
         self._health_reason = None
         return inserted
 
+    async def prime_history(self, count: int) -> int:
+        """Fetch up to ``count`` recent closed candles into the store; return inserted.
+
+        A bounded, recent-only repair for warm-starting a coin's strategy
+        the instant it is added at runtime: :meth:`backfill`'s multi-year
+        crawl can run for minutes, far too long to block before a strategy
+        can be primed from stored candles. Starts ``count`` intervals back
+        (or one interval past the newest stored candle when that is more
+        recent) and pages forward to now; a long gap to old stored history
+        is skipped — the deep crawl that fills it is left to the next
+        :meth:`backfill`. Does not touch the health latch: only a full
+        backfill may declare this symbol's history gap-free.
+        """
+        recent_since_ms = utc_ms(datetime.now(UTC) - count * self._interval.duration)
+        return await self._page_forward(recent_since_ms, floor_since_ms=recent_since_ms)
+
     async def _backfill(self) -> int:
         """Repair history both ways: deepen the past, then page to now.
 
         Pagination matters: an outage longer than one REST page (typically
-        500-1000 candles) must still repair completely. Each page's last row
-        is discarded as potentially in progress — safe under pagination,
-        because a *closed* last row is simply re-fetched as the first row of
-        the next page (the resume point is the last *inserted* candle).
+        500-1000 candles) must still repair completely. With nothing stored
+        and a history horizon configured, the forward crawl starts there so
+        the database accumulates a real backtest dataset — the exchange's
+        paginated REST history is free, and CCXT's rate limiter keeps the
+        deep crawl polite.
         """
         total_inserted = await self._deepen_history() if self._history_days > 0 else 0
+        horizon_since_ms = (
+            utc_ms(datetime.now(UTC) - timedelta(days=self._history_days))
+            if self._history_days > 0
+            else None
+        )
+        return total_inserted + await self._page_forward(horizon_since_ms)
+
+    async def _page_forward(
+        self, fallback_since_ms: int | None, floor_since_ms: int | None = None
+    ) -> int:
+        """Page closed candles forward to now; return the number inserted.
+
+        Resumes one interval past the newest stored candle, or starts at
+        ``fallback_since_ms`` when nothing is stored (``None`` fetches the
+        venue's most recent page). ``floor_since_ms`` clamps the start no
+        earlier than that instant, bounding a resume across a long gap (the
+        gap is left for a full backfill to repair). Each page's last row is
+        dropped as possibly in progress — safe under pagination, because a
+        *closed* last row is re-fetched as the next page's first row (the
+        resume point is the last *inserted* candle).
+        """
         latest = await self._store.latest_open_time(self._symbol, self._interval)
+        since_ms = (
+            utc_ms(latest + self._interval.duration) if latest is not None else fallback_since_ms
+        )
+        if floor_since_ms is not None and (since_ms is None or since_ms < floor_since_ms):
+            since_ms = floor_since_ms
+        inserted = 0
         while True:
-            since_ms: int | None = None
-            if latest is not None:
-                since_ms = utc_ms(latest + self._interval.duration)
-            elif self._history_days > 0:
-                # Nothing stored yet: reach back the configured horizon so
-                # the database accumulates a real backtest dataset. The
-                # exchange's paginated REST history is free; CCXT's rate
-                # limiter keeps the deep crawl polite.
-                since_ms = utc_ms(datetime.now(UTC) - timedelta(days=self._history_days))
             rows = await self._exchange.fetch_ohlcv(
                 self._symbol, self._interval.value, since=since_ms
             )
@@ -229,9 +264,10 @@ class LiveMarketDataFeed:
             if not candles:
                 break
             await self._store.insert_batch(candles)
-            total_inserted += len(candles)
+            inserted += len(candles)
             latest = candles[-1].open_time
-        return total_inserted
+            since_ms = utc_ms(latest + self._interval.duration)
+        return inserted
 
     async def _deepen_history(self) -> int:
         """Extend stored history *backward* to the configured horizon.

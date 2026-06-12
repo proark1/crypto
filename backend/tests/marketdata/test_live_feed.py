@@ -277,6 +277,60 @@ class TestFeed:
         assert await feed.backfill() == 0
 
 
+class TestPrimeHistory:
+    """Bounded recent-only fetch for warm-starting a coin added at runtime."""
+
+    @staticmethod
+    def now_floor_ms() -> int:
+        return int(datetime.now(UTC).replace(second=0, microsecond=0).timestamp() * 1000)
+
+    @staticmethod
+    def recent_rows(now_ms: int, minutes: int) -> list[OhlcvRow]:
+        # Ascending 1m candles up to the current minute (the last is in progress).
+        start_ms = now_ms - (minutes - 1) * MINUTE_MS
+        return [[start_ms + i * MINUTE_MS, 100.0, 100.5, 99.5, 100.0, 1.0] for i in range(minutes)]
+
+    async def test_prime_history_fetches_only_a_bounded_recent_window(
+        self, database: Database
+    ) -> None:
+        """A brand-new coin warms from a recent window, never the deep crawl."""
+        store = CandleStore(database)
+        now_ms = self.now_floor_ms()
+        exchange = FakeExchange([], rest_rows=self.recent_rows(now_ms, 11))
+        feed = LiveMarketDataFeed(exchange, "NEW/USDT", store, EventBus(), history_days=1460)
+
+        inserted = await feed.prime_history(count=5)
+
+        assert inserted > 0
+        # Started ~5 minutes back, not at the multi-year horizon: add_coin must
+        # not block on a deep crawl just to prime a strategy.
+        first_since = exchange.rest_calls[0]
+        assert first_since is not None
+        assert abs(first_since - (now_ms - 5 * MINUTE_MS)) < 2 * MINUTE_MS
+        # Priming never declares the feed healthy; only a full backfill may.
+        assert feed.healthy is False
+
+    async def test_prime_history_skips_a_long_gap_to_old_stored_history(
+        self, database: Database
+    ) -> None:
+        """Ancient stored history must not trigger a months-long resume crawl."""
+        store = CandleStore(database)
+        # Seed one very old candle (BASE_TIME, months before now).
+        seed = FakeExchange([], rest_rows=[row(0), row(1)])
+        await LiveMarketDataFeed(seed, "OLD/USDT", store, EventBus()).backfill()
+
+        now_ms = self.now_floor_ms()
+        exchange = FakeExchange([], rest_rows=self.recent_rows(now_ms, 11))
+        feed = LiveMarketDataFeed(exchange, "OLD/USDT", store, EventBus())
+
+        await feed.prime_history(count=5)
+
+        # Clamped to the recent floor, not one interval past the ancient candle.
+        first_since = exchange.rest_calls[0]
+        assert first_since is not None
+        assert first_since >= now_ms - 6 * MINUTE_MS
+
+
 class TestDeepenHistory:
     """Backward deepening: shallow existing history grows to the horizon."""
 
