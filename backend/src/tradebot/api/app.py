@@ -30,7 +30,7 @@ from tradebot.core.logging import log_event
 from tradebot.core.metrics import MetricsCollector, format_metric
 from tradebot.core.models import Candle, CandleInterval, utc_now
 from tradebot.engine import TradingEngine
-from tradebot.evaluation.improve import build_improvement_candidates, select_targeting_findings
+from tradebot.evaluation.improve import build_candidates_for, select_targeting_findings
 from tradebot.evaluation.models import LearningFinding, RunStatus
 from tradebot.evaluation.replay import load_replay
 from tradebot.evaluation.runner import EvaluationRunConfig
@@ -1974,17 +1974,30 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
         first_engine = next(iter(state.engines.values()))
         return CommandResponse(paused=first_engine.paused, detail=f"run {run_id} cancelled")
 
-    async def latest_run_findings() -> list[tuple[int, str]]:
-        """Select the newest completed run's findings for targeting.
+    async def derive_manual_grid() -> tuple[tuple[SweepCandidate, ...], tuple[int, ...]]:
+        """Build the "run sweep" button's grid from the newest completed run.
 
         Same curation as the automated cycle (§12.7): accepted findings
-        outrank proposed ones, rejected findings never steer anything.
+        outrank proposed ones, rejected findings never steer anything —
+        and the grid matches the bot that run graded, so the button tests
+        the knobs the findings on screen point at. When the newest run
+        graded a bot with no improvement grid (a custom recipe), the
+        button falls back to challenging the production configuration,
+        untargeted, rather than sweeping wrong knobs.
         """
         for run in await state.evaluation_store.list_runs(limit=10):
             if run.get("status") != RunStatus.COMPLETED.value:
                 continue
-            return select_targeting_findings(await state.evaluation_store.fetch_findings(run["id"]))
-        return []
+            findings = select_targeting_findings(
+                await state.evaluation_store.fetch_findings(run["id"])
+            )
+            try:
+                return build_candidates_for(
+                    str(run.get("strategy") or "production"), state.strategy_params, findings
+                )
+            except ValueError:
+                break  # custom recipe: no grid for it (yet) — fall back
+        return build_candidates_for("production", state.strategy_params, [])
 
     @protected.post("/sweeps")
     async def start_sweep(request: SweepStartRequest) -> EvaluationStartResponse:
@@ -2003,9 +2016,7 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
                 # trading, steered by the latest findings — the same grid
                 # the automated improver would sweep, so "run sweep" tests
                 # the knobs the findings on screen point at.
-                candidates, mined = build_improvement_candidates(
-                    state.strategy_params, await latest_run_findings()
-                )
+                candidates, mined = await derive_manual_grid()
                 motivating = tuple(dict.fromkeys((*motivating, *mined)))
             config = SweepConfig(
                 symbol=request.symbol if request.symbol else resolve_symbol(None),

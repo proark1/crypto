@@ -1057,15 +1057,17 @@ class Worker:
         stored candles, so indicators are warm from the first live candle.
         Returns the new version id. Raises ``ValueError`` for an unknown
         family or parameter.
+
+        Tuning is not routing: a research family's promotion changes what
+        its solo competition account trades — sharpening the §13
+        leaderboard evidence — while production routing remains the §13.7
+        human decision. The journal note says so explicitly, so a version
+        row can never read as "production now trades breakout".
         """
         validate_family_params(family, dict(params))
         if family not in PRODUCTION_FAMILIES:
-            # Sweepable but not yet routed: silently "promoting" parameters
-            # the router never trades would be a lie in the journal.
-            raise ValueError(
-                f"{family} is research-only: it has no production route yet, so its "
-                "parameters cannot be promoted (sweep it via the research API instead)"
-            )
+            scope = "research family: tunes its solo competition account; unrouted in production"
+            note = f"{note} [{scope}]" if note else f"[{scope}]"
         version = await self.strategy_settings_store.record(
             family, params, datetime.now(UTC), source_sweep_id, note
         )
