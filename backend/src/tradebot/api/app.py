@@ -30,7 +30,7 @@ from tradebot.core.logging import log_event
 from tradebot.core.metrics import MetricsCollector, format_metric
 from tradebot.core.models import Candle, CandleInterval, utc_now
 from tradebot.engine import TradingEngine
-from tradebot.evaluation.improve import build_improvement_candidates
+from tradebot.evaluation.improve import build_improvement_candidates, select_targeting_findings
 from tradebot.evaluation.models import LearningFinding, RunStatus
 from tradebot.evaluation.replay import load_replay
 from tradebot.evaluation.runner import EvaluationRunConfig
@@ -215,6 +215,14 @@ class BotState(Protocol):
 
     def improvement_status(self) -> dict[str, Any]:
         """Report the §12.7 automated-improvement loop's schedule and last outcome."""
+        ...
+
+    def note_finding_acceptance(self, run_id: int) -> None:
+        """Arm (or ride) the accept-triggered coalescing sweep for the run."""
+        ...
+
+    def accept_sweep_pending(self, run_id: int) -> bool:
+        """Report whether the run's coalescing sweep timer is armed."""
         ...
 
     def cancel_evaluation(self, run_id: int) -> bool:
@@ -828,14 +836,28 @@ class FindingResponse(BaseModel):
     first_seen_run_id: int | None = None
     """The earliest of those runs, for "recurred since run #N" prose."""
 
+    sweep_queued: bool = False
+    """True while the run's accept-triggered coalescing timer is armed —
+    the verdict has been heard and a targeted sweep is about to start."""
+
+    latest_sweep_id: int | None = None
+    """The newest sweep this finding motivated, with its status/verdict —
+    the finding card's cause-to-effect chain (accepted -> swept -> verdict)."""
+
+    latest_sweep_status: str | None = None
+    latest_sweep_verdict: str | None = None
+
 
 def _finding_response(
     finding_id: int,
     finding: LearningFinding,
     seen_in_prior_runs: int = 0,
     first_seen_run_id: int | None = None,
+    sweep_queued: bool = False,
+    latest_sweep: Mapping[str, Any] | None = None,
 ) -> FindingResponse:
     """Serialize one finding for the API."""
+    report = (latest_sweep or {}).get("report") or {}
     return FindingResponse(
         id=finding_id,
         run_id=finding.run_id,
@@ -849,6 +871,10 @@ def _finding_response(
         created_at=finding.created_at.isoformat(),
         seen_in_prior_runs=seen_in_prior_runs,
         first_seen_run_id=first_seen_run_id,
+        sweep_queued=sweep_queued,
+        latest_sweep_id=None if latest_sweep is None else latest_sweep["id"],
+        latest_sweep_status=None if latest_sweep is None else latest_sweep["status"],
+        latest_sweep_verdict=report.get("verdict"),
     )
 
 
@@ -1817,6 +1843,18 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
                 history[prior.pattern] = (count + 1, first)
         return history
 
+    async def latest_sweep_by_finding() -> dict[int, dict[str, Any]]:
+        """Map finding id -> the newest sweep it motivated (bounded window).
+
+        The chain a finding card renders — accepted, swept in #N, verdict —
+        is read off the sweeps' recorded motivation, never stored twice.
+        """
+        latest: dict[int, dict[str, Any]] = {}
+        for sweep in await state.evaluation_store.list_sweeps(TIMELINE_WINDOW):
+            for finding_id in sweep.get("motivating_finding_ids") or []:
+                latest.setdefault(finding_id, sweep)  # list is newest first
+        return latest
+
     @protected.get("/evaluations/{run_id}/findings")
     async def list_evaluation_findings(run_id: int) -> list[FindingResponse]:
         """List the run's mined mistake patterns, each awaiting accept/reject."""
@@ -1827,6 +1865,8 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
             )
         findings = await state.evaluation_store.fetch_findings(run_id)
         history = await finding_recurrence(run)
+        sweeps_by_finding = await latest_sweep_by_finding()
+        queued = state.accept_sweep_pending(run_id)
         responses = []
         for finding_id, finding in findings:
             seen, first = history.get(finding.pattern, (0, 0))
@@ -1836,6 +1876,8 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
                     finding,
                     seen_in_prior_runs=seen,
                     first_seen_run_id=first if seen > 0 else None,
+                    sweep_queued=queued and finding.status == "accepted",
+                    latest_sweep=sweeps_by_finding.get(finding_id),
                 )
             )
         return responses
@@ -1855,18 +1897,29 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
                 detail=f"finding {finding_id} is already {finding.status}",
             )
         await state.evaluation_store.set_finding_status(finding_id, verdict)
+        if verdict == "accepted":
+            # The verdict becomes a test: arm (or ride) the run's coalesced
+            # targeted sweep. Recording always precedes scheduling, so a
+            # crash between the two loses only the trigger — the scheduled
+            # cycle reads the recorded status and remains the backstop.
+            state.note_finding_acceptance(finding.run_id)
         decided = finding.model_copy(update={"status": verdict})
         # The response replaces the finding card in place, so it must carry
-        # the same recurrence annotations the list response did — a verdict
-        # click must not visually reset a recurred pattern to "new".
+        # the same annotations the list response did — a verdict click must
+        # not visually reset a recurred pattern to "new" or drop the chain.
         run = await state.evaluation_store.fetch_run(finding.run_id)
         history = await finding_recurrence(run) if run is not None else {}
         seen, first = history.get(finding.pattern, (0, 0))
+        sweeps_by_finding = await latest_sweep_by_finding()
         return _finding_response(
             finding_id,
             decided,
             seen_in_prior_runs=seen,
             first_seen_run_id=first if seen > 0 else None,
+            sweep_queued=(
+                decided.status == "accepted" and state.accept_sweep_pending(finding.run_id)
+            ),
+            latest_sweep=sweeps_by_finding.get(finding_id),
         )
 
     @protected.get("/research/timeline")
@@ -1922,20 +1975,15 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
         return CommandResponse(paused=first_engine.paused, detail=f"run {run_id} cancelled")
 
     async def latest_run_findings() -> list[tuple[int, str]]:
-        """Non-rejected findings of the newest completed run, for targeting.
+        """Select the newest completed run's findings for targeting.
 
-        Rejected findings are excluded (a human called those noise); the
-        rest steer the derived sweep grid exactly as in the automated
-        improvement cycle (§12.7).
+        Same curation as the automated cycle (§12.7): accepted findings
+        outrank proposed ones, rejected findings never steer anything.
         """
         for run in await state.evaluation_store.list_runs(limit=10):
             if run.get("status") != RunStatus.COMPLETED.value:
                 continue
-            return [
-                (finding_id, finding.pattern)
-                for finding_id, finding in await state.evaluation_store.fetch_findings(run["id"])
-                if finding.status != "rejected"
-            ]
+            return select_targeting_findings(await state.evaluation_store.fetch_findings(run["id"]))
         return []
 
     @protected.post("/sweeps")

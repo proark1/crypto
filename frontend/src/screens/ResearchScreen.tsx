@@ -425,6 +425,11 @@ export function ResearchScreen() {
   const selectedRunId = selected?.id ?? null;
   const selectedRunStatus = selected?.status ?? null;
 
+  // A finding's sweep-chain badge (queued -> sweeping -> verdict) moves when
+  // a sweep changes state, so sweep transitions re-fetch the (small) findings
+  // list — while the (large) scenario list still only follows the run itself.
+  const sweepsFingerprint = sweeps.map((sweep) => `${String(sweep.id)}:${sweep.status}`).join();
+
   // The scenario list refreshes when the selection changes or the run
   // reaches a terminal status — not on every poll, which would re-download
   // hundreds of rows every few seconds while a run is in flight.
@@ -440,10 +445,18 @@ export function ResearchScreen() {
     fetchScenarios(selectedRunId).then(setScenarios, () => {
       setPollStale(true);
     });
+  }, [selectedRunId, selectedRunStatus]);
+
+  useEffect(() => {
+    // Fetch-only (the run-change effect above clears): a sweep transition
+    // must update the chain badges in place, never blank the cards.
+    if (selectedRunId === null) {
+      return;
+    }
     fetchFindings(selectedRunId).then(setFindings, () => {
       setPollStale(true);
     });
-  }, [selectedRunId, selectedRunStatus]);
+  }, [selectedRunId, selectedRunStatus, sweepsFingerprint]);
 
   const openReplay = (scenarioId: number) => {
     fetchScenarioReplay(scenarioId).then(setReplay, (caught: unknown) => {

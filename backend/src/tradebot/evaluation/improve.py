@@ -103,6 +103,33 @@ class EvaluationStarter(Protocol):
         ...
 
 
+def select_targeting_findings(
+    findings: Sequence[tuple[int, LearningFinding]],
+) -> list[tuple[int, str]]:
+    """Return the (id, pattern) pairs a sweep grid should target.
+
+    A human acceptance is curation: once any of a run's findings is
+    accepted, only accepted ones steer the targeted challengers — every
+    extra candidate tightens the Bonferroni bar for all of them, so the
+    curated few must not share their significance budget with patterns
+    still awaiting judgement. With no verdicts yet the loop keeps its
+    historical behavior (every non-rejected finding steers), and rejected
+    findings never target anything — a human called those noise.
+    """
+    accepted = [
+        (finding_id, finding.pattern)
+        for finding_id, finding in findings
+        if finding.status == "accepted"
+    ]
+    if accepted:
+        return accepted
+    return [
+        (finding_id, finding.pattern)
+        for finding_id, finding in findings
+        if finding.status != "rejected"
+    ]
+
+
 def build_improvement_candidates(
     active: Mapping[str, Mapping[str, Any]],
     findings: Sequence[tuple[int, str]] = (),
@@ -228,6 +255,42 @@ def build_improvement_candidates(
                 ).model_dump(),
             )
         )
+    early_exit_ids = [finding_id for finding_id, pattern in findings if "cut winners" in pattern]
+    if early_exit_ids:
+        motivating += early_exit_ids
+        # Two exits, two knobs: the trend family gives winners room with a
+        # trailing stop; the reversion family by holding past the midline.
+        trail_toggle = trend.atr_stop_multiple if trend.trail_atr_multiple == 0 else 0.0
+        raw.append(
+            SweepCandidate(
+                name="atr_trailing" if trail_toggle else "no_trailing",
+                params=trend.model_copy(update={"trail_atr_multiple": trail_toggle}).model_dump(),
+            )
+        )
+        raw.append(
+            SweepCandidate(
+                name="later_reversion_exit",
+                family="mean_reversion",
+                params=reversion.model_copy(
+                    update={"exit_rsi": min(80.0, round(reversion.exit_rsi * 1.2, 1))}
+                ).model_dump(),
+            )
+        )
+    missed_ids = [finding_id for finding_id, pattern in findings if "stays flat" in pattern]
+    if missed_ids:
+        motivating += missed_ids
+        # Loosen exactly one entry gate: a higher oversold threshold lets
+        # shallower dips qualify, clamped safely below the exit midline so
+        # the entry condition can never sit above its own exit.
+        looser = min(reversion.exit_rsi - 5.0, round(reversion.oversold_threshold * 1.2, 1))
+        if looser > reversion.oversold_threshold:
+            raw.append(
+                SweepCandidate(
+                    name="looser_oversold",
+                    family="mean_reversion",
+                    params=reversion.model_copy(update={"oversold_threshold": looser}).model_dump(),
+                )
+            )
     seen: set[tuple[str, tuple[tuple[str, Any], ...]]] = set()
     unique: list[SweepCandidate] = []
     for candidate in raw:
@@ -340,11 +403,7 @@ class AutoImprover:
                 logger.info("improvement cycle skipped: an evaluation run is already in flight")
                 self._finish_cycle("skipped: an evaluation run is already in flight")
             return None
-        findings = [
-            (finding_id, finding.pattern)
-            for finding_id, finding in await self._store.fetch_findings(latest_run["id"])
-            if finding.status != "rejected"  # a human called those noise
-        ]
+        findings = select_targeting_findings(await self._store.fetch_findings(latest_run["id"]))
         symbol = symbols[self._rotation % len(symbols)]
         self._rotation += 1
         candidates, motivating = build_improvement_candidates(self._active_params(), findings)

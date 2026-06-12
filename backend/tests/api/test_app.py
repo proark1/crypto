@@ -102,6 +102,8 @@ class StubBot:
         self.news_flags = NewsFlags()
         self._evaluation_running = False
         self._sweep_running = False
+        # Runs whose acceptance triggered the (stubbed) coalescing sweep.
+        self.acceptance_notes: list[int] = []
         # Custom bots, in-memory: bot_id -> {label, description, rules};
         # paused state per bot id. Enough behavior for the endpoints'
         # contract tests — worker tests cover the real lifecycle.
@@ -296,6 +298,15 @@ class StubBot:
                 }
             )
         return rows
+
+    def note_finding_acceptance(self, run_id: int) -> None:
+        # The worker arms a coalescing sweep timer here; the stub records
+        # the trigger so accept-path tests can assert it fired (and the run
+        # reads as "pending" for the sweep_queued annotation).
+        self.acceptance_notes.append(run_id)
+
+    def accept_sweep_pending(self, run_id: int) -> bool:
+        return run_id in self.acceptance_notes
 
     def improvement_status(self) -> dict[str, Any]:
         # Scripted mid-loop snapshot in the worker's shape (datetimes, not
@@ -1189,6 +1200,72 @@ class TestFindingRecurrence:
 
         assert decided["status"] == "accepted"
         assert decided["seen_in_prior_runs"] == 1
+
+
+class TestAcceptTriggeredSweeps:
+    async def test_accepting_arms_the_sweep_and_says_so(self, database: Database) -> None:
+        bot = StubBot(database)
+        run_id, finding_ids = await seed_completed_run(
+            bot,
+            created_at=BASE_TIME,
+            patterns={"entries lose money when trend is down": "proposed"},
+        )
+        finding_id = finding_ids["entries lose money when trend is down"]
+
+        async with make_client(bot) as client:
+            decided = (await client.post(f"/evaluations/findings/{finding_id}/accept")).json()
+
+        assert bot.acceptance_notes == [run_id]
+        assert decided["sweep_queued"] is True
+
+    async def test_rejecting_triggers_nothing(self, database: Database) -> None:
+        bot = StubBot(database)
+        _, finding_ids = await seed_completed_run(
+            bot,
+            created_at=BASE_TIME,
+            patterns={"entries lose money when trend is down": "proposed"},
+        )
+        finding_id = finding_ids["entries lose money when trend is down"]
+
+        async with make_client(bot) as client:
+            decided = (await client.post(f"/evaluations/findings/{finding_id}/reject")).json()
+
+        assert bot.acceptance_notes == []
+        assert decided["sweep_queued"] is False
+
+    async def test_findings_carry_their_sweep_chain(self, database: Database) -> None:
+        """The card's cause-to-effect chain reads off the sweep's motivation."""
+        bot = StubBot(database)
+        run_id, finding_ids = await seed_completed_run(
+            bot,
+            created_at=BASE_TIME,
+            patterns={
+                "entries lose money when trend is down": "accepted",
+                "held positions ride into their stops": "proposed",
+            },
+        )
+        motivated_id = finding_ids["entries lose money when trend is down"]
+        sweep_id = await bot.evaluation_store.create_sweep(
+            symbol="BTC/USDT",
+            timeframe="1h",
+            config={},
+            motivating_finding_ids=[motivated_id],
+            created_at=BASE_TIME + timedelta(hours=1),
+        )
+        await bot.evaluation_store.complete_sweep(
+            sweep_id, {"verdict": "overfit", "winner": "tighter_stop"}
+        )
+
+        async with make_client(bot) as client:
+            findings = (await client.get(f"/evaluations/{run_id}/findings")).json()
+
+        by_pattern = {finding["pattern"]: finding for finding in findings}
+        motivated = by_pattern["entries lose money when trend is down"]
+        assert motivated["latest_sweep_id"] == sweep_id
+        assert motivated["latest_sweep_status"] == "completed"
+        assert motivated["latest_sweep_verdict"] == "overfit"
+        bystander = by_pattern["held positions ride into their stops"]
+        assert bystander["latest_sweep_id"] is None
 
 
 class TestResearchTimeline:

@@ -1,11 +1,43 @@
 import type { FindingResponse } from "../api/types";
-import { Badge, Button } from "../ui";
+import { Badge, Button, type BadgeTone } from "../ui";
+
+/**
+ * The cause-to-effect chain a verdict sets off: a queued coalescing timer,
+ * the sweep it fires, and that sweep's verdict — read off the sweep's
+ * recorded motivation, so the badge can never disagree with the journal.
+ */
+function SweepChainBadge(props: { finding: FindingResponse }) {
+  const finding = props.finding;
+  if (finding.sweep_queued && finding.latest_sweep_id === null) {
+    return <Badge tone="amber">sweep queued</Badge>;
+  }
+  if (finding.latest_sweep_id === null) {
+    return null;
+  }
+  if (finding.latest_sweep_status !== "completed") {
+    const label =
+      finding.latest_sweep_status === "running" || finding.latest_sweep_status === "pending"
+        ? `sweeping #${String(finding.latest_sweep_id)}`
+        : `sweep #${String(finding.latest_sweep_id)} ${finding.latest_sweep_status ?? ""}`;
+    return <Badge tone="violet">{label}</Badge>;
+  }
+  const verdict = finding.latest_sweep_verdict ?? "no verdict";
+  const tone: BadgeTone =
+    verdict === "validated" ? "emerald" : verdict === "overfit" ? "red" : "zinc";
+  return (
+    <Badge tone={tone}>
+      sweep #{String(finding.latest_sweep_id)}: {verdict.replace(/_/g, " ")}
+    </Badge>
+  );
+}
 
 /**
  * Mined mistake patterns from a run, each awaiting the human verdict.
- * Accept/reject is a recorded judgement, nothing more — the evaluation
- * system never changes trading rules itself (ARCHITECTURE.md §12), so the
- * buttons call the API and the run's lineage carries the answer.
+ * Accepting queues a coalesced, findings-targeted parameter sweep (the
+ * verdict becomes a test); the chain badge on each card follows it from
+ * queued through sweeping to the sweep's verdict. Settings still only ever
+ * change through a statistically validated sweep winner, on paper
+ * (ARCHITECTURE.md §12.7) — the buttons themselves never touch the bot.
  */
 export function FindingsPanel(props: {
   findings: FindingResponse[];
@@ -23,10 +55,11 @@ export function FindingsPanel(props: {
       </h4>
       <p className="mb-2 mt-0.5 text-xs text-zinc-500">
         Each card is a money-losing (or money-missing) pattern mined from this run, with the
-        scenarios as evidence — click one to replay it. Accepting a finding records “I believe
-        this”; rejecting records “noise”. Neither changes the bot by itself — accepted findings
-        are your reasons to try a parameter sweep below. Confidence is sample size: low means
-        few examples, treat with suspicion.
+        scenarios as evidence — click one to replay it. Accepting records “I believe this” and
+        queues a parameter sweep targeted at the accepted findings (nearby accepts share one
+        sweep); rejecting records “noise” and steers future sweeps away. Settings only ever
+        change when a sweep winner is statistically validated, and only on paper. Confidence is
+        sample size: low means few examples, treat with suspicion.
       </p>
       <ul className="space-y-2">
         {props.findings.map((finding) => (
@@ -57,6 +90,7 @@ export function FindingsPanel(props: {
                   {finding.status}
                 </Badge>
               )}
+              <SweepChainBadge finding={finding} />
             </div>
             <p className="mt-1 text-zinc-700 dark:text-zinc-300">{finding.suggestion}</p>
             <div className="mt-2 flex flex-wrap items-center gap-2">

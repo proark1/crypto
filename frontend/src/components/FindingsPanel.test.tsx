@@ -17,6 +17,10 @@ const FINDING: FindingResponse = {
   created_at: "2026-06-10T12:00:00+00:00",
   seen_in_prior_runs: 0,
   first_seen_run_id: null,
+  sweep_queued: false,
+  latest_sweep_id: null,
+  latest_sweep_status: null,
+  latest_sweep_verdict: null,
 };
 
 describe("FindingsPanel", () => {
@@ -88,6 +92,39 @@ describe("FindingsPanel", () => {
     );
     expect(screen.getByText("new pattern")).toBeDefined();
     expect(screen.getByText("recurred · 4 runs since #44")).toBeDefined();
+  });
+
+  it("follows the verdict's chain: queued, sweeping, then the verdict", () => {
+    render(
+      <FindingsPanel
+        findings={[
+          { ...FINDING, id: 5, status: "accepted", sweep_queued: true },
+          {
+            ...FINDING,
+            id: 6,
+            pattern: "in flight",
+            status: "accepted",
+            latest_sweep_id: 9,
+            latest_sweep_status: "running",
+          },
+          {
+            ...FINDING,
+            id: 7,
+            pattern: "answered",
+            status: "accepted",
+            latest_sweep_id: 8,
+            latest_sweep_status: "completed",
+            latest_sweep_verdict: "validated",
+          },
+        ]}
+        onAccept={() => undefined}
+        onReject={() => undefined}
+        onReplayEvidence={() => undefined}
+      />,
+    );
+    expect(screen.getByText("sweep queued")).toBeDefined();
+    expect(screen.getByText("sweeping #9")).toBeDefined();
+    expect(screen.getByText("sweep #8: validated")).toBeDefined();
   });
 
   it("renders nothing when a run has no findings", () => {

@@ -324,6 +324,19 @@ class AppConfig(BaseSettings):
     auto_improve_timeframe: str = "1h"
     """Candle timeframe the automated sweeps evaluate (validated at boot)."""
 
+    accept_sweep_enabled: bool = True
+    """Queue a findings-targeted sweep when a finding is accepted, so a
+    human verdict has a visible consequence within the hour instead of
+    waiting for the next scheduled cycle. Research-only compute: the
+    sweep's verdict feeds the same validated-only, paper-scoped promotion
+    path as every other sweep, so the default is safe."""
+
+    accept_sweep_delay_seconds: int = Field(default=600, gt=0)
+    """Coalescing window after the first acceptance on a run: every further
+    acceptance inside it rides the same sweep (one Bonferroni budget for
+    the whole curated set), and the timer never resets, so latency stays
+    bounded."""
+
     proposal_ttl_seconds: int = 900
     """Co-pilot proposals expire after this many seconds unanswered."""
 

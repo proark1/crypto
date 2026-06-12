@@ -60,6 +60,7 @@ from tradebot.evaluation.sweep import (
     build_candidate_strategy,
     validate_family_params,
 )
+from tradebot.evaluation.triggered_sweeps import AcceptSweepScheduler
 from tradebot.execution import FeeSchedule, FillSimulatorConfig, SimulatedExecutionAdapter
 from tradebot.marketdata.live_feed import LiveMarketDataFeed, OhlcvExchange
 from tradebot.news import CryptoPanicSource, EventCalendar, NewsFlags, NewsGate, NewsMonitor
@@ -306,6 +307,23 @@ class Worker:
             self.evaluation_store,
             spawn=self._spawn_background,
         )
+        # Accepting a finding arms this scheduler (§12.7): one coalesced,
+        # findings-targeted sweep per run, on the same research lane and
+        # window the automated cycle uses. ``None`` when disabled.
+        self._accept_sweeps: AcceptSweepScheduler | None = (
+            AcceptSweepScheduler(
+                sweeps=self.sweeps,
+                store=self.evaluation_store,
+                active_params=lambda: self.strategy_params,
+                spawn=self._spawn_background,
+                delay=timedelta(seconds=config.accept_sweep_delay_seconds),
+                timeframe=config.auto_improve_timeframe,
+                history_days=config.auto_improve_history_days,
+                notify=self._notify,
+            )
+            if config.accept_sweep_enabled
+            else None
+        )
         # Built here, validated against the coin set in initialize(): a gate
         # whose reference market the bot does not stream would block every
         # entry forever on stale data.
@@ -411,6 +429,19 @@ class Worker:
                 }
             )
         return rows
+
+    def note_finding_acceptance(self, run_id: int) -> None:
+        """Arm (or ride) the accept-triggered sweep for ``run_id`` (§12.7).
+
+        A no-op when the feature is disabled — accepting then stays a pure
+        record, exactly the historical behavior.
+        """
+        if self._accept_sweeps is not None:
+            self._accept_sweeps.note_acceptance(run_id)
+
+    def accept_sweep_pending(self, run_id: int) -> bool:
+        """Report whether ``run_id``'s coalescing sweep timer is armed."""
+        return self._accept_sweeps is not None and run_id in self._accept_sweeps.pending_run_ids()
 
     def improvement_status(self) -> dict[str, Any]:
         """Report the §12.7 loop's schedule and last outcome, for the dashboard.
