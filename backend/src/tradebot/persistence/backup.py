@@ -61,7 +61,10 @@ async def dump_tables(database: Database) -> bytes:
     # data dumps to identical bytes.
     with gzip.GzipFile(fileobj=buffer, mode="wb", mtime=0) as archive:
         archive.write((header + "\n").encode())
-        async with database.engine.connect() as connection:
+        # begin(), not connect(): server-side cursors (stream) live inside a
+        # transaction, so open one explicitly rather than lean on the dialect
+        # to imply it. Reads only — the commit on exit is a no-op.
+        async with database.engine.begin() as connection:
             for table in metadata.sorted_tables:
                 result = await connection.stream(select(table))
                 async for row in result.mappings():
