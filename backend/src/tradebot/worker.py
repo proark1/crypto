@@ -112,6 +112,13 @@ STRATEGY_PRIME_CANDLES = 1000
 goes live: comfortably past the slowest indicator's warm-up (a 90-period
 EMA needs ~450), so a promotion never trades on half-formed indicators."""
 
+FEED_SHUTDOWN_GRACE_SECONDS = 5.0
+"""How long shutdown waits for feeds to leave their loop on their own before
+cancelling them. A feed parked in a blocking ``watch_ohlcv`` (or the initial
+multi-year backfill) only notices ``stop()`` between ticks, which may be a
+minute away or never — so shutdown forces the issue well inside Railway's
+SIGTERM-to-SIGKILL window rather than risk hanging the deploy."""
+
 
 def filters_from_market(market: Mapping[str, Any]) -> SymbolFilters:
     """Translate one ccxt market entry into venue filters.
@@ -269,6 +276,9 @@ class Worker:
         # production bot's entries — see :meth:`_pause_for_failed_service`.
         self._safety_pause_requested = asyncio.Event()
         self._safety_pause_reason: str | None = None
+        # How long shutdown lets feeds exit on their own before cancelling
+        # them; an attribute so fault-injection tests can shrink the wait.
+        self._feed_shutdown_grace_seconds = FEED_SHUTDOWN_GRACE_SECONDS
         self._exchange = exchange
         self.evaluations = EvaluationManager(
             EvaluationRunner(
@@ -576,6 +586,34 @@ class Worker:
             return
         self._safety_pause_reason = service
         self._safety_pause_requested.set()
+
+    async def _run_shutdown_supervisor(self) -> None:
+        """Stop every feed once shutdown is requested, cancelling stragglers.
+
+        Held open inside the run TaskGroup until the stop latch is set, so the
+        group stays alive across runtime coin add/remove (even down to zero
+        feeds). On stop it makes feed shutdown actually happen: a feed parked
+        in a blocking ``watch_ohlcv`` (or the initial multi-year backfill)
+        only checks the stop flag between ticks, so ``stop()`` alone could
+        leave the TaskGroup waiting forever. It flips every feed's flag — this
+        also covers a stop set by a path other than ``Worker.stop`` — waits a
+        grace window for clean exits, then cancels whatever is still parked.
+        Cancelled children are ignored by the TaskGroup, so this never turns
+        a clean shutdown into an error.
+        """
+        await self._stop_requested.wait()
+        for feed in list(self._feeds.values()):
+            feed.stop()
+        pending = [task for task in self._feed_tasks.values() if not task.done()]
+        if not pending:
+            return
+        await asyncio.wait(pending, timeout=self._feed_shutdown_grace_seconds)
+        for task in pending:
+            if not task.done():
+                log_event(
+                    logger, logging.WARNING, "feed_cancelled_on_shutdown", grace_exceeded=True
+                )
+                task.cancel()
 
     async def _run_safety_supervisor(self) -> None:
         """Pause trading once a safety-critical service trips the latch.
@@ -1806,12 +1844,13 @@ class Worker:
             improver_task = self._start_improver_if_enabled()
             # TaskGroup, not gather: if one feed crashes, the others must be
             # cancelled with it — a bot trading some symbols while blind on
-            # another would be worse than one that stops and restarts. The
-            # keeper task holds the group open while coins are added and
-            # removed at runtime (even down to zero feeds).
+            # another would be worse than one that stops and restarts.
             async with asyncio.TaskGroup() as task_group:
                 self._task_group = task_group
-                task_group.create_task(self._stop_requested.wait())
+                # Holds the group open until shutdown (even with zero feeds,
+                # so a runtime-emptied bot keeps running), then stops and, if
+                # needed, cancels every feed so the deploy never hangs.
+                task_group.create_task(self._run_shutdown_supervisor())
                 # Mutes entries if a safety-critical service (the control
                 # plane) crashes; idle for the worker's whole life otherwise.
                 task_group.create_task(self._run_safety_supervisor())

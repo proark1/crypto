@@ -1214,3 +1214,61 @@ class TestSafetyPause:
 
         assert worker._safety_pause_reason == "control_api"
         assert worker.engines["BTC/USDT"].paused is True
+
+
+class WedgedFeedExchange(ScriptedExchange):
+    """A feed that parks in watch_ohlcv forever — never returns between ticks.
+
+    Models the production hazard the shutdown supervisor exists for: real
+    ``watch_ohlcv`` blocks on the websocket, so ``stop()`` (which only flips a
+    flag checked between ticks) cannot end the feed on its own.
+    """
+
+    def __init__(self) -> None:
+        super().__init__([])
+        self.parked = asyncio.Event()
+
+    async def watch_ohlcv(self, symbol: str, timeframe: str) -> list[OhlcvRow]:
+        self.parked.set()
+        await asyncio.Event().wait()  # never returns; only cancellation ends it
+        return []
+
+
+class TestShutdown:
+    """Shutdown must never hang on a feed wedged in a blocking watch."""
+
+    async def test_shutdown_cancels_a_feed_wedged_in_watch(self, database: Database) -> None:
+        """stop() ends a parked feed via the grace-then-cancel supervisor."""
+        exchange = WedgedFeedExchange()
+        worker = Worker(make_config(api_port=8941), database, exchange)
+        worker._feed_shutdown_grace_seconds = 0.05
+        run_task = asyncio.create_task(worker.run())
+        try:
+            await asyncio.wait_for(exchange.parked.wait(), timeout=5)
+            worker.stop()
+            # Without the supervisor's cancel this await would hang forever.
+            await asyncio.wait_for(run_task, timeout=5)
+        finally:
+            run_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await run_task
+
+    async def test_shutdown_supervisor_stops_feeds_set_directly(self, database: Database) -> None:
+        """A stop latched by any path (not just Worker.stop) still ends feeds.
+
+        Setting the event directly skips the ``feed.stop()`` that ``stop()``
+        would call, so only the supervisor's own ``feed.stop()`` plus cancel
+        can end the parked feed — the defense-in-depth this guards.
+        """
+        exchange = WedgedFeedExchange()
+        worker = Worker(make_config(api_port=8942), database, exchange)
+        worker._feed_shutdown_grace_seconds = 0.05
+        run_task = asyncio.create_task(worker.run())
+        try:
+            await asyncio.wait_for(exchange.parked.wait(), timeout=5)
+            worker._stop_requested.set()
+            await asyncio.wait_for(run_task, timeout=5)
+        finally:
+            run_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await run_task
