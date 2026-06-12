@@ -637,7 +637,7 @@ export function BotDetailScreen(props: {
         )}
       </Card>
 
-      <FillsTable fills={fills} />
+      <FillsTable fills={fills} bot={botId} />
 
       <Card padding="none">
         <SectionHeader

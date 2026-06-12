@@ -1,7 +1,13 @@
+import { useCallback, useEffect, useMemo, useState } from "react";
+
+import { fetchFills } from "../api/client";
 import type { FillResponse } from "../api/types";
 import { formatMoney, formatTime, trimAmount } from "../lib/format";
 import { useMediaQuery } from "../lib/useMediaQuery";
-import { ArrowDownIcon, ArrowUpIcon, Card, SectionHeader } from "../ui";
+import { ArrowDownIcon, ArrowUpIcon, Button, Card, SectionHeader } from "../ui";
+
+/** How many older fills to pull per "load older" click. */
+const OLDER_PAGE_SIZE = 100;
 
 /** The buy/sell direction, colour paired with an arrow so it reads at a
  * glance and survives a grayscale view. */
@@ -28,10 +34,63 @@ function Side(props: { side: string }) {
  * table on desktop and stacked cards on phones so the columns never force a
  * horizontal scroll. Display formatting only — the trade value (notional in
  * quote currency) arrives precomputed from the backend.
+ *
+ * `fills` is the live (polled) window — the newest page — owned by the parent.
+ * Older history loads on demand through the `before_id` cursor; pages stay in
+ * local state and merge with the live window by id, so a poll refreshing the
+ * newest page never discards what the operator paged back to. `bot` scopes the
+ * cursor fetch to one competition account (the production journal by default).
  */
-export function FillsTable(props: { fills: FillResponse[] }) {
+export function FillsTable(props: { fills: FillResponse[]; bot?: string }) {
   const isMobile = useMediaQuery("(max-width: 639px)");
-  if (props.fills.length === 0) {
+  const { fills, bot } = props;
+  const [older, setOlder] = useState<FillResponse[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [exhausted, setExhausted] = useState(false);
+
+  // Paged history belongs to one journal scope; a different bot starts over.
+  useEffect(() => {
+    setOlder([]);
+    setExhausted(false);
+  }, [bot]);
+
+  // Merge the loaded older pages with the live window, de-duped by id (the
+  // live version wins on overlap) and ordered newest-first for display.
+  const newestFirst = useMemo(() => {
+    const byId = new Map<number, FillResponse>();
+    for (const fill of older) {
+      byId.set(fill.id, fill);
+    }
+    for (const fill of fills) {
+      byId.set(fill.id, fill);
+    }
+    return [...byId.values()].sort((a, b) => b.id - a.id);
+  }, [older, fills]);
+
+  const oldestId = newestFirst.at(-1)?.id;
+
+  const loadOlder = useCallback(async () => {
+    if (oldestId === undefined) {
+      return;
+    }
+    setLoading(true);
+    try {
+      const page = await fetchFills(bot, { beforeId: oldestId, limit: OLDER_PAGE_SIZE });
+      if (page.length < OLDER_PAGE_SIZE) {
+        setExhausted(true);
+      }
+      if (page.length > 0) {
+        setOlder((current) => [...current, ...page]);
+      }
+    } catch {
+      // A failed page load must not blank the journal; leave the button so
+      // the operator can retry on the next click.
+    } finally {
+      setLoading(false);
+    }
+  }, [bot, oldestId]);
+
+  if (newestFirst.length === 0) {
     return (
       <Card padding="lg">
         <span className="text-sm text-zinc-500">
@@ -40,7 +99,7 @@ export function FillsTable(props: { fills: FillResponse[] }) {
       </Card>
     );
   }
-  const newestFirst = [...props.fills].reverse();
+
   return (
     <Card padding="none">
       <SectionHeader
@@ -50,8 +109,8 @@ export function FillsTable(props: { fills: FillResponse[] }) {
       />
       {isMobile ? (
         <ul className="divide-y divide-zinc-200/70 dark:divide-zinc-800/60">
-          {newestFirst.map((fill, index) => (
-            <li key={`${fill.client_order_id}-${String(index)}`} className="px-4 py-3">
+          {newestFirst.map((fill) => (
+            <li key={fill.id} className="px-4 py-3">
               <div className="flex items-center justify-between">
                 <Side side={fill.side} />
                 <span className="text-sm text-zinc-700 dark:text-zinc-300">{fill.symbol}</span>
@@ -82,9 +141,9 @@ export function FillsTable(props: { fills: FillResponse[] }) {
               </tr>
             </thead>
             <tbody>
-              {newestFirst.map((fill, index) => (
+              {newestFirst.map((fill) => (
                 <tr
-                  key={`${fill.client_order_id}-${String(index)}`}
+                  key={fill.id}
                   className="border-b border-zinc-200/70 dark:border-zinc-800/50"
                 >
                   <td className="px-4 py-2 text-zinc-600 dark:text-zinc-400">
@@ -115,6 +174,20 @@ export function FillsTable(props: { fills: FillResponse[] }) {
           </table>
         </div>
       )}
+      <div className="flex items-center justify-center border-t border-zinc-200 px-4 py-3 dark:border-zinc-800">
+        {exhausted ? (
+          <span className="text-xs text-zinc-500">— start of journal —</span>
+        ) : (
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => void loadOlder()}
+            disabled={loading}
+          >
+            {loading ? "loading…" : "load older trades"}
+          </Button>
+        )}
+      </div>
     </Card>
   );
 }
