@@ -1,0 +1,27 @@
+# Local Postgres for the backend test suite and a local paper run.
+#
+# The DB-backed tests read TEST_DATABASE_URL (default
+# postgresql+asyncpg://postgres:test@localhost:5432/tradebot_test) and skip
+# when it is unreachable, so:
+#
+#   docker compose up -d db
+#   cd backend && uv run pytest
+#
+# brings the whole suite (persistence, worker, API) to life. Image and
+# credentials match the service CI uses, so local and CI runs agree.
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_PASSWORD: test
+      POSTGRES_DB: tradebot_test
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    # Ephemeral on purpose: a fresh database each run keeps tests hermetic.
+    tmpfs:
+      - /var/lib/postgresql/data

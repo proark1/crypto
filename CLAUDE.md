@@ -103,6 +103,11 @@ pass or a feature simpler:
   PR description — never regenerate the golden file just to make CI pass.
 - Execution-engine changes need fault-injection coverage (disconnects, partial fills,
   restarts, exchange errors) against the mock exchange.
+- The DB-backed tests (persistence, worker, API) need Postgres; they **skip**
+  when it is unreachable. Bring it up locally with `docker compose up -d db`
+  (matches CI's image/credentials) before running the backend suite. CI sets
+  `TRADEBOT_REQUIRE_DB=1`, which turns "Postgres unreachable" from a skip into
+  a hard failure, so a broken service can never pass green by skipping.
 - Run the full check locally before pushing:
   `ruff check && ruff format --check && mypy && pytest` (backend),
   `npm run lint && npm run typecheck && npm test` (frontend).
