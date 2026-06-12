@@ -131,6 +131,14 @@ class BotState(Protocol):
         """Retire a custom bot (journals stay)."""
         ...
 
+    def trading_fees(self) -> Mapping[str, Decimal]:
+        """Active per-side trading fees in bps (``buy_fee_bps``/``sell_fee_bps``)."""
+        ...
+
+    async def update_trading_fees(self, *, buy_fee_bps: Decimal, sell_fee_bps: Decimal) -> None:
+        """Set and persist both trading fees; effective on the next fill."""
+        ...
+
     def fill_store_for(self, bot_id: str) -> FillStore:
         """One bot's fill journal view (``KeyError`` unknown)."""
         ...
@@ -545,6 +553,31 @@ class UpdateBotRulesRequest(BaseModel):
     """A custom bot's replacement recipe."""
 
     rules: dict[str, Any]
+
+
+class TradingFeesResponse(BaseModel):
+    """The active per-side trading fees.
+
+    ``*_fee_percent`` is what the settings UI shows and edits (``"0.1"`` =
+    0.1% of notional); ``*_fee_bps`` is the exact basis-point value it maps
+    to, kept as a string so the Decimal precision survives the JSON boundary.
+    """
+
+    buy_fee_percent: str
+    sell_fee_percent: str
+    buy_fee_bps: str
+    sell_fee_bps: str
+
+
+class UpdateTradingFeesRequest(BaseModel):
+    """New trading fees as percentages of notional (``0.1`` = 0.1%).
+
+    Percent (not bps) is the unit operators think in; the route converts to
+    basis points with ``Decimal`` so nothing is ever rounded through a float.
+    """
+
+    buy_fee_percent: Decimal
+    sell_fee_percent: Decimal
 
 
 class RuleOptionResponse(BaseModel):
@@ -1209,6 +1242,40 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
         except RuntimeError as error:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
         return CommandResponse(paused=False, detail=f"{bot_id} retired; its history stays")
+
+    def _fees_response(buy_fee_bps: Decimal, sell_fee_bps: Decimal) -> TradingFeesResponse:
+        # Percent is bps / 100, exact in Decimal (10 bps -> "0.1"). Trailing
+        # zeros are trimmed without scientific notation ("20.0" -> "20") so
+        # the UI shows a clean number.
+        def clean(value: Decimal) -> str:
+            normalized = value.normalize()
+            return f"{normalized:f}"
+
+        return TradingFeesResponse(
+            buy_fee_percent=clean(buy_fee_bps / 100),
+            sell_fee_percent=clean(sell_fee_bps / 100),
+            buy_fee_bps=clean(buy_fee_bps),
+            sell_fee_bps=clean(sell_fee_bps),
+        )
+
+    @protected.get("/settings/fees")
+    async def get_trading_fees() -> TradingFeesResponse:
+        """Return the buy/sell trading fees applied to every live paper fill."""
+        fees = state.trading_fees()
+        return _fees_response(fees["buy_fee_bps"], fees["sell_fee_bps"])
+
+    @protected.put("/settings/fees")
+    async def update_trading_fees(request: UpdateTradingFeesRequest) -> TradingFeesResponse:
+        """Set the buy/sell fees; effective on the next fill across every bot."""
+        buy_fee_bps = request.buy_fee_percent * 100
+        sell_fee_bps = request.sell_fee_percent * 100
+        try:
+            await state.update_trading_fees(buy_fee_bps=buy_fee_bps, sell_fee_bps=sell_fee_bps)
+        except ValueError as error:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)
+            ) from error
+        return _fees_response(buy_fee_bps, sell_fee_bps)
 
     @protected.get("/coins/{symbol:path}/divergence")
     async def get_divergence(

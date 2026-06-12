@@ -343,6 +343,16 @@ export interface BotCreateResponse {
   detail: string;
 }
 
+/** The buy/sell trading fees applied to every live paper fill. ``*_percent``
+ * is what the settings form shows and edits ("0.1" = 0.1%); ``*_bps`` is the
+ * exact basis-point value, both Decimal-safe strings. */
+export interface TradingFeesResponse {
+  buy_fee_percent: string;
+  sell_fee_percent: string;
+  buy_fee_bps: string;
+  sell_fee_bps: string;
+}
+
 /** One ready-to-run evaluation shape, fitted server-side to the coin's
  * stored history — submitted verbatim to startEvaluation on click. */
 export interface SuggestedEvaluationResponse {

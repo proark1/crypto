@@ -106,6 +106,17 @@ class AppConfig(BaseSettings):
     paper_initial_balance_quote: Decimal = Decimal("10000")
     """Starting paper balance in the quote currency."""
 
+    buy_fee_bps: Decimal = Decimal("10")
+    """Trading fee charged on every *buy* fill, in basis points of notional
+    (10 bps = 0.1%, the conventional spot taker fee). This is only the boot
+    default: once an operator sets fees in the UI, the persisted value wins.
+    Applies to live paper fills across every bot; backtests keep their own
+    deterministic cost model."""
+
+    sell_fee_bps: Decimal = Decimal("10")
+    """Trading fee charged on every *sell* fill, in basis points of notional
+    (see ``buy_fee_bps``)."""
+
     competition_enabled: bool = True
     """Run the strategy competition: alongside the production bot, four
     challenger paper accounts (trend following, mean reversion, breakout,

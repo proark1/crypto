@@ -60,7 +60,7 @@ from tradebot.evaluation.sweep import (
     build_candidate_strategy,
     validate_family_params,
 )
-from tradebot.execution import FillSimulatorConfig, SimulatedExecutionAdapter
+from tradebot.execution import FeeSchedule, FillSimulatorConfig, SimulatedExecutionAdapter
 from tradebot.marketdata.live_feed import LiveMarketDataFeed, OhlcvExchange
 from tradebot.news import CryptoPanicSource, EventCalendar, NewsFlags, NewsGate, NewsMonitor
 from tradebot.persistence import (
@@ -74,6 +74,7 @@ from tradebot.persistence import (
     OrderStore,
     RiskStateStore,
     StrategySettingsStore,
+    TradingFeesStore,
 )
 from tradebot.portfolio import Portfolio
 from tradebot.risk import BreakerState, ManagedStop, RiskConfig, RiskManager
@@ -224,6 +225,14 @@ class Worker:
         self.coin_store = CoinStore(database)
         self.evaluation_store = EvaluationStore(database)
         self.strategy_settings_store = StrategySettingsStore(database)
+        # One mutable fee schedule shared by every paper engine's simulator,
+        # so an operator fee change takes effect on the next fill without
+        # rebuilding engines. Seeded from config; the persisted value (if an
+        # operator has saved one) overrides it in initialize().
+        self.trading_fees_store = TradingFeesStore(database)
+        self.fee_schedule = FeeSchedule(
+            buy_fee_bps=config.buy_fee_bps, sell_fee_bps=config.sell_fee_bps
+        )
         # The active (possibly auto-promoted) parameters per strategy
         # family; loaded from Postgres in initialize(), empty means
         # defaults. Engines, scenarios, and sweeps all read this one dict
@@ -381,6 +390,31 @@ class Worker:
         yield from self.engines.values()
         for runtime in self.challengers.values():
             yield from runtime.engines.values()
+
+    def trading_fees(self) -> dict[str, Decimal]:
+        """Return the active per-side trading fees in basis points, for the API/UI."""
+        return {
+            "buy_fee_bps": self.fee_schedule.buy_fee_bps,
+            "sell_fee_bps": self.fee_schedule.sell_fee_bps,
+        }
+
+    async def update_trading_fees(self, *, buy_fee_bps: Decimal, sell_fee_bps: Decimal) -> None:
+        """Set both trading fees and persist them; takes effect on the next fill.
+
+        The shared schedule is mutated in place, so every running engine's
+        simulator charges the new fee from its next fill — no restart, no
+        engine rebuild. Validation (non-negative, sane upper bound) lives in
+        :meth:`FeeSchedule.update` and raises ``ValueError`` on bad input.
+        """
+        self.fee_schedule.update(buy_fee_bps=buy_fee_bps, sell_fee_bps=sell_fee_bps)
+        await self.trading_fees_store.save(buy_fee_bps, sell_fee_bps, datetime.now(UTC))
+        log_event(
+            logger,
+            logging.INFO,
+            "trading_fees_updated",
+            buy_fee_bps=str(buy_fee_bps),
+            sell_fee_bps=str(sell_fee_bps),
+        )
 
     async def competition_snapshot(self) -> list[dict[str, Any]]:
         """One leaderboard row per competitor, best equity first.
@@ -884,7 +918,7 @@ class Worker:
             self._build_strategy(),
             self.risk_manager,
             self.portfolio,
-            SimulatedExecutionAdapter(FillSimulatorConfig()),
+            SimulatedExecutionAdapter(FillSimulatorConfig(), fees=self.fee_schedule),
             symbol=symbol,
             fill_store=self.fill_store,
             decision_store=self.decision_store,
@@ -947,7 +981,7 @@ class Worker:
             strategy if strategy is not None else self._challenger_strategy(runtime),
             runtime.risk_manager,
             runtime.portfolio,
-            SimulatedExecutionAdapter(FillSimulatorConfig()),
+            SimulatedExecutionAdapter(FillSimulatorConfig(), fees=self.fee_schedule),
             symbol=symbol,
             fill_store=runtime.fill_store,
             decision_store=runtime.decision_store,
@@ -966,6 +1000,19 @@ class Worker:
         because the coin set lives in the database.
         """
         await self._database.create_schema()
+        # Operator-set trading fees override the config boot defaults before
+        # any engine's simulator captures the shared schedule.
+        stored_fees = await self.trading_fees_store.load()
+        if stored_fees is not None:
+            buy_fee_bps, sell_fee_bps = stored_fees
+            self.fee_schedule.update(buy_fee_bps=buy_fee_bps, sell_fee_bps=sell_fee_bps)
+            log_event(
+                logger,
+                logging.INFO,
+                "trading_fees_loaded",
+                buy_fee_bps=str(buy_fee_bps),
+                sell_fee_bps=str(sell_fee_bps),
+            )
         # Active strategy parameters come first: every engine built below
         # captures its strategy from this dict.
         self.strategy_params = await self.strategy_settings_store.active()
@@ -1204,7 +1251,7 @@ class Worker:
                 ),
                 RiskManager(RiskConfig(), portfolio),
                 portfolio,
-                SimulatedExecutionAdapter(FillSimulatorConfig()),
+                SimulatedExecutionAdapter(FillSimulatorConfig(), fees=self.fee_schedule),
             )
             return (await runner.run(candles)).final_equity_quote
 
@@ -1361,7 +1408,7 @@ class Worker:
                 ),
                 RiskManager(RiskConfig(), portfolio, self.symbol_filters),
                 portfolio,
-                SimulatedExecutionAdapter(FillSimulatorConfig()),
+                SimulatedExecutionAdapter(FillSimulatorConfig(), fees=self.fee_schedule),
             )
             result = await runner.run(candles)
             # Fills inside the priming prefix exist only to warm state, and

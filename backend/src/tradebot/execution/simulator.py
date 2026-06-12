@@ -41,6 +41,68 @@ from tradebot.execution.adapter import FillHandler
 
 _BPS_DIVISOR = Decimal(10_000)
 
+# A fat-finger guard, not a market rule: no spot venue charges 10% a side, so
+# a value above this is almost certainly a units mistake (percent vs bps).
+MAX_FEE_BPS = Decimal(1_000)
+
+
+class FeeSchedule:
+    """Live, mutable per-*side* trading fees in basis points.
+
+    The operator sets one buy fee and one sell fee that apply to every paper
+    fill (ARCHITECTURE.md §8: fees are part of the P&L the competition is
+    judged on). A single instance is shared by every paper engine's
+    simulator, so a fee change takes effect on the next fill without
+    rebuilding engines — which hold live orders that must not be dropped.
+
+    This is deliberately separate from :class:`FillSimulatorConfig`: backtests
+    and research keep that frozen, order-type-based (maker/taker) cost model
+    for determinism (the golden backtest must stay byte-identical), while live
+    paper trading reflects whatever fee the operator has configured.
+    """
+
+    def __init__(self, buy_fee_bps: Decimal, sell_fee_bps: Decimal) -> None:
+        """Start with the given per-side fees; both validated like :meth:`update`."""
+        self._buy_fee_bps = Decimal(0)
+        self._sell_fee_bps = Decimal(0)
+        self.update(buy_fee_bps=buy_fee_bps, sell_fee_bps=sell_fee_bps)
+
+    @classmethod
+    def standard(cls) -> FeeSchedule:
+        """Return the conventional ~Binance spot taker fee (0.1%) on both sides."""
+        return cls(buy_fee_bps=Decimal(10), sell_fee_bps=Decimal(10))
+
+    @property
+    def buy_fee_bps(self) -> Decimal:
+        """Fee charged on every buy fill, in basis points of notional."""
+        return self._buy_fee_bps
+
+    @property
+    def sell_fee_bps(self) -> Decimal:
+        """Fee charged on every sell fill, in basis points of notional."""
+        return self._sell_fee_bps
+
+    def fee_bps_for(self, side: Side) -> Decimal:
+        """Return the fee in bps that applies to a fill on ``side``."""
+        return self._buy_fee_bps if side == Side.BUY else self._sell_fee_bps
+
+    def update(self, *, buy_fee_bps: Decimal, sell_fee_bps: Decimal) -> None:
+        """Replace both fees in place; rejects negative or absurd values.
+
+        Mutating in place (rather than swapping the object) is what lets a
+        running engine's simulator pick up the new fee on its next fill.
+        """
+        for label, value in (("buy", buy_fee_bps), ("sell", sell_fee_bps)):
+            if value < 0:
+                raise ValueError(f"{label} fee cannot be negative, got {value} bps")
+            if value > MAX_FEE_BPS:
+                raise ValueError(
+                    f"{label} fee {value} bps exceeds the {MAX_FEE_BPS} bps sanity cap "
+                    "(did you pass a percent instead of basis points?)"
+                )
+        self._buy_fee_bps = buy_fee_bps
+        self._sell_fee_bps = sell_fee_bps
+
 
 class FillSimulatorConfig(BaseModel):
     """Fee and slippage assumptions, in basis points (defaults ≈ Binance spot)."""
@@ -72,9 +134,16 @@ class SimulatedExecutionAdapter:
     order (market orders first, then resting orders in submission order).
     """
 
-    def __init__(self, config: FillSimulatorConfig) -> None:
-        """Create a simulator with the given fee/slippage assumptions."""
+    def __init__(self, config: FillSimulatorConfig, fees: FeeSchedule | None = None) -> None:
+        """Create a simulator with the given fee/slippage assumptions.
+
+        When ``fees`` is given (live paper trading), every fill is charged the
+        operator's per-side fee from that schedule instead of the config's
+        maker/taker fee. Omitting it keeps the frozen maker/taker model, which
+        backtests and the golden regression rely on for determinism.
+        """
         self._config = config
+        self._fees = fees
         self._pending_market: dict[str, Order] = {}
         self._resting: dict[str, Order] = {}
         self._triggered: set[str] = set()
@@ -205,8 +274,22 @@ class SimulatedExecutionAdapter:
             self._remaining[order_id] = remaining - quantity
         # Market orders fill at the candle's open, so that is the fill time.
         return self._make_fill(
-            order, price, self._config.taker_fee_bps, candle, at_open=True, quantity=quantity
+            order,
+            price,
+            self._fee_bps(order, self._config.taker_fee_bps),
+            candle,
+            at_open=True,
+            quantity=quantity,
         )
+
+    def _fee_bps(self, order: Order, fallback_bps: Decimal) -> Decimal:
+        """Return the operator's live per-side fee if set, else the config's fee.
+
+        ``fallback_bps`` is the order-type fee (maker/taker) the deterministic
+        backtest path uses; the live paper path overrides it with the
+        configured buy/sell fee for ``order.side``.
+        """
+        return self._fees.fee_bps_for(order.side) if self._fees is not None else fallback_bps
 
     def _try_fill_resting(self, order: Order, candle: Candle) -> Fill | None:
         assert order.limit_price_quote is not None  # validated at submit
@@ -217,7 +300,9 @@ class SimulatedExecutionAdapter:
             )
             if not touched:
                 return None
-            return self._make_fill(order, limit, self._config.maker_fee_bps, candle)
+            return self._make_fill(
+                order, limit, self._fee_bps(order, self._config.maker_fee_bps), candle
+            )
 
         assert order.stop_price_quote is not None  # validated at submit
         stop = order.stop_price_quote
@@ -237,14 +322,18 @@ class SimulatedExecutionAdapter:
             )
             if gapped_through:
                 return None
-            return self._make_fill(order, limit, self._config.taker_fee_bps, candle)
+            return self._make_fill(
+                order, limit, self._fee_bps(order, self._config.taker_fee_bps), candle
+            )
         # Already triggered: behaves as a resting limit order awaiting its price.
         reachable = (
             candle.high_quote >= limit if order.side == Side.SELL else candle.low_quote <= limit
         )
         if not reachable:
             return None
-        return self._make_fill(order, limit, self._config.taker_fee_bps, candle)
+        return self._make_fill(
+            order, limit, self._fee_bps(order, self._config.taker_fee_bps), candle
+        )
 
     def _make_fill(
         self,

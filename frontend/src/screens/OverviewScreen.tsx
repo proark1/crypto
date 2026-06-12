@@ -42,17 +42,19 @@ import { BotDetailScreen } from "./BotDetailScreen";
 import { CoinsScreen } from "./CoinsScreen";
 import { DashboardScreen } from "./DashboardScreen";
 import { ResearchScreen } from "./ResearchScreen";
+import { SettingsScreen } from "./SettingsScreen";
 
 const POLL_INTERVAL_MS = 5000;
 
 /** The four top-level destinations. The bot detail and builder pages are
  * drill-downs that live under the Bots tab, each with an explicit way back. */
-type Tab = "dashboard" | "coins" | "bots" | "research";
+type Tab = "dashboard" | "coins" | "bots" | "research" | "settings";
 const TABS: { tab: Tab; label: string }[] = [
   { tab: "dashboard", label: "Dashboard" },
   { tab: "coins", label: "Coins" },
   { tab: "bots", label: "Bots" },
   { tab: "research", label: "Research" },
+  { tab: "settings", label: "Settings" },
 ];
 
 /** Client-side navigation: there is no router, so the visible screen is plain
@@ -383,6 +385,7 @@ export function OverviewScreen(props: { theme: Theme; onToggleTheme: () => void 
         />
       )}
       {view.name === "research" && <ResearchScreen />}
+      {view.name === "settings" && <SettingsScreen />}
       {view.name === "bot" && (
         <BotDetailScreen
           botId={view.botId}
