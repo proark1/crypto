@@ -1107,3 +1107,67 @@ class TestBotManagement:
             await worker.update_custom_bot("momentum", {"families": {"momentum": {}}})
         with pytest.raises(KeyError):
             await worker.pause_bot("custom-ghost")
+
+
+class CrashOnceApiExchange(ScriptedExchange):
+    """Idle feed that stops the worker the moment the safety pause lands.
+
+    The control API is replaced with a task that crashes at startup; this feed
+    simply spins until every production engine is paused, then stops the run so
+    the test asserts on a settled state (with a tick ceiling so a regression
+    that never pauses fails fast instead of hanging).
+    """
+
+    def __init__(self) -> None:
+        super().__init__([])
+        self._ticks = 0
+
+    async def watch_ohlcv(self, symbol: str, timeframe: str) -> list[OhlcvRow]:
+        assert self.worker is not None
+        self._ticks += 1
+        engines = self.worker.engines
+        if (engines and all(engine.paused for engine in engines.values())) or self._ticks > 500:
+            self.worker.stop()
+            return []
+        await asyncio.sleep(0.005)
+        return []
+
+
+class TestSafetyPause:
+    """A crashed control plane mutes new entries (flatten-safe), never stops."""
+
+    async def test_pause_for_failed_service_mutes_production_not_challengers(
+        self, database: Database
+    ) -> None:
+        """Production entries halt; autonomous paper challengers keep running."""
+        worker = Worker(make_config(api_port=8931), database, ScriptedExchange([]))
+        await worker.initialize()
+
+        await worker._pause_for_failed_service("control_api")
+
+        assert worker.engines  # production is actually trading
+        assert all(engine.paused for engine in worker.engines.values())
+        assert worker.challengers  # the competition exists to be left alone
+        for runtime in worker.challengers.values():
+            assert all(not engine.paused for engine in runtime.engines.values())
+
+    async def test_crashed_control_api_trips_a_flatten_safe_pause(
+        self, database: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A control-API crash during run() pauses the production bot, not the worker."""
+        exchange = CrashOnceApiExchange()
+        worker = Worker(make_config(api_port=8932), database, exchange)
+        exchange.worker = worker
+
+        async def boom() -> None:
+            raise RuntimeError("control api crashed")
+
+        # Keep the real supervision wiring; only the served coroutine crashes.
+        monkeypatch.setattr(
+            worker, "_start_api", lambda: worker._supervise_control_api(asyncio.create_task(boom()))
+        )
+
+        await worker.run()
+
+        assert worker._safety_pause_reason == "control_api"
+        assert worker.engines["BTC/USDT"].paused is True
