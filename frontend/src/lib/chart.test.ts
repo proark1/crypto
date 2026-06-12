@@ -13,6 +13,7 @@ const CANDLE: CandleResponse = {
 };
 
 const BUY: FillResponse = {
+  id: 1,
   client_order_id: "ord-1",
   symbol: "BTC/USDT",
   side: "buy",

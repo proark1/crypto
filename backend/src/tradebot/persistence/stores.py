@@ -298,7 +298,13 @@ class FillStore:
             await connection.execute(fills_table.insert(), [row])
 
     async def fetch_all(self, symbol: str | None = None) -> list[Fill]:
-        """Return this bot's fills (optionally for one symbol) in execution order."""
+        """Return this bot's fills (optionally for one symbol) in execution order.
+
+        The complete journal — used to replay the portfolio on restart and to
+        compare against backtests, which both need every fill. The API serves
+        the bounded :meth:`fetch_page` instead; a years-long journal must never
+        cross the wire whole on a dashboard poll.
+        """
         statement = (
             select(fills_table)
             .where(fills_table.c.bot_id == self._bot_id)
@@ -311,6 +317,31 @@ class FillStore:
         # The surrogate ``id`` and ``bot_id`` columns are ignored by
         # validation (not model fields).
         return [Fill.model_validate(dict(row)) for row in rows]
+
+    async def fetch_page(
+        self, symbol: str | None = None, limit: int = 200, before_id: int | None = None
+    ) -> list[tuple[int, Fill]]:
+        """Return one bounded page of this bot's fills for the journal API.
+
+        Cursor pagination keyed on the monotonic surrogate ``id``: the page is
+        the newest ``limit`` fills strictly older than ``before_id`` (omit it
+        for the most recent page), so a long-running journal never drags its
+        whole history across the wire. Rows come back in execution order
+        (ascending id) within the page — the shape the journal has always
+        rendered — each paired with its ``id`` to use as the next page's
+        cursor. ``before_id`` is exclusive: pass the smallest id already seen.
+        """
+        statement = select(fills_table).where(fills_table.c.bot_id == self._bot_id)
+        if symbol is not None:
+            statement = statement.where(fills_table.c.symbol == symbol)
+        if before_id is not None:
+            statement = statement.where(fills_table.c.id < before_id)
+        # Newest-first to honour the limit/cursor, then reversed to the
+        # ascending execution order the page is rendered in.
+        statement = statement.order_by(fills_table.c.id.desc()).limit(limit)
+        async with self._database.engine.connect() as connection:
+            rows = (await connection.execute(statement)).mappings().all()
+        return [(int(row["id"]), Fill.model_validate(dict(row))) for row in reversed(rows)]
 
     async def count_by_side(self) -> dict[str, int]:
         """Return this bot's fill counts per side — leaderboard activity, cheap.
