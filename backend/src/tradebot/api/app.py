@@ -21,7 +21,7 @@ from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from tradebot.backtest.parity import DivergenceReport
 from tradebot.competition import ENTRY_MODES, FAMILY_DESCRIPTIONS, LINEUP
@@ -1850,18 +1850,21 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
         bot as a baseline) across every (timeframe, history-window) cell,
         persists each cell as a comparison, and accumulates a leaderboard.
         """
-        config = BakeOffConfig(
-            symbols=tuple(request.symbols) if request.symbols else tuple(active_symbols()),
-            timeframes=tuple(request.timeframes),
-            history_windows=tuple(request.history_windows),
-            scenario_count=request.scenario_count,
-            seed=request.seed,
-        )
         try:
+            # Build inside the try: the request's loose ints (scenario_count,
+            # seed) and an empty symbol set fail BakeOffConfig's own
+            # constraints, and that is a 400 to report, not a 500 to leak.
+            config = BakeOffConfig(
+                symbols=tuple(request.symbols) if request.symbols else tuple(active_symbols()),
+                timeframes=tuple(request.timeframes),
+                history_windows=tuple(request.history_windows),
+                scenario_count=request.scenario_count,
+                seed=request.seed,
+            )
             job_id = await state.start_bake_off(config)
         except RuntimeError as error:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
-        except ValueError as error:
+        except (ValidationError, ValueError) as error:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)
             ) from error

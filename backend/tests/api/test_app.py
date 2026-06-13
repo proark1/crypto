@@ -2061,6 +2061,15 @@ class TestBakeOffEndpoints:
             )
         assert response.status_code == 400
 
+    async def test_an_invalid_scenario_count_is_a_clean_400(self, database: Database) -> None:
+        # scenario_count parses as an int but fails BakeOffConfig's gt=0
+        # constraint: a 400, never a leaked 500 from the ValidationError.
+        async with make_client(StubBot(database)) as client:
+            response = await client.post(
+                "/research/bakeoff", json={"symbols": ["BTC/USDT"], "scenario_count": 0}
+            )
+        assert response.status_code == 400
+
     async def test_unknown_job_is_404(self, database: Database) -> None:
         async with make_client(StubBot(database)) as client:
             response = await client.get("/research/bakeoff/9999")

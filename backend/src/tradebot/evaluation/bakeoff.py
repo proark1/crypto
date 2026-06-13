@@ -248,12 +248,25 @@ class BakeOffManager:
             )
             logger.info("bake-off %d completed: %d cells graded", job_id, len(cell_records))
         except asyncio.CancelledError:
-            await self._store.set_status(job_id, RunStatus.INTERRUPTED)
+            # Shield the terminal write so cancellation (shutdown) cannot
+            # interrupt it mid-flight and strand the job at "running"; the
+            # CancelledError must still propagate, so a DB failure here is
+            # logged, never allowed to replace it.
+            try:
+                await asyncio.shield(self._store.set_status(job_id, RunStatus.INTERRUPTED))
+            except Exception:
+                logger.exception("bake-off %d: could not record interrupted status", job_id)
             logger.warning("bake-off %d interrupted", job_id)
             raise
         except Exception:
             logger.exception("bake-off %d failed", job_id)
-            await self._store.set_status(job_id, RunStatus.FAILED)
+            # The failure may be the database itself; a raising fallback
+            # write would escape into the worker's TaskGroup and cancel
+            # every sibling task (live trading included). Guard it.
+            try:
+                await self._store.set_status(job_id, RunStatus.FAILED)
+            except Exception:
+                logger.exception("bake-off %d: could not record failed status", job_id)
 
     async def _run_cell(
         self,
