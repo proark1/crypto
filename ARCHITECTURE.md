@@ -1049,14 +1049,20 @@ research tab's one-click experiment — start it and walk away.
 - **Contestants (`evaluation/presets.py`).** A fixed roster of ten *energy
   presets* — each of the five solo families at a `calm` temper (slower
   entries, a wider 3×ATR stop) and a `bold` one (faster entries, a tighter
-  1.5×ATR stop) — plus the production router as a baseline and a
-  **random-entry control** as the noise floor: a seeded coin-flip bot
-  (`strategies/controls.py`) that buys and sells at random with the families'
-  own ATR stop, fees, and slippage, so a family that cannot out-earn it has
-  no edge distinguishable from luck. The control lives in its own registry,
-  never `STRATEGY_FAMILIES` — it is a yardstick, never swept, lineup'd, or
-  promoted. The roster is code-defined and frozen so two bake-offs are
-  comparable; every contestant is validated buildable at import.
+  1.5×ATR stop) — plus the production router as a baseline; two **ensembles**
+  that put the "the best bot may be a combination, not a soloist" thesis on
+  the leaderboard (a *confluence* ensemble that enters only when its families
+  agree on the same candle, and a *breadth* ensemble that enters when any of
+  its families fires), built from the same composite a custom bot trades and
+  graded research-only — winning the bake-off never routes a recipe into
+  production (§13.7); and a **random-entry control** as the noise floor: a
+  seeded coin-flip bot (`strategies/controls.py`) that buys and sells at
+  random with the families' own ATR stop, fees, and slippage, so a family
+  that cannot out-earn it has no edge distinguishable from luck. The control
+  lives in its own registry, never `STRATEGY_FAMILIES` — it is a yardstick,
+  never swept, lineup'd, or promoted. The roster is code-defined and frozen
+  so two bake-offs are comparable; every contestant is validated buildable at
+  import.
 - **The grid.** Every (timeframe, history-window) pair is a *cell* — by
   default `{1h, 4h, 1d} × {10, 50, 100 days}`, nine cells. Each cell is one
   ordinary comparison (§13.6): all contestants on byte-identical scenarios

@@ -25,7 +25,11 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from tradebot.competition.lineup import PRODUCTION_BOT_ID
-from tradebot.evaluation.sweep import STRATEGY_FAMILIES, validate_family_params
+from tradebot.evaluation.sweep import (
+    STRATEGY_FAMILIES,
+    validate_family_params,
+    validate_recipe_params,
+)
 from tradebot.strategies.controls import validate_control_params
 
 
@@ -33,12 +37,15 @@ from tradebot.strategies.controls import validate_control_params
 class BakeOffContestant:
     """One bake-off entry: a stable id, a label, and what it trades.
 
-    Exactly one of ``family`` / ``control`` is set, or neither:
+    Exactly one of ``family`` / ``control`` / ``recipe`` is set, or none:
     - ``family`` names a single strategy family with the parameter overrides
       — its "energy" — applied over that family's defaults (the energy presets);
     - ``control`` names a reference control (``strategies/controls.py``), a
       no-skill yardstick like the random-entry noise floor;
-    - both ``None`` marks the production baseline, whose strategy the worker
+    - ``recipe`` is a multi-family ensemble (``{entry_mode, families}``, the
+      same shape a custom bot trades) graded as the composite it forms —
+      research-only contestants, never routed into production (§13.7);
+    - all ``None`` marks the production baseline, whose strategy the worker
       builds (the regime router needs the live regime wiring).
     """
 
@@ -47,6 +54,7 @@ class BakeOffContestant:
     family: str | None
     params: Mapping[str, Any] = field(default_factory=dict)
     control: str | None = None
+    recipe: Mapping[str, Any] | None = None
 
 
 # The production router as a reference line: not an energy preset, but the
@@ -150,6 +158,42 @@ ENERGY_PRESETS: tuple[BakeOffContestant, ...] = (
     ),
 )
 
+# Ensemble contestants: combine several families on one symbol, the audit's
+# "the best bot may be a combination, not a soloist" thesis put on the
+# leaderboard. Built from the existing composite the custom-bot builder uses
+# (any = first family to fire wins, a wider net; all = every family must agree
+# on the same candle, a confluence filter). Research-only like every preset:
+# winning the bake-off never routes a recipe into production — that stays the
+# §13.7 human decision. Member windows are kept moderate so the composite
+# warms up inside the shorter grid windows.
+ENSEMBLE_CONTESTANTS: tuple[BakeOffContestant, ...] = (
+    BakeOffContestant(
+        bot_id="ensemble_confluence",
+        label="Ensemble (confluence)",
+        family=None,
+        recipe={
+            "entry_mode": "all",
+            "families": {
+                "breakout": {"channel_period": 20},
+                "momentum": {},
+            },
+        },
+    ),
+    BakeOffContestant(
+        bot_id="ensemble_breadth",
+        label="Ensemble (breadth)",
+        family=None,
+        recipe={
+            "entry_mode": "any",
+            "families": {
+                "trend_following": {"fast_ema_period": 12, "slow_ema_period": 26},
+                "breakout": {"channel_period": 20},
+                "squeeze": {},
+            },
+        },
+    ),
+)
+
 # Reference controls: no-skill yardsticks, not energy presets. The
 # random-entry control is the tournament's noise floor — a family that
 # cannot out-earn random coin-flip trading (paying the same fees, stops, and
@@ -166,10 +210,11 @@ CONTROL_CONTESTANTS: tuple[BakeOffContestant, ...] = (
 
 # The full roster the bake-off grades each cell: the baseline first (it
 # leads the comparison group, the sweep contract's baseline slot), then the
-# ten energy presets, then the reference controls.
+# ten energy presets, the ensembles, and the reference controls.
 BAKE_OFF_CONTESTANTS: tuple[BakeOffContestant, ...] = (
     PRODUCTION_BASELINE,
     *ENERGY_PRESETS,
+    *ENSEMBLE_CONTESTANTS,
     *CONTROL_CONTESTANTS,
 )
 
@@ -187,20 +232,32 @@ def contestant_for(bot_id: str) -> BakeOffContestant | None:
 
 
 def _validate_contestant(contestant: BakeOffContestant) -> None:
-    """Validate one contestant's family/control wiring; raise on a bad entry.
+    """Validate one contestant's wiring; raise on a bad entry.
 
-    ``family`` and ``control`` are mutually exclusive: the resolver checks
-    ``control`` first, so a contestant that set both would silently trade the
-    control and ignore the family. Catch that here rather than ship a roster
-    whose family is quietly dead. The baseline (neither set) is allowed.
+    ``family`` / ``control`` / ``recipe`` are mutually exclusive — the
+    resolver checks them in order, so a contestant that set two would silently
+    trade one and ignore the rest. Catch that here rather than ship a roster
+    with a quietly dead field. Neither set marks the production baseline.
     """
-    if contestant.control is not None and contestant.family is not None:
+    kinds = [
+        name
+        for name, value in (
+            ("family", contestant.family),
+            ("control", contestant.control),
+            ("recipe", contestant.recipe),
+        )
+        if value is not None
+    ]
+    if len(kinds) > 1:
         raise ValueError(
-            f"bake-off contestant {contestant.bot_id!r} sets both family and control; "
-            "a contestant names one or the other (or neither, for the production baseline)"
+            f"bake-off contestant {contestant.bot_id!r} sets more than one of "
+            f"{kinds}; a contestant is one of family / control / recipe (or the baseline)"
         )
     if contestant.control is not None:
         validate_control_params(contestant.control, contestant.params)
+        return
+    if contestant.recipe is not None:
+        validate_recipe_params(contestant.recipe)
         return
     if contestant.family is None:
         return

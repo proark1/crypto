@@ -20,6 +20,8 @@ const CONTESTANT_LABELS: Record<string, string> = {
   momentum_bold: "Momentum (bold)",
   squeeze_calm: "Squeeze (calm)",
   squeeze_bold: "Squeeze (bold)",
+  ensemble_confluence: "Ensemble (confluence)",
+  ensemble_breadth: "Ensemble (breadth)",
   random_entry: "Random entry (control)",
 };
 
@@ -183,10 +185,10 @@ export function BakeOffPanel(props: {
         </span>
       </div>
       <p className="mt-1 text-xs text-zinc-500">
-        ten energy presets (each family at a calm and a bold temper), the live bot as a
-        baseline, and a random-entry control as the noise floor; cells with too little history
-        to trade are skipped, and the winner is the one with the highest average return across
-        the cells it could trade
+        ten energy presets (each family at a calm and a bold temper), two ensembles (confluence
+        and breadth), the live bot as a baseline, and a random-entry control as the noise floor;
+        cells with too little history to trade are skipped, and the winner is the one with the
+        highest average return across the cells it could trade
       </p>
 
       {props.jobs.length === 0 ? (

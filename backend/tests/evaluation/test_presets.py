@@ -7,6 +7,7 @@ from tradebot.evaluation.presets import (
     BAKE_OFF_CONTESTANTS,
     CONTROL_CONTESTANTS,
     ENERGY_PRESETS,
+    ENSEMBLE_CONTESTANTS,
     BakeOffContestant,
     _validate_contestant,
     contestant_for,
@@ -16,10 +17,13 @@ from tradebot.strategies.controls import build_control_strategy
 
 
 class TestRoster:
-    def test_baseline_plus_ten_energy_presets_plus_the_controls(self) -> None:
+    def test_baseline_plus_presets_ensembles_and_controls(self) -> None:
         assert len(ENERGY_PRESETS) == 10
+        assert len(ENSEMBLE_CONTESTANTS) == 2
         assert len(CONTROL_CONTESTANTS) == 1
-        assert len(BAKE_OFF_CONTESTANTS) == 1 + len(ENERGY_PRESETS) + len(CONTROL_CONTESTANTS)
+        assert len(BAKE_OFF_CONTESTANTS) == (
+            1 + len(ENERGY_PRESETS) + len(ENSEMBLE_CONTESTANTS) + len(CONTROL_CONTESTANTS)
+        )
         # The baseline leads (the comparison's baseline slot) and names no
         # family — the worker builds the regime router for it.
         assert BAKE_OFF_CONTESTANTS[0].bot_id == PRODUCTION_BOT_ID
@@ -71,11 +75,38 @@ class TestControlContestants:
         ids = [c.bot_id for c in CONTROL_CONTESTANTS]
         assert "random_entry" in ids
 
-    def test_a_contestant_cannot_set_both_family_and_control(self) -> None:
-        # The resolver checks control first, so a both-set entry would
-        # silently trade the control and ignore the family — caught at import.
+    def test_a_contestant_cannot_set_more_than_one_kind(self) -> None:
+        # The resolver checks the kinds in order, so a multi-kind entry would
+        # silently trade one and ignore the rest — caught at import.
         both = BakeOffContestant(
             bot_id="bad", label="bad", family="trend_following", control="random_entry"
         )
-        with pytest.raises(ValueError, match="both family and control"):
+        with pytest.raises(ValueError, match="more than one"):
             _validate_contestant(both)
+        family_and_recipe = BakeOffContestant(
+            bot_id="bad2",
+            label="bad2",
+            family="trend_following",
+            recipe={"entry_mode": "any", "families": {"momentum": {}}},
+        )
+        with pytest.raises(ValueError, match="more than one"):
+            _validate_contestant(family_and_recipe)
+
+
+class TestEnsembleContestants:
+    def test_each_ensemble_builds_the_composite_it_describes(self) -> None:
+        # Ensembles resolve like any contestant but build the multi-family
+        # composite a custom bot would — research-only, never routed (§13.7).
+        for contestant in ENSEMBLE_CONTESTANTS:
+            assert contestant.recipe is not None
+            assert contestant.family is None and contestant.control is None
+            assert contestant_for(contestant.bot_id) is contestant
+            strategy = build_candidate_strategy(
+                SweepCandidate(name=contestant.bot_id, recipe=dict(contestant.recipe))
+            )
+            # A multi-family recipe builds a composite; its name lists members.
+            assert strategy.name.startswith("composite[")
+
+    def test_ensembles_cover_both_entry_modes(self) -> None:
+        modes = {c.recipe["entry_mode"] for c in ENSEMBLE_CONTESTANTS if c.recipe is not None}
+        assert modes == {"any", "all"}
