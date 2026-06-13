@@ -48,6 +48,8 @@ from tradebot.strategies import (
     MeanReversionStrategy,
     MomentumConfig,
     MomentumStrategy,
+    SqueezeConfig,
+    SqueezeStrategy,
     Strategy,
     TrendFollowingConfig,
     TrendFollowingStrategy,
@@ -73,13 +75,14 @@ STRATEGY_FAMILIES: Mapping[str, tuple[type[BaseModel], Callable[..., Strategy]]]
     "mean_reversion": (MeanReversionConfig, MeanReversionStrategy),
     "breakout": (BreakoutConfig, BreakoutStrategy),
     "momentum": (MomentumConfig, MomentumStrategy),
+    "squeeze": (SqueezeConfig, SqueezeStrategy),
 }
 """Sweepable families: name -> (config model, strategy constructor). A
 candidate names its family, so one sweep can pit families against each
-other on identical scenarios. ``breakout`` and ``momentum`` are research
-families: sweeps, evaluation, the §12.7 improvement rotation, and the
-strategy competition all grade and tune them — promotions change what
-their solo competition accounts trade — but production routing (which
+other on identical scenarios. ``breakout``, ``momentum``, and ``squeeze``
+are research families: sweeps, evaluation, the §12.7 improvement rotation,
+and the strategy competition all grade and tune them — promotions change
+what their solo competition accounts trade — but production routing (which
 regime activates them, at whose expense) remains the §13.7 human
 decision."""
 

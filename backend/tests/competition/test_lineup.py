@@ -35,15 +35,15 @@ def make_candle(index: int, close: float) -> Candle:
 
 
 class TestLineup:
-    def test_five_competitors_with_unique_stable_identities(self) -> None:
-        assert len(LINEUP) == 5
+    def test_six_competitors_with_unique_stable_identities(self) -> None:
+        assert len(LINEUP) == 6
         bot_ids = [spec.bot_id for spec in LINEUP]
-        assert len(set(bot_ids)) == 5
+        assert len(set(bot_ids)) == 6
         assert PRODUCTION_BOT_ID in bot_ids
         # Risk-state rows must never collide: each account's brakes are
         # persisted under its fixed row id.
         row_ids = [spec.risk_state_row_id for spec in LINEUP]
-        assert len(set(row_ids)) == 5
+        assert len(set(row_ids)) == 6
         assert spec_for(PRODUCTION_BOT_ID).risk_state_row_id == 1
 
     def test_unknown_bot_id_raises_with_the_known_ones(self) -> None:
@@ -94,6 +94,6 @@ class TestScenarioStrategies:
         assert strategy.name == "trend_following"
 
     def test_challengers_grade_their_family_solo_and_unscoped(self) -> None:
-        for bot_id in ("trend_following", "mean_reversion", "breakout", "momentum"):
+        for bot_id in ("trend_following", "mean_reversion", "breakout", "momentum", "squeeze"):
             strategy = build_scenario_strategy(spec_for(bot_id), {}, regime_routed=True)
             assert strategy.name == bot_id

@@ -32,6 +32,7 @@ from tradebot.strategies import (
     BreakoutConfig,
     MeanReversionConfig,
     MomentumConfig,
+    SqueezeConfig,
     TrendFollowingConfig,
 )
 
@@ -40,13 +41,14 @@ logger = logging.getLogger(__name__)
 PROMOTION_VERDICT = "validated"
 """The only sweep verdict that may change the traded configuration."""
 
-IMPROVEMENT_TARGETS = ("production", "breakout", "momentum")
+IMPROVEMENT_TARGETS = ("production", "breakout", "momentum", "squeeze")
 """What the loop improves, in rotation. ``production`` covers the regime-
 routed shape and therefore both of its families (trend following and mean
-reversion); ``breakout`` and ``momentum`` are the research families' solo
-competition accounts — tuning them sharpens the §13 leaderboard evidence
-the §13.7 routing decision will be made on. Custom bots are absent on
-purpose: auto-tuning a user's recipe needs their opt-in (a later change)."""
+reversion); ``breakout``, ``momentum``, and ``squeeze`` are the research
+families' solo competition accounts — tuning them sharpens the §13
+leaderboard evidence the §13.7 routing decision will be made on. Custom
+bots are absent on purpose: auto-tuning a user's recipe needs their opt-in
+(a later change)."""
 
 IMPROVEMENT_SCENARIO_COUNT = DEFAULT_SCENARIO_COUNT
 """Scenarios per candidate per period in automated research — the shared
@@ -574,6 +576,126 @@ def _momentum_candidates(
     return _dedupe(raw, motivating)
 
 
+def _squeeze_candidates(
+    active: Mapping[str, Mapping[str, Any]],
+    findings: Sequence[tuple[int, str]],
+) -> tuple[tuple[SweepCandidate, ...], tuple[int, ...]]:
+    """Build the squeeze family's grid: band/channel variants plus targeted knobs.
+
+    The family's defining knob is ``keltner_atr_multiple`` — the channel
+    width that decides how tight a coil counts as a squeeze. A *wider*
+    channel admits more (looser) squeezes and so more entries; a *tighter*
+    one demands a stronger coil for fewer, higher-conviction setups. The
+    finding map leans on that: losing or chasing entries tighten the
+    squeeze (and add volume confirmation, the false-expansion guard), while
+    staying flat through moves loosens it. Band-period steps clamp to a
+    valid Bollinger window (never below 2).
+    """
+    squeeze = SqueezeConfig(**active.get("squeeze", {}))
+    band = squeeze.bollinger_period
+    raw: list[SweepCandidate] = [
+        SweepCandidate(
+            name=f"active_squeeze_{band}",
+            family="squeeze",
+            params=squeeze.model_dump(),
+        ),
+        SweepCandidate(
+            name="looser_squeeze",
+            family="squeeze",
+            params=squeeze.model_copy(
+                update={"keltner_atr_multiple": round(squeeze.keltner_atr_multiple * 1.5, 2)}
+            ).model_dump(),
+        ),
+        SweepCandidate(
+            name="tighter_squeeze",
+            family="squeeze",
+            params=squeeze.model_copy(
+                update={
+                    "keltner_atr_multiple": max(0.5, round(squeeze.keltner_atr_multiple * 0.75, 2))
+                }
+            ).model_dump(),
+        ),
+        SweepCandidate(
+            name="wider_stop",
+            family="squeeze",
+            params=squeeze.model_copy(
+                update={"atr_stop_multiple": round(squeeze.atr_stop_multiple * 1.5, 2)}
+            ).model_dump(),
+        ),
+        SweepCandidate(
+            name="tighter_stop",
+            family="squeeze",
+            params=squeeze.model_copy(
+                update={"atr_stop_multiple": max(0.5, round(squeeze.atr_stop_multiple * 0.75, 2))}
+            ).model_dump(),
+        ),
+    ]
+    motivating: list[int] = []
+    losing_entry_ids = [
+        finding_id
+        for finding_id, pattern in findings
+        if "chase" in pattern
+        or "trend is down" in pattern
+        or "trend is ranging" in pattern
+        or "breakout_fake" in pattern
+    ]
+    if losing_entry_ids:
+        motivating += losing_entry_ids
+        raw.append(
+            SweepCandidate(
+                name="stricter_squeeze",
+                family="squeeze",
+                params=squeeze.model_copy(
+                    update={
+                        "keltner_atr_multiple": max(
+                            0.5, round(squeeze.keltner_atr_multiple * 0.6, 2)
+                        )
+                    }
+                ).model_dump(),
+            )
+        )
+        volume_toggle = 1.0 if squeeze.min_volume_ratio == 0 else 0.0
+        raw.append(
+            SweepCandidate(
+                name="volume_confirm" if volume_toggle else "no_volume_confirm",
+                family="squeeze",
+                params=squeeze.model_copy(update={"min_volume_ratio": volume_toggle}).model_dump(),
+            )
+        )
+    missed_ids = [finding_id for finding_id, pattern in findings if "stays flat" in pattern]
+    if missed_ids:
+        # The easier-entry knob is the looser channel already in the base
+        # grid; the finding rides as motivation without spending another
+        # candidate's worth of significance budget.
+        motivating += missed_ids
+    wrong_hold_ids = [
+        finding_id for finding_id, pattern in findings if "ride into their stops" in pattern
+    ]
+    if wrong_hold_ids:
+        motivating += wrong_hold_ids
+        raw.append(
+            SweepCandidate(
+                name="breakeven_lock" if squeeze.breakeven_at_r == 0 else "no_breakeven",
+                family="squeeze",
+                params=squeeze.model_copy(
+                    update={"breakeven_at_r": 1.0 if squeeze.breakeven_at_r == 0 else 0.0}
+                ).model_dump(),
+            )
+        )
+    early_exit_ids = [finding_id for finding_id, pattern in findings if "cut winners" in pattern]
+    if early_exit_ids:
+        motivating += early_exit_ids
+        trail_toggle = squeeze.atr_stop_multiple if squeeze.trail_atr_multiple == 0 else 0.0
+        raw.append(
+            SweepCandidate(
+                name="atr_trailing" if trail_toggle else "no_trailing",
+                family="squeeze",
+                params=squeeze.model_copy(update={"trail_atr_multiple": trail_toggle}).model_dump(),
+            )
+        )
+    return _dedupe(raw, motivating)
+
+
 def build_candidates_for(
     target: str,
     active: Mapping[str, Mapping[str, Any]],
@@ -594,6 +716,8 @@ def build_candidates_for(
         return _breakout_candidates(active, findings)
     if target == "momentum":
         return _momentum_candidates(active, findings)
+    if target == "squeeze":
+        return _squeeze_candidates(active, findings)
     raise ValueError(f"no improvement grid for {target!r}; known: {IMPROVEMENT_TARGETS}")
 
 

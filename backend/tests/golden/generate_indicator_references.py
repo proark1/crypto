@@ -65,6 +65,22 @@ def main() -> None:
             str(p): nan_to_none(talib.ADX(high_arr, low_arr, close_arr, timeperiod=p))
             for p in PERIODS
         },
+        # Bollinger upper/middle/lower at 2 standard deviations (TA-Lib's
+        # default). Only periods >= 2 — TA-Lib's BBANDS rejects timeperiod
+        # < 2 exactly as our indicator does, and a 1-period band is
+        # degenerate anyway.
+        "bollinger": {
+            str(p): {
+                band: nan_to_none(values)
+                for band, values in zip(
+                    ("upper", "middle", "lower"),
+                    talib.BBANDS(close_arr, timeperiod=p, nbdevup=2, nbdevdn=2, matype=0),
+                    strict=True,
+                )
+            }
+            for p in PERIODS
+            if p >= 2
+        },
     }
     OUTPUT_PATH.write_text(json.dumps(references) + "\n")
     print(f"wrote {OUTPUT_PATH}")

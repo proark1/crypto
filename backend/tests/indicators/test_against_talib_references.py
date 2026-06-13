@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from tradebot.indicators import Adx, Atr, Ema, Rsi
+from tradebot.indicators import Adx, Atr, Bollinger, Ema, Rsi
 
 REFERENCES = json.loads(
     (Path(__file__).parent.parent / "golden" / "indicator_references.json").read_text()
@@ -63,3 +63,13 @@ def test_atr_matches_talib(period: int) -> None:
         )
     ]
     assert_matches_reference(actual, REFERENCES["atr"][str(period)])
+
+
+@pytest.mark.parametrize("period", PERIODS)
+def test_bollinger_matches_talib(period: int) -> None:
+    bollinger = Bollinger(period, num_stddev=2.0)
+    bands = [bollinger.update(close) for close in REFERENCES["close"]]
+    reference = REFERENCES["bollinger"][str(period)]
+    for band_name in ("upper", "middle", "lower"):
+        actual = [getattr(band, band_name) if band is not None else None for band in bands]
+        assert_matches_reference(actual, reference[band_name])
