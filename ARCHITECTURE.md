@@ -999,6 +999,15 @@ money result), the table leads with each column's **ending balance and a
 did best — above the R-multiple detail. Cancelling any member cancels the
 batch: half a comparison cannot answer the question the batch asked.
 
+Below the table the research screen pivots the same batch into a **scenario
+heatmap** — bots down the rows, the §12.3 market archetypes across the
+columns, each cell that bot's expectancy in that archetype, washed
+green/red and ringing the best bot per column. It is the same comparison
+data read a different way, and it answers what a single ranking cannot:
+*which bot wins in chop, and which dies there?* — the per-regime evidence
+the §13.7 routing decision turns on. It recommends nothing; routing stays a
+human call.
+
 ### 13.7 Routing a research family into production (the evidence gate)
 
 Tuning a research family (§12.7) sharpens it; routing it — adding it to

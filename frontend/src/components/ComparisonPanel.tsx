@@ -3,6 +3,7 @@ import { useState } from "react";
 import type { ComparisonGroupResponse, EvaluationRunResponse } from "../api/types";
 import { formatFractionPercent, formatMoney, formatTime, signClass } from "../lib/format";
 import { Button, Card } from "../ui";
+import { ArchetypeHeatmap } from "./ArchetypeHeatmap";
 
 /** Plain-words names for the competing bot ids; unknown ids fall back to
  * their underscores-stripped form so a new challenger still renders. */
@@ -349,7 +350,10 @@ export function ComparisonPanel(props: {
               </li>
             ))}
           </ul>
-          <ComparisonTable group={selected} />
+          <div>
+            <ComparisonTable group={selected} />
+            <ArchetypeHeatmap group={selected} />
+          </div>
         </div>
       )}
     </Card>
