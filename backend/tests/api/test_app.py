@@ -2014,7 +2014,7 @@ class TestBotManagementEndpoints:
         assert response.status_code == 200
         body = response.json()
         families = {option["family"] for option in body["families"]}
-        assert {"trend_following", "mean_reversion", "breakout", "momentum"} <= families
+        assert {"trend_following", "mean_reversion", "breakout", "momentum", "squeeze"} <= families
         assert body["entry_modes"] == ["any", "all"]
         assert all(option["description"] for option in body["families"])
         assert all(option["defaults"] for option in body["families"])

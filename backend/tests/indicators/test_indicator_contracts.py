@@ -2,7 +2,7 @@
 
 import pytest
 
-from tradebot.indicators import Adx, Atr, Ema, Rsi
+from tradebot.indicators import Adx, Atr, Bollinger, Ema, Rsi
 
 
 @pytest.mark.parametrize("indicator_class", [Ema, Rsi, Atr])
@@ -16,6 +16,39 @@ def test_adx_period_below_two_is_rejected() -> None:
     # math degenerates there, so it is rejected rather than mis-seeded.
     with pytest.raises(ValueError, match="period must be >= 2"):
         Adx(1)
+
+
+def test_bollinger_period_below_two_is_rejected() -> None:
+    # A single-value window has no spread to measure; the band collapses to
+    # the price, so it is rejected rather than emit a zero-width band.
+    with pytest.raises(ValueError, match="period must be >= 2"):
+        Bollinger(1)
+
+
+def test_bollinger_rejects_non_positive_width() -> None:
+    with pytest.raises(ValueError, match="num_stddev must be > 0"):
+        Bollinger(20, num_stddev=0.0)
+
+
+def test_bollinger_returns_none_until_period_values_seen() -> None:
+    bollinger = Bollinger(3, num_stddev=2.0)
+    assert [bollinger.update(v) for v in (10.0, 11.0)] == [None, None]
+    bands = bollinger.update(12.0)  # window now full (10, 11, 12)
+    assert bands is not None
+    assert bands.middle == pytest.approx(11.0)  # SMA of 10, 11, 12
+    # Population stddev of {10, 11, 12} is sqrt(2/3); width is 2 sigma.
+    assert bands.upper == pytest.approx(11.0 + 2.0 * (2.0 / 3.0) ** 0.5)
+    assert bands.lower == pytest.approx(11.0 - 2.0 * (2.0 / 3.0) ** 0.5)
+
+
+def test_bollinger_flat_window_has_zero_width() -> None:
+    bollinger = Bollinger(3, num_stddev=2.0)
+    bands = None
+    for _ in range(3):
+        bands = bollinger.update(50.0)
+    assert bands is not None
+    assert bands.lower == pytest.approx(50.0)
+    assert bands.upper == pytest.approx(50.0)
 
 
 def test_adx_warms_up_for_two_periods_and_exposes_di_lines() -> None:

@@ -13,7 +13,8 @@ lookback, so callers cannot act on a half-formed value by accident.
 
 from tradebot.indicators.adx import Adx
 from tradebot.indicators.atr import Atr
+from tradebot.indicators.bollinger import Bollinger, BollingerBands
 from tradebot.indicators.ema import Ema
 from tradebot.indicators.rsi import Rsi
 
-__all__ = ["Adx", "Atr", "Ema", "Rsi"]
+__all__ = ["Adx", "Atr", "Bollinger", "BollingerBands", "Ema", "Rsi"]

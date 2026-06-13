@@ -28,6 +28,7 @@ FAMILY_DESCRIPTIONS: Mapping[str, str] = {
     "mean_reversion": "buys oversold dips that start recovering, sells once price normalizes",
     "breakout": "buys when price breaks above its recent range",
     "momentum": "buys when upward momentum accelerates (MACD turns bullish)",
+    "squeeze": "buys when price breaks upward out of a volatility squeeze (a coiled, quiet range)",
 }
 """Plain-words one-liners per family, shared by the builder UI and the
 generated bot descriptions — one copy, no drift."""

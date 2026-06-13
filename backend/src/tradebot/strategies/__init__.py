@@ -12,6 +12,7 @@ from tradebot.strategies.composite import CompositeStrategy
 from tradebot.strategies.mean_reversion import MeanReversionConfig, MeanReversionStrategy
 from tradebot.strategies.momentum import MomentumConfig, MomentumStrategy
 from tradebot.strategies.router import RegimeStrategyRouter
+from tradebot.strategies.squeeze import SqueezeConfig, SqueezeStrategy
 from tradebot.strategies.trend_following import TrendFollowingConfig, TrendFollowingStrategy
 
 __all__ = [
@@ -23,6 +24,8 @@ __all__ = [
     "MomentumConfig",
     "MomentumStrategy",
     "RegimeStrategyRouter",
+    "SqueezeConfig",
+    "SqueezeStrategy",
     "Strategy",
     "TrendFollowingConfig",
     "TrendFollowingStrategy",

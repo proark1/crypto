@@ -93,8 +93,15 @@ LINEUP: tuple[CompetitorSpec, ...] = (
         risk_state_row_id=5,
         description="Buys bullish MACD crossovers, exits when momentum turns.",
     ),
+    CompetitorSpec(
+        bot_id="squeeze",
+        label="Squeeze breakout",
+        family="squeeze",
+        risk_state_row_id=6,
+        description="Buys upward breaks out of a volatility squeeze, exits at the basis.",
+    ),
 )
-"""Five bots, five strategies. Order is leaderboard display order before
+"""Six bots, six strategies. Order is leaderboard display order before
 ranking; ``risk_state_row_id`` values are append-only — a removed entry's
 row id is never reused."""
 

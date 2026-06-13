@@ -12,6 +12,7 @@ const STRATEGY_LABELS: Record<string, string> = {
   mean_reversion: "Mean reversion",
   breakout: "Breakout",
   momentum: "Momentum",
+  squeeze: "Squeeze breakout",
 };
 
 export function strategyLabel(strategy: string): string {

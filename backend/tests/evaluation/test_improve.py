@@ -221,7 +221,9 @@ class TestAutoImprover:
         )
         improver = make_improver(sweeps, store, [])
 
-        for _ in range(6):
+        # Four targets, two symbols: eight cycles is one full pass over the
+        # symbols, every target visited before either symbol repeats.
+        for _ in range(8):
             await improver.run_cycle()
 
         baseline_families = [config.candidates[0].family for config in sweeps.configs]
@@ -229,14 +231,18 @@ class TestAutoImprover:
             "trend_following",  # the production grid leads with the trend baseline
             "breakout",
             "momentum",
+            "squeeze",
             "trend_following",
             "breakout",
             "momentum",
+            "squeeze",
         ]
         assert [config.symbol for config in sweeps.configs] == [
             "BTC/USDT",
             "BTC/USDT",
             "BTC/USDT",
+            "BTC/USDT",
+            "ETH/USDT",
             "ETH/USDT",
             "ETH/USDT",
             "ETH/USDT",
@@ -452,6 +458,41 @@ class TestPerFamilyGrids:
         )
         for candidate in candidates:
             build_candidate_strategy(candidate)  # raises if fast >= slow
+
+    def test_the_squeeze_grid_is_single_family_and_buildable(self) -> None:
+        from tradebot.evaluation.improve import build_candidates_for
+
+        candidates, motivating = build_candidates_for("squeeze", {})
+        assert candidates[0].name.startswith("active_squeeze")
+        assert {candidate.family for candidate in candidates} == {"squeeze"}
+        assert motivating == ()
+        names = {candidate.name for candidate in candidates}
+        assert {"looser_squeeze", "tighter_squeeze", "wider_stop", "tighter_stop"} <= names
+        for candidate in candidates:
+            build_candidate_strategy(candidate)
+
+    def test_losing_squeeze_entries_tighten_it_and_add_volume_confirmation(self) -> None:
+        from tradebot.evaluation.improve import build_candidates_for
+
+        candidates, motivating = build_candidates_for(
+            "squeeze", {}, [(9, "entries lose money when trend is down")]
+        )
+        stricter = next(c for c in candidates if c.name == "stricter_squeeze")
+        assert stricter.params["keltner_atr_multiple"] == 0.9  # round(1.5 * 0.6, 2)
+        volume = next(c for c in candidates if c.name == "volume_confirm")
+        assert volume.params["min_volume_ratio"] == 1.0
+        assert motivating == (9,)
+        for candidate in candidates:
+            build_candidate_strategy(candidate)
+
+    def test_an_early_exit_finding_adds_a_squeeze_trail(self) -> None:
+        from tradebot.evaluation.improve import build_candidates_for
+
+        candidates, _ = build_candidates_for(
+            "squeeze", {}, [(5, "exits cut winners while the move keeps going")]
+        )
+        trail = next(c for c in candidates if c.name == "atr_trailing")
+        assert trail.params["trail_atr_multiple"] == trail.params["atr_stop_multiple"]
 
     def test_solo_production_families_share_the_production_grid(self) -> None:
         from tradebot.evaluation.improve import build_candidates_for
