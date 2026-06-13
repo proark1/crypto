@@ -185,7 +185,7 @@ def _live_paper(evidence: CandidacyEvidence, now: datetime) -> Condition:
 
 def _weeks(span: timedelta) -> str:
     """Whole-week count of a span for plain-words detail (floored, never negative)."""
-    return str(max(0, int(span.total_seconds() // (7 * 24 * 3600))))
+    return str(max(0, span.days // 7))
 
 
 def _r(value: Decimal) -> str:
