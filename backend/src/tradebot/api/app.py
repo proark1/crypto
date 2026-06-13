@@ -30,6 +30,12 @@ from tradebot.core.logging import log_event
 from tradebot.core.metrics import MetricsCollector, format_metric
 from tradebot.core.models import Candle, CandleInterval, utc_now
 from tradebot.engine import TradingEngine
+from tradebot.evaluation.bakeoff import (
+    DEFAULT_HISTORY_WINDOWS,
+    DEFAULT_TIMEFRAMES,
+    BakeOffConfig,
+)
+from tradebot.evaluation.bakeoff import DEFAULT_SCENARIO_COUNT as BAKE_OFF_SCENARIO_COUNT
 from tradebot.evaluation.improve import (
     build_candidates_for,
     build_recipe_candidates,
@@ -105,6 +111,18 @@ class BotState(Protocol):
 
     async def start_comparison(self, config: EvaluationRunConfig) -> list[int]:
         """Grade the whole lineup on identical scenarios; returns run ids."""
+        ...
+
+    async def start_bake_off(self, config: BakeOffConfig) -> int:
+        """Start a bake-off across the grid; returns the job id."""
+        ...
+
+    async def bake_off(self, job_id: int) -> dict[str, Any] | None:
+        """Return one bake-off job row, or ``None`` if unknown."""
+        ...
+
+    async def list_bake_offs(self, limit: int = 20) -> list[dict[str, Any]]:
+        """Return recent bake-off jobs, newest first."""
         ...
 
     async def bot_detail(self, bot_id: str) -> dict[str, Any]:
@@ -519,6 +537,21 @@ def _run_response(run: dict[str, Any]) -> EvaluationRunResponse:
     )
 
 
+def _bake_off_response(job: dict[str, Any]) -> BakeOffJobResponse:
+    """Serialize a bake-off job row for the API (timestamps to ISO strings)."""
+    return BakeOffJobResponse(
+        id=job["id"],
+        created_at=job["created_at"].isoformat(),
+        updated_at=job["updated_at"].isoformat(),
+        status=job["status"],
+        config=job["config"],
+        contestants=list(job["contestants"]),
+        cells_done=job["cells_done"],
+        cells_total=job["cells_total"],
+        results=job["results"],
+    )
+
+
 class CompetitorResponse(BaseModel):
     """One strategy-competition leaderboard row, amounts as strings."""
 
@@ -682,6 +715,49 @@ class ComparisonResponse(BaseModel):
     group_id: int
     created_at: str
     runs: list[EvaluationRunResponse]
+
+
+class BakeOffStartRequest(BaseModel):
+    """Start a bake-off. Every field defaults, so the UI can post ``{}``.
+
+    Symbols default to the live coins; the grid and scenario shape default
+    to the module's recommended values, so a one-click bake-off needs no
+    configuration at all.
+    """
+
+    symbols: list[str] | None = None
+    timeframes: list[str] = list(DEFAULT_TIMEFRAMES)
+    history_windows: list[int] = list(DEFAULT_HISTORY_WINDOWS)
+    scenario_count: int = BAKE_OFF_SCENARIO_COUNT
+    seed: int = 7
+
+
+class BakeOffStartResponse(BaseModel):
+    """Acknowledgement that a bake-off job was created and launched."""
+
+    job_id: int
+    cells_total: int
+    detail: str
+
+
+class BakeOffJobResponse(BaseModel):
+    """One bake-off job: status, progress, and the (running or final) ranking.
+
+    ``results`` is the raw aggregate the worker stores — ``{"ranking": [...],
+    "cells": [...]}`` — passed through verbatim so the UI renders the
+    leaderboard and the per-cell grid without the API reshaping money it
+    deliberately keeps as strings. ``None`` until the first cell finishes.
+    """
+
+    id: int
+    created_at: str
+    updated_at: str
+    status: str
+    config: dict[str, Any]
+    contestants: list[str]
+    cells_done: int
+    cells_total: int
+    results: dict[str, Any] | None
 
 
 class ScenarioSummaryResponse(BaseModel):
@@ -1765,6 +1841,54 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
             )
             for batch in await state.evaluation_store.list_comparisons()
         ]
+
+    @protected.post("/research/bakeoff")
+    async def start_bake_off(request: BakeOffStartRequest) -> BakeOffStartResponse:
+        """Run the contestant roster across the grid and rank by money made.
+
+        Fully automated: one call grades every energy preset (plus the live
+        bot as a baseline) across every (timeframe, history-window) cell,
+        persists each cell as a comparison, and accumulates a leaderboard.
+        """
+        config = BakeOffConfig(
+            symbols=tuple(request.symbols) if request.symbols else tuple(active_symbols()),
+            timeframes=tuple(request.timeframes),
+            history_windows=tuple(request.history_windows),
+            scenario_count=request.scenario_count,
+            seed=request.seed,
+        )
+        try:
+            job_id = await state.start_bake_off(config)
+        except RuntimeError as error:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)
+            ) from error
+        cells_total = len(config.timeframes) * len(config.history_windows)
+        return BakeOffStartResponse(
+            job_id=job_id,
+            cells_total=cells_total,
+            detail=f"bake-off started: {cells_total} cells",
+        )
+
+    @protected.get("/research/bakeoffs")
+    async def list_bake_offs() -> list[BakeOffJobResponse]:
+        """Recent bake-off jobs, newest first.
+
+        Declared before ``/research/bakeoff/{job_id}`` so the literal plural
+        segment is matched as a path, not parsed as a job id.
+        """
+        return [_bake_off_response(job) for job in await state.list_bake_offs()]
+
+    @protected.get("/research/bakeoff/{job_id}")
+    async def get_bake_off(job_id: int) -> BakeOffJobResponse:
+        job = await state.bake_off(job_id)
+        if job is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail=f"no bake-off job {job_id}"
+            )
+        return _bake_off_response(job)
 
     @protected.get("/evaluations/{run_id}")
     async def get_evaluation(run_id: int) -> EvaluationRunResponse:

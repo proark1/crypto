@@ -323,6 +323,29 @@ overfit / baseline best). ``motivating_finding_ids`` is the lineage link from
 accepted findings to the config change they motivated."""
 
 
+bake_off_jobs_table = Table(
+    "bake_off_jobs",
+    metadata,
+    Column("id", BigInteger, primary_key=True, autoincrement=True),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
+    Column("status", Text, nullable=False),
+    Column("config", JSONB, nullable=False),
+    Column("contestants", ARRAY(Text), nullable=False),
+    Column("cells_done", Integer, nullable=False),
+    Column("cells_total", Integer, nullable=False),
+    Column("results", JSONB, nullable=True),
+)
+"""One bake-off (ARCHITECTURE.md section 13.8): the fixed contestant roster
+graded across a grid of (timeframe, history-window) cells and ranked by
+average return. ``config`` snapshots the grid and scenario shape;
+``contestants`` is the roster in comparison order; ``results`` carries the
+per-cell records and the running/final ranking (updated after every cell,
+so a mid-flight job already shows a partial leaderboard). Each cell's runs
+live in the ordinary ``evaluation_runs`` table, linked by their
+``comparison_group``; this table is the bake-off layer above them."""
+
+
 def _add_missing_columns(connection: Connection, schema_metadata: MetaData = metadata) -> None:
     """Issue ``ADD COLUMN IF NOT EXISTS`` for columns the live DB lacks.
 
