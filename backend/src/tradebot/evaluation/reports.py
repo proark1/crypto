@@ -17,6 +17,7 @@ from decimal import ROUND_HALF_EVEN, Decimal
 from typing import Any
 
 from tradebot.core.models import ACCOUNTING_RESOLUTION
+from tradebot.evaluation.classifier import archetype
 from tradebot.evaluation.models import Scenario, ScenarioClass, ScenarioResult, Verdict
 
 _DISPLAY_RESOLUTION = Decimal("0.0001")
@@ -71,6 +72,7 @@ def build_summary(records: list[tuple[Scenario, ScenarioResult]]) -> dict[str, A
         "hold_metrics": _hold_metrics(records),
         "by_trend": _breakdown(records, lambda s: s.conditions.trend.value),
         "by_volatility": _breakdown(records, lambda s: s.conditions.volatility.value),
+        "by_archetype": _breakdown(records, lambda s: archetype(s.conditions).value),
         "by_timeframe": _breakdown(records, lambda s: s.timeframe),
         "by_symbol": _breakdown(records, lambda s: s.symbol),
         "by_event": _event_breakdown(records),

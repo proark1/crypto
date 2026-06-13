@@ -636,6 +636,16 @@ broken down by regime, volatility, event, timeframe, and symbol. Sharpe is
 reported but flagged as indicative only (overlapping scenarios violate its
 independence assumption).
 
+A scenario is also tagged with one **named archetype** (`classifier.archetype`),
+a frozen priority-ordered partition of the trend/volatility/event labels into
+plain words a non-specialist reads: *bull*, *bear*, *chop* (rangebound + high
+vol), *compression* (rangebound + low vol), *range*, *breakout*, *fakeout*,
+*pump*, *crash*, *recovery*. Unlike the event labels (which co-occur), every
+window gets exactly one archetype, so the `by_archetype` breakdown sums to the
+whole — the axis the research heatmap pivots a bot lineup on to answer "which
+bot wins in chop, and which dies there?". The priority order is frozen for the
+same comparability reason as the §12.2 constants it is built from.
+
 **Risk-adjusted and tail metrics** sit beside expectancy so a high mean is
 not mistaken for a safe one: a **downside-deviation of R** (RMS of the losing
 trades, target 0), a per-trade **Sortino** (`expectancy ÷ downside
@@ -988,6 +998,15 @@ money result), the table leads with each column's **ending balance and a
 1st/2nd/3rd rank** by that balance — the plainest read of which strategy
 did best — above the R-multiple detail. Cancelling any member cancels the
 batch: half a comparison cannot answer the question the batch asked.
+
+Below the table the research screen pivots the same batch into a **scenario
+heatmap** — bots down the rows, the §12.3 market archetypes across the
+columns, each cell that bot's expectancy in that archetype, washed
+green/red and ringing the best bot per column. It is the same comparison
+data read a different way, and it answers what a single ranking cannot:
+*which bot wins in chop, and which dies there?* — the per-regime evidence
+the §13.7 routing decision turns on. It recommends nothing; routing stays a
+human call.
 
 ### 13.7 Routing a research family into production (the evidence gate)
 
