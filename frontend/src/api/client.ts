@@ -5,6 +5,8 @@
  */
 
 import type {
+  BakeOffJobResponse,
+  BakeOffStartResponse,
   BotCreateRequest,
   BotCreateResponse,
   BotDetailResponse,
@@ -309,6 +311,25 @@ export function startComparison(
 /** Past comparison batches, newest first, runs in lineup order. */
 export function fetchComparisons(): Promise<ComparisonGroupResponse[]> {
   return request<ComparisonGroupResponse[]>("/evaluations/comparisons", "GET");
+}
+
+/** Start a bake-off: the contestant roster across the whole grid. An empty
+ * body takes the backend's defaults (the live coins, the 3x3 grid); 409 = a
+ * bake-off is already running, 400 = bad grid. */
+export function startBakeOff(
+  body: Record<string, unknown> = {},
+): Promise<BakeOffStartResponse> {
+  return request<BakeOffStartResponse>("/research/bakeoff", "POST", body);
+}
+
+/** Past bake-off jobs, newest first. */
+export function fetchBakeOffs(): Promise<BakeOffJobResponse[]> {
+  return request<BakeOffJobResponse[]>("/research/bakeoffs", "GET");
+}
+
+/** One bake-off job by id (status, progress, and the running ranking). */
+export function fetchBakeOff(jobId: number): Promise<BakeOffJobResponse> {
+  return request<BakeOffJobResponse>(`/research/bakeoff/${String(jobId)}`, "GET");
 }
 
 export function fetchEvaluationSuggestions(): Promise<SuggestedEvaluationResponse[]> {

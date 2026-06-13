@@ -4,6 +4,7 @@ import {
   acceptFinding,
   cancelEvaluation,
   cancelSweep,
+  fetchBakeOffs,
   fetchComparisons,
   fetchEvaluations,
   fetchEvaluationStrategies,
@@ -17,11 +18,13 @@ import {
   fetchSweeps,
   rejectFinding,
   revertStrategyVersion,
+  startBakeOff,
   startComparison,
   startEvaluation,
   startSweep,
 } from "../api/client";
 import type {
+  BakeOffJobResponse,
   ComparisonGroupResponse,
   EvaluationRunResponse,
   EvaluationStrategyResponse,
@@ -36,6 +39,7 @@ import type {
 } from "../api/types";
 import { formatFractionPercent, formatMoney, formatTime } from "../lib/format";
 import { Alert, GLOSSARY, InfoTooltip, StatTile, type GlossaryTerm } from "../ui";
+import { BakeOffPanel } from "../components/BakeOffPanel";
 import { ComparisonPanel } from "../components/ComparisonPanel";
 import { FindingsPanel } from "../components/FindingsPanel";
 import { ImprovementsPanel } from "../components/ImprovementsPanel";
@@ -72,10 +76,11 @@ const FALLBACK_STRATEGIES: EvaluationStrategyResponse[] = [
  * scroll: run and read evaluations, compare strategies head to head, tune
  * the production strategy (sweeps and the version history they promote),
  * and follow the learning loop's progress as one story. */
-type ResearchTab = "evaluate" | "compare" | "tune" | "progress";
+type ResearchTab = "evaluate" | "compare" | "bakeoff" | "tune" | "progress";
 const RESEARCH_TABS: { id: ResearchTab; label: string }[] = [
   { id: "evaluate", label: "Evaluate" },
   { id: "compare", label: "Compare" },
+  { id: "bakeoff", label: "Bake-off" },
   { id: "tune", label: "Tune" },
   { id: "progress", label: "Progress" },
 ];
@@ -365,6 +370,8 @@ export function ResearchScreen() {
   const [suggestions, setSuggestions] = useState<SuggestedEvaluationResponse[]>([]);
   const [comparisons, setComparisons] = useState<ComparisonGroupResponse[]>([]);
   const [comparisonPending, setComparisonPending] = useState(false);
+  const [bakeOffs, setBakeOffs] = useState<BakeOffJobResponse[]>([]);
+  const [bakeOffPending, setBakeOffPending] = useState(false);
   // Research deliberately leaves auth/token UX to the overview screen, but a
   // poll that keeps failing must not look like a quiet, up-to-date screen:
   // track the last successful refresh so the UI can show it has gone stale.
@@ -380,6 +387,7 @@ export function ResearchScreen() {
       setSweeps(await fetchSweeps());
       setVersions(await fetchStrategyVersions());
       setComparisons(await fetchComparisons());
+      setBakeOffs(await fetchBakeOffs());
       // Cheap and current: the selector follows custom bots being created
       // or deleted, and the improver card follows the loop's cycles.
       setStrategies(await fetchEvaluationStrategies());
@@ -505,6 +513,29 @@ export function ResearchScreen() {
       (caught: unknown) => {
         setComparisonPending(false);
         setNotice(caught instanceof Error ? caught.message : "failed to start the comparison");
+      },
+    );
+  };
+
+  // A bake-off holds the research lane for its whole grid; the button stays
+  // disabled while one is pending or still running so a second cannot stack.
+  const bakeOffRunning = bakeOffs.some(
+    (job) => job.status === "running" || job.status === "pending",
+  );
+
+  const handleStartBakeOff = () => {
+    // Empty body on purpose: the backend's defaults are the full grid over
+    // the live coins, so the bake-off is genuinely one click.
+    setBakeOffPending(true);
+    startBakeOff({}).then(
+      (started) => {
+        setBakeOffPending(false);
+        setNotice(started.detail);
+        void refresh();
+      },
+      (caught: unknown) => {
+        setBakeOffPending(false);
+        setNotice(caught instanceof Error ? caught.message : "failed to start the bake-off");
       },
     );
   };
@@ -779,6 +810,14 @@ export function ResearchScreen() {
           groups={comparisons}
           onStart={handleStartComparison}
           startDisabled={comparisonPending || comparisonRunning}
+        />
+      )}
+
+      {researchTab === "bakeoff" && (
+        <BakeOffPanel
+          jobs={bakeOffs}
+          onStart={handleStartBakeOff}
+          startDisabled={bakeOffPending || bakeOffRunning}
         />
       )}
 
