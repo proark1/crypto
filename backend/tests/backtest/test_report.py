@@ -90,6 +90,22 @@ class TestDrawdown:
         assert build_report(result, candles, INITIAL).max_drawdown_fraction == Decimal("0")
 
 
+class TestCalmar:
+    def test_calmar_is_return_over_max_drawdown(self) -> None:
+        candles = [make_candle(i, "100") for i in range(4)]
+        # +32% return; worst dip 1200 -> 1080 is 10% drawdown; 0.32 / 0.10.
+        result = make_result([], ["1000", "1200", "1080", "1320"])
+        report = build_report(result, candles, INITIAL)
+
+        assert report.max_drawdown_fraction == Decimal("0.1")
+        assert report.calmar_ratio == pytest.approx(3.2)
+
+    def test_no_drawdown_has_no_calmar(self) -> None:
+        candles = [make_candle(i, "100") for i in range(3)]
+        result = make_result([], ["1000", "1100", "1200"])
+        assert build_report(result, candles, INITIAL).calmar_ratio is None
+
+
 class TestRoundTrips:
     def test_win_rate_and_profit_factor_from_fills(self) -> None:
         fills = [

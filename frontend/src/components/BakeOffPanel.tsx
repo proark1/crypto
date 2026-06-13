@@ -4,9 +4,10 @@ import type { BakeOffCellRecord, BakeOffJobResponse } from "../api/types";
 import { formatFractionPercent, formatTime, signClass } from "../lib/format";
 import { Button, Card } from "../ui";
 
-/** Plain-words names for the bake-off contestants (the ten energy presets
- * plus the production baseline); unknown ids fall back to a readable form so
- * a roster change still renders. Kept in step with backend presets.py. */
+/** Plain-words names for the bake-off contestants (the production baseline,
+ * the ten energy presets, and the reference controls); unknown ids fall back
+ * to a readable form so a roster change still renders. Kept in step with
+ * backend presets.py. */
 const CONTESTANT_LABELS: Record<string, string> = {
   production: "Production (baseline)",
   trend_calm: "Trend (calm)",
@@ -19,6 +20,7 @@ const CONTESTANT_LABELS: Record<string, string> = {
   momentum_bold: "Momentum (bold)",
   squeeze_calm: "Squeeze (calm)",
   squeeze_bold: "Squeeze (bold)",
+  random_entry: "Random entry (control)",
 };
 
 export function contestantLabel(botId: string): string {
@@ -181,9 +183,10 @@ export function BakeOffPanel(props: {
         </span>
       </div>
       <p className="mt-1 text-xs text-zinc-500">
-        ten energy presets (each family at a calm and a bold temper) plus the live bot as a
-        baseline; cells with too little history to trade are skipped, and the winner is the one
-        with the highest average return across the cells it could trade
+        ten energy presets (each family at a calm and a bold temper), the live bot as a
+        baseline, and a random-entry control as the noise floor; cells with too little history
+        to trade are skipped, and the winner is the one with the highest average return across
+        the cells it could trade
       </p>
 
       {props.jobs.length === 0 ? (

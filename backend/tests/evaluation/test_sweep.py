@@ -203,6 +203,15 @@ class TestSweepConfig:
         with pytest.raises(ValueError, match="unique"):
             SweepConfig(symbol="BTC/USDT", candidates=(candidate, candidate))
 
+    def test_cost_multipliers_must_worsen_costs(self) -> None:
+        candidates = (SweepCandidate(name="a", params={}), SweepCandidate(name="b", params={}))
+        with pytest.raises(ValueError, match="must each exceed"):
+            SweepConfig(symbol="BTC/USDT", candidates=candidates, cost_multipliers=(1.0,))
+        ok = SweepConfig(symbol="BTC/USDT", candidates=candidates, cost_multipliers=(1.5, 2.0))
+        assert ok.cost_multipliers == (1.5, 2.0)
+        # Off by default — the auto-improver's frequent sweeps stay cheap.
+        assert SweepConfig(symbol="BTC/USDT", candidates=candidates).cost_multipliers == ()
+
 
 async def seed_candles(database: Database, count: int = 800) -> None:
     """Recent synthetic 1m candles with alternating drift regimes."""
@@ -306,6 +315,28 @@ class TestSweepEndToEnd:
                 "corrected_threshold",
                 "p_value",
             }
+        # No cost-sensitivity block unless the sweep was asked for one.
+        assert "cost_sensitivity" not in report
+
+    async def test_cost_sensitivity_rides_along_when_requested(self, database: Database) -> None:
+        await seed_candles(database)
+        manager, store, tasks = make_manager(database)
+
+        sweep_id = await manager.start(CONFIG.model_copy(update={"cost_multipliers": (1.5, 2.0)}))
+        await asyncio.gather(*tasks)
+
+        sweep = await store.fetch_sweep(sweep_id)
+        assert sweep is not None and sweep["status"] == "completed"
+        report = sweep["report"]
+        # The block appears exactly when a challenger reached validation (the
+        # configuration a promotion would adopt); baseline-best / insufficient
+        # runs return before there is a winner to stress.
+        if report["validation"]:
+            cost = report["cost_sensitivity"]
+            assert [point["multiplier"] for point in cost["points"]] == ["1", "1.5", "2"]
+            assert isinstance(cost["survives_worse_costs"], bool)
+        else:
+            assert "cost_sensitivity" not in report
 
     async def test_one_sweep_at_a_time(self, database: Database) -> None:
         await seed_candles(database)

@@ -31,7 +31,7 @@ This document is the target design. Implementation status as of June 2026
 | Squeeze strategy family (§13) | **Research + competition** — volatility-squeeze breakout: enters the *upward release* of a Bollinger-band-inside-Keltner-channel compression (TTM-style coil), exits when the close falls back below the Bollinger basis, shared ATR stop convention and managed-stop knobs, optional volume-confirmation entry filter (§5.2.3, off by default); built from the new TA-Lib-verified incremental Bollinger plus the existing EMA/ATR; sweepable, evaluated, auto-tuned by the §12.7 rotation (its keltner-width knob is the squeeze tightness the grid tunes), and traded solo by its competition account; unrouted in production until the §13.7 evidence gate is met and a human routes it |
 | Momentum strategy family (§13) | **Research + competition** — MACD histogram-crossover entries (12/26/9 defaults, zero-line filter on by default), histogram-flip exits, shared ATR stop convention, optional volume-confirmation entry filter (§5.2.3, off by default); built from the TA-Lib-verified incremental EMA; sweepable, evaluated, and auto-tuned by the §12.7 rotation like every family (promotions change its solo competition account), traded solo by that account, unrouted in production until the §13.7 evidence gate is met and a human routes it |
 | Strategy competition: paper-bot lineup + custom bot builder, per-bot controls, leaderboard, research comparison (§13) | **Done** — production regime router plus five solo-family challengers (trend, mean-reversion, breakout, momentum, squeeze) trade the same coins, candles, and gates from isolated journal-backed paper accounts (bot-scoped fills/orders/decisions/risk rows, per-bot signal-id namespacing, full restart replay per account); GET /competition serves the equity-ranked leaderboard; POST /evaluations/compare grades the whole lineup on byte-identical scenario sets (one frozen window + seed, grouped runs) for the research screen's side-by-side table; solo bots trade ungated by the regime router's family schedule (news/event vetoes still apply to all); per-bot pause/resume/kill + detail API; user-built custom bots (rule recipes, any/all entry voting via CompositeStrategy, validated + persisted + hot-editable + restart-replayed) |
-| Strategy bake-off: one-click grid tournament (§13.8) | **Done** — backend; ten energy presets (each family at calm/bold) plus the production baseline graded across the full `{1h,4h,1d} × {10,50,100d}` grid, one cell per comparison on byte-identical scenarios, driven through the single research lane and polled to completion; cells with too little history reported `insufficient_data` and excluded; ranked by average return fraction with a live leaderboard updated per cell; persisted to `bake_off_jobs` (per-cell runs stay in `evaluation_runs`); POST /research/bakeoff + GET /research/bakeoff[s]; research-tab UI pending |
+| Strategy bake-off: one-click grid tournament (§13.8) | **Done** — ten energy presets (each family at calm/bold) plus the production baseline and a seeded random-entry control (the noise floor) graded across the full `{1h,4h,1d} × {10,50,100d}` grid, one cell per comparison on byte-identical scenarios, driven through the single research lane and polled to completion; cells with too little history reported `insufficient_data` and excluded; ranked by average return fraction with a live leaderboard updated per cell; persisted to `bake_off_jobs` (per-cell runs stay in `evaluation_runs`); POST /research/bakeoff + GET /research/bakeoff[s] with a research-tab UI |
 | Observability: dead-man's switch, metrics, DB backups (§4.9, §7) | **Done** — structured JSON logging (one event per line, env-switchable to text for local tailing) with signal→order→fill correlation fields across the engine and risk manager, amounts kept exact as Decimal-derived strings; heartbeat ping gated on feed freshness; /metrics (feed lag, equity, breakers, bus counters) behind the bearer token; live-vs-backtest divergence measurable per coin (the §10 paper-gate metric: live paper fills matched against a same-candle replay of the production strategy shape; zero is the one-code-path expectation, non-zero is documented gating or a parity bug); scheduled gzipped-JSONL backups to S3-compatible storage with exact-Decimal restore (production restore drill pending, see checklist) |
 | Live trading (§8 Phase 3) | **Missing** — blockers enumerated in LIVE_TRADING_CHECKLIST.md |
 
@@ -636,6 +636,19 @@ broken down by regime, volatility, event, timeframe, and symbol. Sharpe is
 reported but flagged as indicative only (overlapping scenarios violate its
 independence assumption).
 
+**Risk-adjusted and tail metrics** sit beside expectancy so a high mean is
+not mistaken for a safe one: a **downside-deviation of R** (RMS of the losing
+trades, target 0), a per-trade **Sortino** (`expectancy ÷ downside
+deviation` — reward per unit of loss volatility), a **tail loss** (the
+expected shortfall in R: the mean of the worst decile of trades, at least one
+trade), and the **worst single trade**. These are deliberately
+*distributional* — symmetric functions of the R multiset — because the money
+result above is order-independent, so a *path* metric (max drawdown,
+time-under-water) has no meaningful trade ordering to read here. Those path
+metrics live on the equity-curve reports instead (`backtest/report.py` and
+`backtest/account_report.py`, which carry max drawdown and **Calmar** —
+return over max drawdown — over a real ordered curve).
+
 Alongside the R-multiple metrics the report carries an **illustrative money
 result** so a non-technical reader can read outcomes in money, not only in
 R: a fixed stake (10,000 quote) replayed through the graded trades at a
@@ -674,6 +687,17 @@ significance level; every candidate's expectancy also carries a 95%
 bootstrap confidence interval. Accepted findings link to the config
 change they motivated, so every strategy version carries its lineage:
 what changed, why, and whether validation confirmed it.
+
+A human-initiated sweep also carries a **cost-sensitivity** read
+(`evaluation/sensitivity.py`): the validated winner is re-graded on the
+untouched validation slices at 1.5× and 2× the configured fees and
+slippage, and the report says whether its expectancy stays positive when
+the costs get worse — the §10 "net of pessimistic fees and slippage" gate,
+made visible at the promotion moment. It is **non-gating** (a read, not a
+veto: thin samples make it noisy) and **opt-in** — the auto-improver leaves
+it off so its frequent sweeps stay cheap; the `run sweep` button turns it
+on. A challenger that only profits at today's fee schedule is borrowing
+from it, and this is where that shows.
 
 ### 12.7 Automated improvement (paper-scoped)
 
@@ -1006,9 +1030,14 @@ research tab's one-click experiment — start it and walk away.
 - **Contestants (`evaluation/presets.py`).** A fixed roster of ten *energy
   presets* — each of the five solo families at a `calm` temper (slower
   entries, a wider 3×ATR stop) and a `bold` one (faster entries, a tighter
-  1.5×ATR stop) — plus the production router as a baseline. The roster is
-  code-defined and frozen so two bake-offs are comparable; the presets are
-  validated buildable at import.
+  1.5×ATR stop) — plus the production router as a baseline and a
+  **random-entry control** as the noise floor: a seeded coin-flip bot
+  (`strategies/controls.py`) that buys and sells at random with the families'
+  own ATR stop, fees, and slippage, so a family that cannot out-earn it has
+  no edge distinguishable from luck. The control lives in its own registry,
+  never `STRATEGY_FAMILIES` — it is a yardstick, never swept, lineup'd, or
+  promoted. The roster is code-defined and frozen so two bake-offs are
+  comparable; every contestant is validated buildable at import.
 - **The grid.** Every (timeframe, history-window) pair is a *cell* — by
   default `{1h, 4h, 1d} × {10, 50, 100 days}`, nine cells. Each cell is one
   ordinary comparison (§13.6): all contestants on byte-identical scenarios

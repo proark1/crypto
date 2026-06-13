@@ -112,6 +112,18 @@ const METRIC_ROWS: MetricRow[] = [
     key: "profit_factor",
     highlightBest: true,
   },
+  {
+    label: "Sortino (R)",
+    hint: "expectancy ÷ downside risk — reward earned per unit of loss volatility; higher is better",
+    key: "sortino_r",
+    highlightBest: true,
+  },
+  {
+    label: "tail loss (R)",
+    hint: "average R of the worst 10% of trades — the typical bad day; higher (shallower) is safer",
+    key: "tail_loss_r",
+    highlightBest: true,
+  },
   { label: "avg win (R)", hint: "average winning trade", key: "average_win_r" },
   { label: "avg loss (R)", hint: "average losing trade", key: "average_loss_r" },
 ];

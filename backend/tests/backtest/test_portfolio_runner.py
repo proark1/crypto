@@ -180,6 +180,7 @@ class TestAccountReport:
         report = build_account_report(result, INITIAL_BALANCE)
         assert report.turnover_quote == 0
         assert report.max_drawdown_fraction == 0
+        assert report.calmar_ratio is None  # no drawdown ⇒ no ratio, never a divide by zero
         assert report.average_exposure_fraction == 0
         assert report.fills_by_symbol == {}
 

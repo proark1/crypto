@@ -34,6 +34,9 @@ const GROUP: ComparisonGroupResponse = {
         expectancy_r: "0.3100",
         win_rate: "0.5500",
         profit_factor: "1.8000",
+        sortino_r: "0.7000",
+        tail_loss_r: "-1.5000",
+        worst_r: "-2.0000",
         average_win_r: "1.2000",
         average_loss_r: "-0.8000",
         starting_balance_quote: "10000.00",
@@ -52,6 +55,9 @@ const GROUP: ComparisonGroupResponse = {
         expectancy_r: "0.1000",
         win_rate: "0.4000",
         profit_factor: "1.2000",
+        sortino_r: "0.2500",
+        tail_loss_r: "-3.0000",
+        worst_r: "-4.0000",
         average_win_r: "1.0000",
         average_loss_r: "-0.9000",
         starting_balance_quote: "10000.00",
@@ -117,6 +123,16 @@ describe("ComparisonPanel", () => {
     expect(bestExpectancy.closest("td")?.className).toContain("emerald");
     const worseExpectancy = screen.getByText("0.1000");
     expect(worseExpectancy.closest("td")?.className).not.toContain("emerald");
+  });
+
+  it("ranks the risk-adjusted metrics: best Sortino and shallowest tail win", () => {
+    render(
+      <ComparisonPanel groups={[GROUP]} onStart={() => undefined} startDisabled={false} />,
+    );
+    // Higher Sortino is better; the shallower (higher) tail loss is safer.
+    expect(screen.getByText("0.7000").closest("td")?.className).toContain("emerald");
+    expect(screen.getByText("-1.5000").closest("td")?.className).toContain("emerald");
+    expect(screen.getByText("-3.0000").closest("td")?.className).not.toContain("emerald");
   });
 
   it("shows progress instead of metrics for a run still in flight", () => {
