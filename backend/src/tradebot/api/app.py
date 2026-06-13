@@ -44,6 +44,7 @@ from tradebot.evaluation.improve import (
 from tradebot.evaluation.models import LearningFinding, RunStatus
 from tradebot.evaluation.replay import load_replay
 from tradebot.evaluation.runner import EvaluationRunConfig
+from tradebot.evaluation.sensitivity import DEFAULT_COST_MULTIPLIERS
 from tradebot.evaluation.suggestions import build_suggestions
 from tradebot.evaluation.sweep import (
     DEFAULT_SCENARIO_COUNT,
@@ -2167,6 +2168,9 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
                 validation_windows=request.validation_windows,
                 candidates=candidates,
                 motivating_finding_ids=motivating,
+                # Human-initiated sweeps carry the §10 robustness read; the
+                # auto-improver leaves it off to keep its frequent sweeps cheap.
+                cost_multipliers=DEFAULT_COST_MULTIPLIERS,
             )
             sweep_id = await state.start_sweep(config)
         except RuntimeError as error:

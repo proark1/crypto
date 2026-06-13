@@ -25,7 +25,7 @@ from datetime import timedelta
 from decimal import ROUND_HALF_EVEN, Decimal
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from tradebot.backtest import split_rolling_by_fraction
 from tradebot.core.models import ACCOUNTING_RESOLUTION, Candle, CandleInterval, utc_now
@@ -33,6 +33,7 @@ from tradebot.evaluation.engine import ScenarioEvaluator
 from tradebot.evaluation.generator import GeneratorConfig, generate_specs
 from tradebot.evaluation.models import RunStatus
 from tradebot.evaluation.reports import r_metrics
+from tradebot.evaluation.sensitivity import scale_fill_costs, summarize_cost_sensitivity
 from tradebot.evaluation.statistics import (
     bootstrap_expectancy_interval,
     corrected_significance,
@@ -211,6 +212,20 @@ class SweepConfig(BaseModel):
     """Accepted findings that motivated this sweep — the lineage §12.5
     requires: what changed, why, and whether validation confirmed it."""
 
+    cost_multipliers: tuple[float, ...] = ()
+    """Stressed fee/slippage levels to re-grade the validated winner at, for
+    the §10 "survives worse costs" robustness read. Empty (the default) skips
+    the check entirely — the auto-improver leaves it off so its frequent
+    sweeps stay cheap; the human ``run sweep`` path opts in. Each must exceed
+    1.0 (a multiplier of 1.0 is just the baseline costs already graded)."""
+
+    @field_validator("cost_multipliers")
+    @classmethod
+    def _multipliers_must_worsen_costs(cls, value: tuple[float, ...]) -> tuple[float, ...]:
+        if any(multiplier <= 1.0 for multiplier in value):
+            raise ValueError(f"cost multipliers must each exceed 1.0, got {value}")
+        return value
+
     @model_validator(mode="after")
     def _names_must_be_unique(self) -> SweepConfig:
         names = [candidate.name for candidate in self.candidates]
@@ -388,13 +403,52 @@ class SweepRunner:
         report["verdict"], report["explanation"], report["significance"] = validation_verdict(
             baseline_validation, winner_validation, comparisons=comparisons, seed=config.seed
         )
+        # Robustness read (§10), non-gating: does the challenger's edge
+        # survive worse fees/slippage? Only when asked (manual sweeps), and
+        # only here, where a challenger reached the untouched validation
+        # slices — the exact configuration a promotion would adopt.
+        if config.cost_multipliers:
+            report["cost_sensitivity"] = await self._cost_sensitivity(
+                config, winner, winner_validation, validation_slices
+            )
         return report
 
+    async def _cost_sensitivity(
+        self,
+        config: SweepConfig,
+        winner: CandidateScore,
+        winner_validation: CandidateScore,
+        validation_slices: list[list[Candle]],
+    ) -> dict[str, Any]:
+        """Re-grade the winner on validation at each stressed cost level.
+
+        The 1.0 baseline reuses the validation scores already computed; each
+        stressed level re-runs the same blind pipeline over the same slices
+        with scaled fees/slippage, so the only thing that moves is the cost.
+        """
+        graded: list[tuple[float, tuple[Decimal, ...]]] = [(1.0, winner_validation.r_values)]
+        for multiplier in config.cost_multipliers:
+            stressed_fills = scale_fill_costs(self._fills, multiplier)
+            scores = [
+                await self._score(window_slice, winner.candidate, config, fills=stressed_fills)
+                for window_slice in validation_slices
+            ]
+            graded.append((multiplier, _pooled(scores).r_values))
+        return summarize_cost_sensitivity(graded)
+
     async def _score(
-        self, series: list[Candle], candidate: SweepCandidate, config: SweepConfig
+        self,
+        series: list[Candle],
+        candidate: SweepCandidate,
+        config: SweepConfig,
+        fills: FillSimulatorConfig | None = None,
     ) -> CandidateScore:
-        """Run the blind pipeline for one candidate over one period."""
-        evaluator = ScenarioEvaluator(lambda: self._build(candidate), self._fills)
+        """Run the blind pipeline for one candidate over one period.
+
+        ``fills`` overrides the simulator costs for the run (the cost
+        -sensitivity re-grades use this); ``None`` keeps the sweep's own.
+        """
+        evaluator = ScenarioEvaluator(lambda: self._build(candidate), fills or self._fills)
         specs = generate_specs(
             series,
             GeneratorConfig(

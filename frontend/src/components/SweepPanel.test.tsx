@@ -45,6 +45,40 @@ describe("SweepReport", () => {
     render(<SweepReport sweep={{ ...SWEEP, report: null }} />);
     expect(screen.getByText(/no report yet/)).toBeDefined();
   });
+
+  it("shows the cost-sensitivity read when present and flags a fragile edge", () => {
+    const withCosts: SweepResponse = {
+      ...SWEEP,
+      report: {
+        ...SWEEP.report,
+        cost_sensitivity: {
+          points: [
+            {
+              multiplier: "1",
+              trade_count: 15,
+              expectancy_r: "0.2000",
+              return_fraction: "0.0300",
+            },
+            {
+              multiplier: "2",
+              trade_count: 15,
+              expectancy_r: "-0.1000",
+              return_fraction: "-0.0150",
+            },
+          ],
+          survives_worse_costs: false,
+        },
+      },
+    };
+    render(<SweepReport sweep={withCosts} />);
+    expect(screen.getByText(/cost sensitivity/i)).toBeDefined();
+    expect(screen.getByText(/fragile to fees and slippage/)).toBeDefined();
+  });
+
+  it("omits the cost-sensitivity block when the sweep did not compute one", () => {
+    render(<SweepReport sweep={SWEEP} />);
+    expect(screen.queryByText(/cost sensitivity/i)).toBeNull();
+  });
 });
 
 describe("SweepPanel", () => {

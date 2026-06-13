@@ -688,6 +688,17 @@ bootstrap confidence interval. Accepted findings link to the config
 change they motivated, so every strategy version carries its lineage:
 what changed, why, and whether validation confirmed it.
 
+A human-initiated sweep also carries a **cost-sensitivity** read
+(`evaluation/sensitivity.py`): the validated winner is re-graded on the
+untouched validation slices at 1.5× and 2× the configured fees and
+slippage, and the report says whether its expectancy stays positive when
+the costs get worse — the §10 "net of pessimistic fees and slippage" gate,
+made visible at the promotion moment. It is **non-gating** (a read, not a
+veto: thin samples make it noisy) and **opt-in** — the auto-improver leaves
+it off so its frequent sweeps stay cheap; the `run sweep` button turns it
+on. A challenger that only profits at today's fee schedule is borrowing
+from it, and this is where that shows.
+
 ### 12.7 Automated improvement (paper-scoped)
 
 The loop closes the research cycle without a human in the middle: on a

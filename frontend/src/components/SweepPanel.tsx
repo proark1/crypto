@@ -1,6 +1,7 @@
 import { useState } from "react";
 
 import type { SweepResponse } from "../api/types";
+import { formatFractionPercent } from "../lib/format";
 import { Button, Card, SectionHeader } from "../ui";
 
 /**
@@ -141,6 +142,66 @@ export function SweepReport(props: { sweep: SweepResponse }) {
       </div>
       <ScoreTable title="training period" data={asRecord(report.training)} />
       <ScoreTable title="validation period (untouched)" data={asRecord(report.validation)} />
+      <CostSensitivity data={asRecord(report.cost_sensitivity)} />
+    </div>
+  );
+}
+
+/** The §10 robustness read: the validated winner re-graded at worse fees and
+ * slippage. Present only on human-initiated sweeps; a fragile edge that fades
+ * as costs rise is the thing this exists to expose. */
+function CostSensitivity(props: { data: Record<string, unknown> | null }) {
+  const points = Array.isArray(props.data?.points) ? props.data.points : [];
+  if (points.length === 0) {
+    return null;
+  }
+  const survives = props.data?.survives_worse_costs === true;
+  return (
+    <div>
+      <h4 className="mb-1 text-xs uppercase tracking-wide text-zinc-500">
+        cost sensitivity — winner at worse fees &amp; slippage
+      </h4>
+      <table className="w-full text-left text-sm">
+        <thead className="text-xs text-zinc-500">
+          <tr>
+            <th className="py-1 pr-2">× costs</th>
+            <th className="py-1 pr-2">trades</th>
+            <th className="py-1 pr-2">expectancy (R)</th>
+            <th className="py-1">return</th>
+          </tr>
+        </thead>
+        <tbody>
+          {points.map((raw, index) => {
+            const row = asRecord(raw);
+            return (
+              <tr
+                key={`${text(row?.multiplier)}-${String(index)}`}
+                className="border-t border-zinc-200/70 dark:border-zinc-800/60 text-zinc-700 dark:text-zinc-300"
+              >
+                <td className="py-1 pr-2">{text(row?.multiplier)}×</td>
+                <td className="py-1 pr-2">{text(row?.trade_count)}</td>
+                <td className="py-1 pr-2">{text(row?.expectancy_r)}</td>
+                <td className="py-1">
+                  {typeof row?.return_fraction === "string"
+                    ? formatFractionPercent(row.return_fraction)
+                    : "—"}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      <p
+        className={`mt-1 text-xs ${
+          survives
+            ? "text-emerald-700 dark:text-emerald-300"
+            : "text-amber-700 dark:text-amber-400"
+        }`}
+      >
+        {survives
+          ? "the edge stays positive at the worst costs tested — robust to fees and slippage"
+          : "the edge fades as costs rise — fragile to fees and slippage, treat with caution"}
+      </p>
     </div>
   );
 }
