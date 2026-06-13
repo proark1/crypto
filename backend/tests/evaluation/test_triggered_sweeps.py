@@ -75,16 +75,19 @@ def make_scheduler(
     store: ScriptedStore,
     tasks: list["asyncio.Task[None]"],
     delay: timedelta = DELAY,
+    recipes: dict[str, dict[str, Any]] | None = None,
 ) -> AcceptSweepScheduler:
     def spawn(coroutine: Coroutine[Any, Any, None]) -> "asyncio.Task[None]":
         task = asyncio.ensure_future(coroutine)
         tasks.append(task)
         return task
 
+    recipe_map = recipes or {}
     return AcceptSweepScheduler(
         sweeps=sweeps,
         store=store,
         active_params=lambda: {"trend_following": {"fast_ema_period": 20}},
+        recipe_for=lambda bot_id: recipe_map.get(bot_id),
         spawn=spawn,
         delay=delay,
         timeframe="1h",
@@ -189,15 +192,43 @@ async def test_the_grid_matches_the_run_that_was_graded() -> None:
     assert config.motivating_finding_ids == (10,)
 
 
-async def test_a_custom_bots_run_is_skipped_for_now() -> None:
-    """No improvement grid for a recipe yet: skip loudly, never sweep wrong knobs."""
+async def test_a_custom_bots_run_sweeps_variants_of_its_recipe() -> None:
+    """A recipe's verdicts sweep the whole composite, one knob varied at a time."""
+    recipe = {
+        "entry_mode": "any",
+        "families": {"trend_following": {}, "breakout": {}},
+    }
     sweeps = ScriptedSweeps()
     store = ScriptedStore(
         make_run(strategy="custom-my-recipe"),
-        [make_finding(10, "entries lose money when trend is down", "accepted")],
+        [make_finding(10, "entries lose money when event is breakout_fake", "accepted")],
     )
     tasks: list[asyncio.Task[None]] = []
-    scheduler = make_scheduler(sweeps, store, tasks)
+    scheduler = make_scheduler(sweeps, store, tasks, recipes={"custom-my-recipe": recipe})
+
+    scheduler.note_acceptance(1)
+    await drain(tasks)
+
+    (config,) = sweeps.configs
+    # Every candidate is the whole recipe (a composite), baseline first.
+    assert config.candidates[0].name == "active_recipe"
+    assert all(candidate.recipe is not None for candidate in config.candidates)
+    # The accepted fake-breakout finding lifted breakout's width/volume knob
+    # into recipe space, leaving the trend family untouched in that variant.
+    names = {candidate.name for candidate in config.candidates}
+    assert any(name.startswith("breakout:") for name in names)
+    assert config.motivating_finding_ids == (10,)
+
+
+async def test_a_recipe_without_a_challenger_is_skipped() -> None:
+    """A recipe whose families yield no variant has nothing to sweep."""
+    sweeps = ScriptedSweeps()
+    store = ScriptedStore(make_run(strategy="custom-empty"), [])
+    tasks: list[asyncio.Task[None]] = []
+    # An empty families map can't build a grid -> ValueError -> skipped.
+    scheduler = make_scheduler(
+        sweeps, store, tasks, recipes={"custom-empty": {"entry_mode": "any", "families": {}}}
+    )
 
     scheduler.note_acceptance(1)
     await drain(tasks)
