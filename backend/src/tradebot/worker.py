@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import copy
 import logging
 import os
 import signal
@@ -1240,6 +1241,17 @@ class Worker:
             control_id = contestant.control
             control_params = dict(contestant.params)
             return ScenarioEvaluator(lambda: build_control_strategy(control_id, control_params))
+        if contestant is not None and contestant.recipe is not None:
+            # A bake-off ensemble: a multi-family composite graded bare,
+            # exactly the recipe a custom bot trades. Reuses the recipe
+            # candidate path; never journaled, never routed (§13.7). Deep-copy
+            # the recipe: it nests family-param dicts shared with the frozen
+            # module-level roster constant, and an evaluator must never be able
+            # to mutate that shared state out from under a later bake-off.
+            candidate = SweepCandidate(
+                name=contestant.bot_id, recipe=copy.deepcopy(dict(contestant.recipe))
+            )
+            return ScenarioEvaluator(lambda: build_candidate_strategy(candidate))
         if contestant is not None and contestant.family is not None:
             # A bake-off energy preset: a single family at fixed parameters,
             # graded bare like any solo-family scenario strategy. The
