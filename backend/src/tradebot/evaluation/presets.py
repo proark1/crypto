@@ -186,6 +186,31 @@ def contestant_for(bot_id: str) -> BakeOffContestant | None:
     return _BY_ID.get(bot_id)
 
 
+def _validate_contestant(contestant: BakeOffContestant) -> None:
+    """Validate one contestant's family/control wiring; raise on a bad entry.
+
+    ``family`` and ``control`` are mutually exclusive: the resolver checks
+    ``control`` first, so a contestant that set both would silently trade the
+    control and ignore the family. Catch that here rather than ship a roster
+    whose family is quietly dead. The baseline (neither set) is allowed.
+    """
+    if contestant.control is not None and contestant.family is not None:
+        raise ValueError(
+            f"bake-off contestant {contestant.bot_id!r} sets both family and control; "
+            "a contestant names one or the other (or neither, for the production baseline)"
+        )
+    if contestant.control is not None:
+        validate_control_params(contestant.control, contestant.params)
+        return
+    if contestant.family is None:
+        return
+    if contestant.family not in STRATEGY_FAMILIES:
+        raise ValueError(
+            f"bake-off preset {contestant.bot_id!r} names unknown family {contestant.family!r}"
+        )
+    validate_family_params(contestant.family, contestant.params)
+
+
 def validate_presets() -> None:
     """Raise ``ValueError`` if any contestant names an unknown family/control or param.
 
@@ -194,16 +219,7 @@ def validate_presets() -> None:
     nor control) is skipped.
     """
     for contestant in BAKE_OFF_CONTESTANTS:
-        if contestant.control is not None:
-            validate_control_params(contestant.control, contestant.params)
-            continue
-        if contestant.family is None:
-            continue
-        if contestant.family not in STRATEGY_FAMILIES:
-            raise ValueError(
-                f"bake-off preset {contestant.bot_id!r} names unknown family {contestant.family!r}"
-            )
-        validate_family_params(contestant.family, contestant.params)
+        _validate_contestant(contestant)
 
 
 validate_presets()

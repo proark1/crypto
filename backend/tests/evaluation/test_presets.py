@@ -1,10 +1,14 @@
 """Bake-off contestants: every energy preset must be a buildable strategy."""
 
+import pytest
+
 from tradebot.competition.lineup import PRODUCTION_BOT_ID
 from tradebot.evaluation.presets import (
     BAKE_OFF_CONTESTANTS,
     CONTROL_CONTESTANTS,
     ENERGY_PRESETS,
+    BakeOffContestant,
+    _validate_contestant,
     contestant_for,
 )
 from tradebot.evaluation.sweep import STRATEGY_FAMILIES, SweepCandidate, build_candidate_strategy
@@ -66,3 +70,12 @@ class TestControlContestants:
     def test_the_random_entry_control_is_present(self) -> None:
         ids = [c.bot_id for c in CONTROL_CONTESTANTS]
         assert "random_entry" in ids
+
+    def test_a_contestant_cannot_set_both_family_and_control(self) -> None:
+        # The resolver checks control first, so a both-set entry would
+        # silently trade the control and ignore the family — caught at import.
+        both = BakeOffContestant(
+            bot_id="bad", label="bad", family="trend_following", control="random_entry"
+        )
+        with pytest.raises(ValueError, match="both family and control"):
+            _validate_contestant(both)
