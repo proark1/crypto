@@ -31,6 +31,7 @@ This document is the target design. Implementation status as of June 2026
 | Squeeze strategy family (§13) | **Research + competition** — volatility-squeeze breakout: enters the *upward release* of a Bollinger-band-inside-Keltner-channel compression (TTM-style coil), exits when the close falls back below the Bollinger basis, shared ATR stop convention and managed-stop knobs, optional volume-confirmation entry filter (§5.2.3, off by default); built from the new TA-Lib-verified incremental Bollinger plus the existing EMA/ATR; sweepable, evaluated, auto-tuned by the §12.7 rotation (its keltner-width knob is the squeeze tightness the grid tunes), and traded solo by its competition account; unrouted in production until the §13.7 evidence gate is met and a human routes it |
 | Momentum strategy family (§13) | **Research + competition** — MACD histogram-crossover entries (12/26/9 defaults, zero-line filter on by default), histogram-flip exits, shared ATR stop convention, optional volume-confirmation entry filter (§5.2.3, off by default); built from the TA-Lib-verified incremental EMA; sweepable, evaluated, and auto-tuned by the §12.7 rotation like every family (promotions change its solo competition account), traded solo by that account, unrouted in production until the §13.7 evidence gate is met and a human routes it |
 | Strategy competition: paper-bot lineup + custom bot builder, per-bot controls, leaderboard, research comparison (§13) | **Done** — production regime router plus five solo-family challengers (trend, mean-reversion, breakout, momentum, squeeze) trade the same coins, candles, and gates from isolated journal-backed paper accounts (bot-scoped fills/orders/decisions/risk rows, per-bot signal-id namespacing, full restart replay per account); GET /competition serves the equity-ranked leaderboard; POST /evaluations/compare grades the whole lineup on byte-identical scenario sets (one frozen window + seed, grouped runs) for the research screen's side-by-side table; solo bots trade ungated by the regime router's family schedule (news/event vetoes still apply to all); per-bot pause/resume/kill + detail API; user-built custom bots (rule recipes, any/all entry voting via CompositeStrategy, validated + persisted + hot-editable + restart-replayed) |
+| Strategy bake-off: one-click grid tournament (§13.8) | **Done** — backend; ten energy presets (each family at calm/bold) plus the production baseline graded across the full `{1h,4h,1d} × {10,50,100d}` grid, one cell per comparison on byte-identical scenarios, driven through the single research lane and polled to completion; cells with too little history reported `insufficient_data` and excluded; ranked by average return fraction with a live leaderboard updated per cell; persisted to `bake_off_jobs` (per-cell runs stay in `evaluation_runs`); POST /research/bakeoff + GET /research/bakeoff[s]; research-tab UI pending |
 | Observability: dead-man's switch, metrics, DB backups (§4.9, §7) | **Done** — structured JSON logging (one event per line, env-switchable to text for local tailing) with signal→order→fill correlation fields across the engine and risk manager, amounts kept exact as Decimal-derived strings; heartbeat ping gated on feed freshness; /metrics (feed lag, equity, breakers, bus counters) behind the bearer token; live-vs-backtest divergence measurable per coin (the §10 paper-gate metric: live paper fills matched against a same-candle replay of the production strategy shape; zero is the one-code-path expectation, non-zero is documented gating or a parity bug); scheduled gzipped-JSONL backups to S3-compatible storage with exact-Decimal restore (production restore drill pending, see checklist) |
 | Live trading (§8 Phase 3) | **Missing** — blockers enumerated in LIVE_TRADING_CHECKLIST.md |
 
@@ -993,3 +994,43 @@ its slot, and whether the router's added complexity is worth the edge.
 The decision is recorded by amending §5.2 and §13.1 in the same PR that
 adds the route, with the evidence linked — the same lineage discipline
 as every promotion (§12.5).
+
+### 13.8 The bake-off (one button, the whole grid)
+
+The competition (§13.1–13.4) runs forward in real time; the research
+comparison (§13.6) grades one frozen window. The **bake-off** answers the
+broader question in one automated sweep: across many timeframes and many
+history depths, *which kind of bot makes the most money?* It is the
+research tab's one-click experiment — start it and walk away.
+
+- **Contestants (`evaluation/presets.py`).** A fixed roster of ten *energy
+  presets* — each of the five solo families at a `calm` temper (slower
+  entries, a wider 3×ATR stop) and a `bold` one (faster entries, a tighter
+  1.5×ATR stop) — plus the production router as a baseline. The roster is
+  code-defined and frozen so two bake-offs are comparable; the presets are
+  validated buildable at import.
+- **The grid.** Every (timeframe, history-window) pair is a *cell* — by
+  default `{1h, 4h, 1d} × {10, 50, 100 days}`, nine cells. Each cell is one
+  ordinary comparison (§13.6): all contestants on byte-identical scenarios
+  (one frozen window end, one seed), so within a cell the only variable is
+  the strategy. Every per-cell number is a normal, inspectable evaluation
+  run, linked by its `comparison_group`.
+- **One research lane.** The orchestrator drives the cells through the
+  evaluation manager one at a time and polls them to completion, exactly as
+  the §12.7 improver polls its sweeps — never a second workload competing
+  with the live candle loop. A bake-off waits its turn behind a manual run
+  or the improver rather than jumping the queue.
+- **Honest feasibility.** A short window on a high timeframe may hold too
+  few candles to host a scenario (ten daily candles cannot). Such a cell is
+  recorded `insufficient_data` and excluded from the averages — no bot is
+  charged for a window nobody could trade.
+- **Ranking.** Each contestant is scored by its **average return fraction**
+  across the cells it could trade (raw money is not comparable across a
+  10-day and a 100-day window). The leaderboard updates after every cell,
+  so a mid-flight job already shows a partial ranking.
+- **Persistence (`bake_off_jobs`).** The job row snapshots the grid and
+  roster and accumulates the per-cell records and ranking; the per-cell
+  runs stay in `evaluation_runs`. Everything is in Postgres, so a finished
+  bake-off is a permanent, queryable record to optimise against — and, like
+  every research output here, it only ever *recommends*: routing a winner
+  into production stays the §13.7 human decision.

@@ -48,7 +48,9 @@ from tradebot.core.metrics import MetricsCollector
 from tradebot.core.models import AutonomyMode, CandleInterval, Fill, SymbolFilters
 from tradebot.engine import TradingEngine
 from tradebot.evaluation import ScenarioEvaluator
+from tradebot.evaluation.bakeoff import BakeOffConfig, BakeOffManager
 from tradebot.evaluation.improve import AutoImprover
+from tradebot.evaluation.presets import contestant_for
 from tradebot.evaluation.runner import EvaluationManager, EvaluationRunConfig, EvaluationRunner
 from tradebot.evaluation.strategy import build_traded_strategy
 from tradebot.evaluation.sweep import (
@@ -65,6 +67,7 @@ from tradebot.execution import FeeSchedule, FillSimulatorConfig, SimulatedExecut
 from tradebot.marketdata.live_feed import LiveMarketDataFeed, OhlcvExchange
 from tradebot.news import CryptoPanicSource, EventCalendar, NewsFlags, NewsGate, NewsMonitor
 from tradebot.persistence import (
+    BakeOffStore,
     BotCapitalStore,
     CandleStore,
     CoinStore,
@@ -307,6 +310,16 @@ class Worker:
             self.evaluation_store,
             spawn=self._spawn_background,
         )
+        self.bake_off_store = BakeOffStore(database)
+        # The bake-off drives comparisons through the same evaluation
+        # manager, so it shares the single research lane — never a second
+        # workload competing with the live candle loop.
+        self.bake_offs = BakeOffManager(
+            self.evaluations,
+            self.evaluation_store,
+            self.bake_off_store,
+            spawn=self._spawn_background,
+        )
         # Accepting a finding arms this scheduler (§12.7): one coalesced,
         # findings-targeted sweep per run, on the same research lane and
         # window the automated cycle uses. ``None`` when disabled.
@@ -477,6 +490,23 @@ class Worker:
     def cancel_evaluation(self, run_id: int) -> bool:
         """Cancel the in-flight evaluation run, if it is this one."""
         return self.evaluations.cancel(run_id)
+
+    async def start_bake_off(self, config: BakeOffConfig) -> int:
+        """Start a bake-off: the contestant roster across the whole grid.
+
+        Defaults the symbols to the live coins when the caller leaves them
+        unset, so a one-click bake-off needs no configuration. Returns the
+        job id; raises ``RuntimeError`` if a bake-off is already running.
+        """
+        return await self.bake_offs.start(config)
+
+    async def bake_off(self, job_id: int) -> dict[str, Any] | None:
+        """Return one bake-off job row (status, progress, ranking)."""
+        return await self.bake_off_store.fetch_job(job_id)
+
+    async def list_bake_offs(self, limit: int = 20) -> list[dict[str, Any]]:
+        """Return recent bake-off jobs, newest first."""
+        return await self.bake_off_store.list_jobs(limit)
 
     async def start_sweep(self, config: SweepConfig) -> int:
         """Start a walk-forward parameter sweep (one at a time)."""
@@ -1200,6 +1230,17 @@ class Worker:
             # journaled, so the live bot_id signal namespace does not apply.
             rules = dict(runtime.rules)
             return ScenarioEvaluator(lambda: build_rules_strategy(rules))
+        contestant = contestant_for(strategy_id)
+        if contestant is not None and contestant.family is not None:
+            # A bake-off energy preset: a single family at fixed parameters,
+            # graded bare like any solo-family scenario strategy. The
+            # production baseline (no family) falls through to the lineup.
+            candidate = SweepCandidate(
+                name=contestant.bot_id,
+                family=contestant.family,
+                params=dict(contestant.params),
+            )
+            return ScenarioEvaluator(lambda: build_candidate_strategy(candidate))
         spec = spec_for(strategy_id)
         return ScenarioEvaluator(
             lambda: build_scenario_strategy(

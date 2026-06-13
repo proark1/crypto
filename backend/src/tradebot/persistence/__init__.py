@@ -6,6 +6,7 @@ efficiency rules. The stores are deliberately thin — accounting and trading
 logic stay in their own modules; this layer only persists and retrieves.
 """
 
+from tradebot.persistence.bakeoff_store import BakeOffStore
 from tradebot.persistence.database import Database
 from tradebot.persistence.evaluation_store import EvaluationStore
 from tradebot.persistence.stores import (
@@ -26,6 +27,7 @@ from tradebot.persistence.stores import (
 
 __all__ = [
     "CHART_BUCKET_UNITS",
+    "BakeOffStore",
     "BotCapitalStore",
     "CandleStore",
     "ChartCandle",

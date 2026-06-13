@@ -23,11 +23,13 @@ from tradebot.core.models import (
     Side,
 )
 from tradebot.engine import TradingEngine
+from tradebot.evaluation.bakeoff import BakeOffConfig
 from tradebot.evaluation.runner import EvaluationRunConfig
 from tradebot.evaluation.sweep import SweepConfig
 from tradebot.execution import FillSimulatorConfig, SimulatedExecutionAdapter
 from tradebot.news import NewsFlags
 from tradebot.persistence import (
+    BakeOffStore,
     CandleStore,
     Database,
     DecisionStore,
@@ -97,6 +99,7 @@ class StubBot:
         self.regime_disabled_reason: str | None = None
         self.feed_healths: dict[str, _StubFeedHealth] = {}
         self.evaluation_store = EvaluationStore(database)
+        self.bake_off_store = BakeOffStore(database)
         self.strategy_settings_store = StrategySettingsStore(database)
         self.metrics = MetricsCollector()
         self.news_flags = NewsFlags()
@@ -264,6 +267,23 @@ class StubBot:
                 await self.evaluation_store.set_comparison_group(run_id, run_id)
             run_ids.append(run_id)
         return run_ids
+
+    async def start_bake_off(self, config: BakeOffConfig) -> int:
+        config.validated()
+        if self._evaluation_running:
+            raise RuntimeError("bake-off already in progress")
+        return await self.bake_off_store.create_job(
+            config=config.model_dump(mode="json"),
+            contestants=["production", "trend_calm"],
+            cells_total=len(config.timeframes) * len(config.history_windows),
+            created_at=BASE_TIME,
+        )
+
+    async def bake_off(self, job_id: int) -> dict[str, object] | None:
+        return await self.bake_off_store.fetch_job(job_id)
+
+    async def list_bake_offs(self, limit: int = 20) -> list[dict[str, object]]:
+        return await self.bake_off_store.list_jobs(limit)
 
     async def revert_strategy_version(self, version_id: int) -> int:
         row = await self.strategy_settings_store.fetch(version_id)
@@ -2006,6 +2026,58 @@ class TestComparisonEndpoints:
     async def test_no_comparisons_is_an_empty_list(self, database: Database) -> None:
         async with make_client(StubBot(database)) as client:
             response = await client.get("/evaluations/comparisons")
+        assert response.status_code == 200
+        assert response.json() == []
+
+
+class TestBakeOffEndpoints:
+    async def test_start_creates_a_job_and_it_is_fetchable(self, database: Database) -> None:
+        bot = StubBot(database)
+        async with make_client(bot) as client:
+            started = await client.post(
+                "/research/bakeoff",
+                json={"symbols": ["BTC/USDT"], "timeframes": ["1h", "4h"], "history_windows": [50]},
+            )
+            assert started.status_code == 200
+            body = started.json()
+            assert body["cells_total"] == 2  # 2 timeframes x 1 window
+            job_id = body["job_id"]
+
+            fetched = await client.get(f"/research/bakeoff/{job_id}")
+            listed = await client.get("/research/bakeoffs")
+
+        assert fetched.status_code == 200
+        job = fetched.json()
+        assert job["id"] == job_id
+        assert job["cells_total"] == 2
+        assert job["status"] == "pending"
+        assert listed.status_code == 200
+        assert [row["id"] for row in listed.json()] == [job_id]
+
+    async def test_a_bad_timeframe_is_rejected(self, database: Database) -> None:
+        async with make_client(StubBot(database)) as client:
+            response = await client.post(
+                "/research/bakeoff", json={"symbols": ["BTC/USDT"], "timeframes": ["7s"]}
+            )
+        assert response.status_code == 400
+
+    async def test_an_invalid_scenario_count_is_a_clean_400(self, database: Database) -> None:
+        # scenario_count parses as an int but fails BakeOffConfig's gt=0
+        # constraint: a 400, never a leaked 500 from the ValidationError.
+        async with make_client(StubBot(database)) as client:
+            response = await client.post(
+                "/research/bakeoff", json={"symbols": ["BTC/USDT"], "scenario_count": 0}
+            )
+        assert response.status_code == 400
+
+    async def test_unknown_job_is_404(self, database: Database) -> None:
+        async with make_client(StubBot(database)) as client:
+            response = await client.get("/research/bakeoff/9999")
+        assert response.status_code == 404
+
+    async def test_no_bake_offs_is_an_empty_list(self, database: Database) -> None:
+        async with make_client(StubBot(database)) as client:
+            response = await client.get("/research/bakeoffs")
         assert response.status_code == 200
         assert response.json() == []
 
