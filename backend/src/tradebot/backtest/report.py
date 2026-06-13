@@ -28,6 +28,12 @@ class BacktestReport(BaseModel):
     final_equity_quote: Decimal
     total_return_fraction: Decimal
     max_drawdown_fraction: Decimal
+    calmar_ratio: float | None
+    """Total return over max drawdown — return earned per unit of worst
+    peak-to-trough pain. The canonical risk-adjusted figure on an equity
+    curve (no annualization: this is the raw ratio over the run). ``None``
+    when the curve never drew down, so the ratio would divide by zero."""
+
     total_fees_quote: Decimal
     round_trips: int
     winning_round_trips: int
@@ -64,12 +70,14 @@ def build_report(
     losses = [pnl for pnl in round_trip_pnls if pnl <= 0]
     gross_profit = sum(wins, Decimal(0))
     gross_loss = -sum(losses, Decimal(0))
+    max_drawdown = _max_drawdown(result.equity_curve)
 
     return BacktestReport(
         initial_balance_quote=initial_balance_quote,
         final_equity_quote=result.final_equity_quote,
         total_return_fraction=total_return,
-        max_drawdown_fraction=_max_drawdown(result.equity_curve),
+        max_drawdown_fraction=max_drawdown,
+        calmar_ratio=float(total_return / max_drawdown) if max_drawdown > 0 else None,
         total_fees_quote=sum((fill.fee_quote for fill in result.fills), Decimal(0)),
         round_trips=len(round_trip_pnls),
         winning_round_trips=len(wins),

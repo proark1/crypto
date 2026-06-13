@@ -11,6 +11,7 @@ float money math.
 
 from __future__ import annotations
 
+import math
 import statistics
 from decimal import ROUND_HALF_EVEN, Decimal
 from typing import Any
@@ -20,6 +21,18 @@ from tradebot.evaluation.models import Scenario, ScenarioClass, ScenarioResult, 
 
 _DISPLAY_RESOLUTION = Decimal("0.0001")
 _MONEY_RESOLUTION = Decimal("0.01")
+
+TAIL_LOSS_FRACTION = Decimal("0.1")
+"""The worst slice of trades the tail-loss metric averages — the expected
+shortfall in R over the worst decile (always at least one trade).
+
+Like the downside deviation, this is a **distributional** risk measure: it
+reads off the multiset of per-trade R, so it is well-defined on the
+independently sampled scenarios this report grades. Path metrics such as max
+drawdown or time-under-water are deliberately *not* added here — they need a
+trade ordering, and the money result (§12.3) is explicitly order-independent.
+Those live on the equity-curve reports (``backtest/report.py``,
+``backtest/account_report.py``), where an ordering genuinely exists."""
 
 EVALUATION_START_BALANCE_QUOTE = Decimal("10000")
 """Illustrative starting equity (quote currency) for the run's money result.
@@ -111,9 +124,11 @@ def r_metrics(r_values: list[Decimal]) -> dict[str, Any]:
     losses = [r for r in r_values if r < 0]
     gross_win = sum(wins, Decimal(0))
     gross_loss = -sum(losses, Decimal(0))
+    expectancy = _mean(r_values)
+    downside = _downside_deviation(r_values)
     metrics: dict[str, Any] = {
         "trade_count": len(r_values),
-        "expectancy_r": _display(_mean(r_values)),
+        "expectancy_r": _display(expectancy),
         "median_r": _display(statistics.median(r_values)),
         "win_rate": _display(Decimal(len(wins)) / Decimal(len(r_values))),
         "average_win_r": _display(_mean(wins)) if wins else None,
@@ -123,8 +138,45 @@ def r_metrics(r_values: list[Decimal]) -> dict[str, Any]:
             if gross_loss > 0
             else None
         ),
+        # Risk-adjusted and tail metrics, distributional (order-free): a bot
+        # earning the same expectancy with a shallower downside / tail is the
+        # better bet, and a +2R-per-win bot is not "good" if its worst trades
+        # are ruinous. None where undefined (no losing trades ⇒ no downside).
+        "downside_deviation_r": _display(downside),
+        "sortino_r": _display(expectancy / downside) if downside > 0 else None,
+        "tail_loss_r": _display(_tail_loss(r_values)),
+        "worst_r": _display(min(r_values)),
     }
     return metrics
+
+
+def _downside_deviation(r_values: list[Decimal]) -> Decimal:
+    """Root-mean-square of the losing R's (downside semi-deviation, target 0).
+
+    The denominator of the per-trade Sortino: it penalizes losing trades
+    only, dividing the sum of squared losses by the *total* trade count (the
+    conventional target semivariance), so upside volatility never counts as
+    risk. A symmetric function of the R multiset — no ordering needed.
+    """
+    squared_losses = [r * r for r in r_values if r < 0]
+    if not squared_losses:
+        return Decimal(0)
+    mean_square = sum(squared_losses, Decimal(0)) / Decimal(len(r_values))
+    return mean_square.sqrt().quantize(ACCOUNTING_RESOLUTION, rounding=ROUND_HALF_EVEN)
+
+
+def _tail_loss(r_values: list[Decimal]) -> Decimal:
+    """Mean R of the worst ``TAIL_LOSS_FRACTION`` of trades (expected shortfall).
+
+    At least one trade, so even a thin sample reports its single worst R. Like
+    the downside deviation, the worst-k R's are a function of the multiset,
+    not the order — so this is honest on independently sampled scenarios.
+    """
+    count = max(1, math.ceil(TAIL_LOSS_FRACTION * len(r_values)))
+    worst = sorted(r_values)[:count]
+    return (sum(worst, Decimal(0)) / Decimal(len(worst))).quantize(
+        ACCOUNTING_RESOLUTION, rounding=ROUND_HALF_EVEN
+    )
 
 
 def _hold_metrics(records: list[tuple[Scenario, ScenarioResult]]) -> dict[str, Any]:

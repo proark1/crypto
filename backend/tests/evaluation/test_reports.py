@@ -22,6 +22,7 @@ from tradebot.evaluation.reports import (
     EVALUATION_START_BALANCE_QUOTE,
     build_summary,
     money_result,
+    r_metrics,
 )
 
 BASE_TIME = datetime(2026, 1, 2, tzinfo=UTC)
@@ -97,3 +98,49 @@ class TestBuildSummary:
         summary = build_summary([_record(None, 1)])
         assert summary["trade_count"] == 0
         assert summary["final_balance_quote"] == "10000.00"
+
+
+class TestRiskMetrics:
+    """The distributional risk metrics are order-free functions of the R set."""
+
+    def test_downside_sortino_tail_and_worst(self) -> None:
+        # 18 wins of +1R, then a -5R and a -4R. Hand-checkable:
+        #   expectancy = (18 - 9)/20 = 0.45
+        #   downside   = sqrt((25 + 16)/20) = sqrt(2.05) ≈ 1.4318
+        #   tail (10%) = mean of the worst ceil(0.1*20)=2 trades = -4.5
+        r_values = [Decimal("1")] * 18 + [Decimal("-5"), Decimal("-4")]
+        metrics = r_metrics(r_values)
+
+        assert metrics["expectancy_r"] == "0.4500"
+        assert metrics["downside_deviation_r"] == "1.4318"
+        assert metrics["tail_loss_r"] == "-4.5000"
+        assert metrics["worst_r"] == "-5.0000"
+        # Sortino = expectancy / downside ≈ 0.45 / 1.4318; band-checked so the
+        # assertion does not pin a brittle last digit of the rounding.
+        assert metrics["sortino_r"] is not None
+        assert 0.31 < float(metrics["sortino_r"]) < 0.32
+
+    def test_no_losing_trades_has_zero_downside_and_no_sortino(self) -> None:
+        metrics = r_metrics([Decimal("1"), Decimal("2"), Decimal("3")])
+        assert metrics["downside_deviation_r"] == "0.0000"
+        assert metrics["sortino_r"] is None  # no downside to divide by
+        # The worst decile of three trades is one trade — the smallest win.
+        assert metrics["tail_loss_r"] == "1.0000"
+        assert metrics["worst_r"] == "1.0000"
+
+    def test_single_losing_trade(self) -> None:
+        metrics = r_metrics([Decimal("-2")])
+        assert metrics["downside_deviation_r"] == "2.0000"
+        assert metrics["sortino_r"] == "-1.0000"  # -2 / 2
+        assert metrics["tail_loss_r"] == "-2.0000"
+        assert metrics["worst_r"] == "-2.0000"
+
+    def test_metrics_are_order_independent(self) -> None:
+        forward = r_metrics([Decimal("2"), Decimal("-1"), Decimal("0.5"), Decimal("-3")])
+        backward = r_metrics([Decimal("-3"), Decimal("0.5"), Decimal("-1"), Decimal("2")])
+        for key in ("downside_deviation_r", "sortino_r", "tail_loss_r", "worst_r"):
+            assert forward[key] == backward[key]
+
+    def test_no_trades_omits_the_risk_metrics(self) -> None:
+        # The empty-sample shape is unchanged: just a zero trade count.
+        assert r_metrics([]) == {"trade_count": 0}

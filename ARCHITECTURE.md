@@ -636,6 +636,19 @@ broken down by regime, volatility, event, timeframe, and symbol. Sharpe is
 reported but flagged as indicative only (overlapping scenarios violate its
 independence assumption).
 
+**Risk-adjusted and tail metrics** sit beside expectancy so a high mean is
+not mistaken for a safe one: a **downside-deviation of R** (RMS of the losing
+trades, target 0), a per-trade **Sortino** (`expectancy ÷ downside
+deviation` — reward per unit of loss volatility), a **tail loss** (the
+expected shortfall in R: the mean of the worst decile of trades, at least one
+trade), and the **worst single trade**. These are deliberately
+*distributional* — symmetric functions of the R multiset — because the money
+result above is order-independent, so a *path* metric (max drawdown,
+time-under-water) has no meaningful trade ordering to read here. Those path
+metrics live on the equity-curve reports instead (`backtest/report.py` and
+`backtest/account_report.py`, which carry max drawdown and **Calmar** —
+return over max drawdown — over a real ordered curve).
+
 Alongside the R-multiple metrics the report carries an **illustrative money
 result** so a non-technical reader can read outcomes in money, not only in
 R: a fixed stake (10,000 quote) replayed through the graded trades at a

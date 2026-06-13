@@ -27,6 +27,11 @@ class AccountReport(BaseModel):
     final_equity_quote: Decimal
     total_return_fraction: Decimal
     max_drawdown_fraction: Decimal
+    calmar_ratio: float | None
+    """Account return over max drawdown — return per unit of worst
+    peak-to-trough pain on the account curve. ``None`` when the account never
+    drew down (no division by zero)."""
+
     total_fees_quote: Decimal
     turnover_quote: Decimal
     """Total traded notional (both sides), the churn fees scale with."""
@@ -71,13 +76,13 @@ def build_account_report(
     for fill in result.fills:
         fills_by_symbol[fill.symbol] = fills_by_symbol.get(fill.symbol, 0) + 1
     point_count = len(exposure_fractions)
+    total_return = (result.final_equity_quote - initial_balance_quote) / initial_balance_quote
     return AccountReport(
         initial_balance_quote=initial_balance_quote,
         final_equity_quote=result.final_equity_quote,
-        total_return_fraction=(
-            (result.final_equity_quote - initial_balance_quote) / initial_balance_quote
-        ),
+        total_return_fraction=total_return,
         max_drawdown_fraction=max_drawdown,
+        calmar_ratio=float(total_return / max_drawdown) if max_drawdown > 0 else None,
         total_fees_quote=sum((fill.fee_quote for fill in result.fills), Decimal(0)),
         turnover_quote=turnover,
         turnover_ratio=turnover / initial_balance_quote,
