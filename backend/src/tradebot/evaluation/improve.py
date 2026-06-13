@@ -19,6 +19,7 @@ through the API. Going live remains a human decision in every mode.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -309,14 +310,21 @@ def build_improvement_candidates(
     return _dedupe(raw, motivating)
 
 
+def _candidate_key(candidate: SweepCandidate) -> tuple[str, str]:
+    """Return a content key collapsing clamped duplicates, family or recipe."""
+    if candidate.recipe is not None:
+        return ("recipe", json.dumps(candidate.recipe, sort_keys=True))
+    return (candidate.family, json.dumps(candidate.params, sort_keys=True))
+
+
 def _dedupe(
     raw: list[SweepCandidate], motivating: list[int]
 ) -> tuple[tuple[SweepCandidate, ...], tuple[int, ...]]:
     """Drop candidates that clamp into copies; keep order, baseline first."""
-    seen: set[tuple[str, tuple[tuple[str, Any], ...]]] = set()
+    seen: set[tuple[str, str]] = set()
     unique: list[SweepCandidate] = []
     for candidate in raw:
-        key = (candidate.family, tuple(sorted(candidate.params.items())))
+        key = _candidate_key(candidate)
         if key in seen:
             continue
         seen.add(key)
@@ -706,9 +714,10 @@ def build_candidates_for(
     ``production`` — and the two families it routes, when their solo
     accounts are evaluated directly — uses the mixed production grid, so
     the families are tuned as one budget exactly as they trade. The
-    research families get their own grids. ``ValueError`` for targets with
-    no grid (custom bots: auto-tuning a user's recipe needs their opt-in,
-    a later change) — callers skip loudly rather than sweep wrong knobs.
+    research families get their own grids. ``ValueError`` for anything
+    else — a custom bot is a recipe, graded by ``build_recipe_candidates``
+    instead (callers route by whether the target has a recipe), so reaching
+    here with a custom-bot id is a wrong call, not a silent wrong sweep.
     """
     if target in ("production", "trend_following", "mean_reversion"):
         return build_improvement_candidates(active, findings)
@@ -719,6 +728,62 @@ def build_candidates_for(
     if target == "squeeze":
         return _squeeze_candidates(active, findings)
     raise ValueError(f"no improvement grid for {target!r}; known: {IMPROVEMENT_TARGETS}")
+
+
+def _single_family_grid(
+    family: str,
+    params: Mapping[str, Any],
+    findings: Sequence[tuple[int, str]],
+) -> tuple[tuple[SweepCandidate, ...], tuple[int, ...]]:
+    """One family's single-knob candidates (its baseline first, then variants).
+
+    The research families already build single-family grids. The production
+    builder mixes trend following and mean reversion, so for those two we
+    keep only the requested family's candidates — the recipe lifts each
+    into recipe space below.
+    """
+    active = {family: dict(params)}
+    if family == "breakout":
+        return _breakout_candidates(active, findings)
+    if family == "momentum":
+        return _momentum_candidates(active, findings)
+    if family == "squeeze":
+        return _squeeze_candidates(active, findings)
+    candidates, motivating = build_improvement_candidates(active, findings)
+    return tuple(c for c in candidates if c.family == family), motivating
+
+
+def build_recipe_candidates(
+    recipe: Mapping[str, Any],
+    findings: Sequence[tuple[int, str]] = (),
+) -> tuple[tuple[SweepCandidate, ...], tuple[int, ...]]:
+    """Derive a custom bot's challenger grid: vary one knob at a time, in place.
+
+    A custom bot trades a *recipe* — one or more families combined by its
+    entry mode — so a challenger must be graded as that whole composite,
+    not a family in isolation. Each variant changes one knob of one family
+    and leaves the rest of the recipe untouched, reusing every family's own
+    single-knob grid and its finding→knob mappings (lifted into recipe
+    space). ``candidates[0]`` is the active recipe, the baseline the sweep
+    contract requires.
+
+    Motivating ids are the union across the recipe's families. For a recipe
+    that omits one of the routed families, a finding mapped only to the
+    absent family's knob can still appear here though it added no candidate
+    — a harmless lineage superset, never a missing one.
+    """
+    baseline = SweepCandidate(name="active_recipe", recipe=dict(recipe))
+    raw: list[SweepCandidate] = [baseline]
+    motivating: list[int] = []
+    for family, params in recipe["families"].items():
+        family_candidates, family_motivating = _single_family_grid(family, params, findings)
+        motivating += family_motivating
+        for candidate in family_candidates:
+            if candidate.name.startswith("active"):
+                continue  # the family's own baseline == the recipe's current params
+            variant = {**recipe, "families": {**recipe["families"], family: candidate.params}}
+            raw.append(SweepCandidate(name=f"{family}:{candidate.name}", recipe=variant))
+    return _dedupe(raw, motivating)
 
 
 class AutoImprover:

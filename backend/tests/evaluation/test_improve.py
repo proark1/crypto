@@ -510,6 +510,54 @@ class TestPerFamilyGrids:
             build_candidates_for("custom-my-recipe", {})
 
 
+class TestRecipeCandidates:
+    def test_every_variant_is_the_whole_recipe_baseline_first(self) -> None:
+        from tradebot.evaluation.improve import build_recipe_candidates
+
+        recipe: dict[str, Any] = {
+            "entry_mode": "any",
+            "families": {"trend_following": {}, "breakout": {}},
+        }
+        candidates, _ = build_recipe_candidates(recipe)
+
+        assert candidates[0].name == "active_recipe"
+        assert candidates[0].recipe == recipe
+        assert all(c.recipe is not None for c in candidates)
+        # Variants vary one family in place; the other family stays at baseline.
+        trend_variant = next(c for c in candidates if c.name.startswith("trend_following:"))
+        assert trend_variant.recipe is not None
+        assert trend_variant.recipe["families"]["breakout"] == recipe["families"]["breakout"]
+        assert trend_variant.recipe["families"]["trend_following"] != {}
+        # Both families contribute challengers, and every candidate builds.
+        prefixes = {c.name.split(":")[0] for c in candidates if ":" in c.name}
+        assert prefixes == {"trend_following", "breakout"}
+        for candidate in candidates:
+            build_candidate_strategy(candidate)
+
+    def test_findings_lift_a_family_knob_into_recipe_space(self) -> None:
+        from tradebot.evaluation.improve import build_recipe_candidates
+
+        recipe: dict[str, Any] = {"entry_mode": "any", "families": {"breakout": {}}}
+        candidates, motivating = build_recipe_candidates(
+            recipe, [(9, "entries lose money when event is breakout_fake")]
+        )
+
+        widened = next(c for c in candidates if c.name == "breakout:min_width_filter")
+        assert widened.recipe is not None
+        assert widened.recipe["families"]["breakout"]["min_channel_width_atr"] == 0.5
+        assert 9 in motivating
+
+    def test_a_single_family_recipe_preserves_its_entry_mode(self) -> None:
+        from tradebot.evaluation.improve import build_recipe_candidates
+
+        recipe: dict[str, Any] = {
+            "entry_mode": "all",
+            "families": {"momentum": {}, "trend_following": {}},
+        }
+        candidates, _ = build_recipe_candidates(recipe)
+        assert all(c.recipe is not None and c.recipe["entry_mode"] == "all" for c in candidates)
+
+
 class TestSelectTargetingFindings:
     def test_accepted_findings_outrank_proposed(self) -> None:
         findings = [

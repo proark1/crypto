@@ -157,6 +157,46 @@ class TestBuildCandidateStrategy:
         assert reversion.name == "mean_reversion"
 
 
+class TestRecipeCandidates:
+    def test_a_single_family_recipe_builds_that_family_bare(self) -> None:
+        candidate = SweepCandidate(
+            name="active_recipe",
+            recipe={"entry_mode": "any", "families": {"breakout": {}}},
+        )
+        strategy = build_candidate_strategy(candidate)
+        assert strategy.name == "breakout"  # not wrapped in a composite
+
+    def test_a_multi_family_recipe_builds_a_composite(self) -> None:
+        candidate = SweepCandidate(
+            name="active_recipe",
+            recipe={
+                "entry_mode": "all",
+                "families": {"trend_following": {}, "momentum": {}},
+            },
+        )
+        strategy = build_candidate_strategy(candidate)
+        assert strategy.name.startswith("composite[all:")
+
+    def test_a_recipe_candidate_must_not_also_carry_family_params(self) -> None:
+        with pytest.raises(ValueError, match="must not also carry"):
+            SweepCandidate(
+                name="bad",
+                params={"fast_ema_period": 10},
+                recipe={"entry_mode": "any", "families": {"trend_following": {}}},
+            )
+
+    def test_a_recipe_with_a_typoed_parameter_is_rejected(self) -> None:
+        with pytest.raises(ValueError, match="unknown breakout parameters"):
+            SweepCandidate(
+                name="bad",
+                recipe={"entry_mode": "any", "families": {"breakout": {"channel_perod": 20}}},
+            )
+
+    def test_an_empty_recipe_is_rejected(self) -> None:
+        with pytest.raises(ValueError, match="at least one family"):
+            SweepCandidate(name="bad", recipe={"entry_mode": "any", "families": {}})
+
+
 class TestSweepConfig:
     def test_duplicate_candidate_names_are_rejected(self) -> None:
         candidate = SweepCandidate(name="same", params={})
