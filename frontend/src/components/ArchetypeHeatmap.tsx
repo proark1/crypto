@@ -34,7 +34,7 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 
 function asNumber(value: unknown): number | null {
   if (typeof value === "number") {
-    return value;
+    return Number.isNaN(value) ? null : value;
   }
   if (typeof value === "string" && value.trim() !== "") {
     const parsed = Number(value);
@@ -65,6 +65,9 @@ function heatClass(value: number | null): string {
   if (value > 0) {
     return "bg-emerald-500/12 text-emerald-800 dark:text-emerald-200";
   }
+  if (value === 0) {
+    return "text-zinc-500 dark:text-zinc-400"; // breakeven is neutral, not a loss
+  }
   if (value <= -0.5) {
     return "bg-red-500/30 text-red-900 dark:text-red-100";
   }
@@ -82,13 +85,15 @@ export function ArchetypeHeatmap(props: { group: ComparisonGroupResponse }) {
     return null;
   }
   // The winner per column (best expectancy among completed bots) gets a ring,
-  // so "best bot in chop" reads at a glance.
+  // so "best bot in chop" reads at a glance. Needs at least two bots with data
+  // to be a contest — a lone bot in a column is not a "winner" (matches the
+  // comparison table's highlight rule).
   const bestByColumn = new Map<string, number>();
   for (const archetype of columns) {
     const values = runs
       .map((run) => expectancyIn(run, archetype.key))
       .filter((value): value is number => value !== null);
-    if (values.length > 0) {
+    if (values.length > 1) {
       bestByColumn.set(archetype.key, Math.max(...values));
     }
   }

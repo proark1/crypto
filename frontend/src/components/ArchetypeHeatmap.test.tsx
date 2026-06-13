@@ -70,6 +70,48 @@ describe("ArchetypeHeatmap", () => {
     expect(screen.getByText("0.20").className).not.toContain("ring-emerald");
   });
 
+  it("styles a breakeven (0) expectancy as neutral, not a loss", () => {
+    const group: ComparisonGroupResponse = {
+      ...GROUP,
+      runs: [
+        makeRun({
+          id: 1,
+          strategy: "production",
+          summary: { by_archetype: { bull: { expectancy_r: "0.00", trade_count: 4 } } },
+        }),
+      ],
+    };
+    render(<ArchetypeHeatmap group={group} />);
+    expect(screen.getByText("0.00").className).not.toContain("bg-red");
+  });
+
+  it("does not ring a lone bot in a column (no contest to win)", () => {
+    const group: ComparisonGroupResponse = {
+      ...GROUP,
+      runs: [
+        makeRun({
+          id: 1,
+          strategy: "production",
+          summary: {
+            by_archetype: {
+              bull: { expectancy_r: "0.30" },
+              chop: { expectancy_r: "-0.20" }, // only this bot traded chop
+            },
+          },
+        }),
+        makeRun({
+          id: 2,
+          strategy: "trend_following",
+          summary: { by_archetype: { bull: { expectancy_r: "0.10" } } },
+        }),
+      ],
+    };
+    render(<ArchetypeHeatmap group={group} />);
+    // chop has a single bot — no ring; bull is contested — best is ringed.
+    expect(screen.getByText("-0.20").className).not.toContain("ring-emerald");
+    expect(screen.getByText("0.30").className).toContain("ring-emerald");
+  });
+
   it("renders nothing when no run has graded any archetype yet", () => {
     const empty: ComparisonGroupResponse = {
       ...GROUP,
