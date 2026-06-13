@@ -12,10 +12,14 @@ Coalescing exists for statistics, not convenience: one sweep whose grid
 covers every accepted finding spends one Bonferroni budget; a sweep per
 click would fragment the evidence and tighten the bar for all of them.
 
+A custom bot's run sweeps variants of its whole recipe (the composite it
+trades), not a single family; built-in runs sweep their family grid.
+
 Nothing here promotes. The sweep's verdict feeds the same paths as every
 other sweep (the §12.7 cycle promotes only *validated* winners, paper
-only); this module only decides when a targeted sweep starts and records
-the accepted finding ids as its motivation.
+only, and only for the families it rotates — custom-bot auto-promotion
+waits on the owner's opt-in); this module only decides when a targeted
+sweep starts and records the accepted finding ids as its motivation.
 """
 
 from __future__ import annotations
@@ -29,6 +33,7 @@ from typing import Any, Protocol
 from tradebot.evaluation.improve import (
     IMPROVEMENT_SCENARIO_COUNT,
     build_candidates_for,
+    build_recipe_candidates,
     select_targeting_findings,
 )
 from tradebot.evaluation.models import LearningFinding
@@ -78,16 +83,23 @@ class AcceptSweepScheduler:
         sweeps: SweepStarter,
         store: FindingsReader,
         active_params: Callable[[], Mapping[str, Mapping[str, Any]]],
+        recipe_for: Callable[[str], Mapping[str, Any] | None],
         spawn: Callable[[Coroutine[Any, Any, None]], asyncio.Task[None]],
         delay: timedelta,
         timeframe: str,
         history_days: int,
         notify: Callable[[str], Awaitable[None]] | None = None,
     ) -> None:
-        """Bind the worker's research lane and the coalescing delay."""
+        """Bind the worker's research lane and the coalescing delay.
+
+        ``recipe_for`` maps a run's graded-bot id to its custom-bot recipe,
+        or ``None`` for a built-in (family) target — so a custom bot's
+        verdicts sweep variants of its own recipe, not the production grid.
+        """
         self._sweeps = sweeps
         self._store = store
         self._active_params = active_params
+        self._recipe_for = recipe_for
         self._spawn = spawn
         self._delay = delay
         self._timeframe = timeframe
@@ -136,15 +148,25 @@ class AcceptSweepScheduler:
             return
         findings = select_targeting_findings(await self._store.fetch_findings(run_id))
         target = str(run.get("strategy") or "production")
+        recipe = self._recipe_for(target)
         try:
             # The grid must match the bot the findings were mined from: a
-            # breakout run's verdicts test breakout knobs, never the
-            # production grid's.
-            candidates, motivating = build_candidates_for(target, self._active_params(), findings)
+            # custom bot sweeps variants of its own recipe, a breakout run
+            # sweeps breakout knobs — never the production grid's.
+            if recipe is not None:
+                candidates, motivating = build_recipe_candidates(recipe, findings)
+            else:
+                candidates, motivating = build_candidates_for(
+                    target, self._active_params(), findings
+                )
         except ValueError:
             logger.info(
-                "accept-sweep for run %d skipped: no improvement grid for %r "
-                "(custom bots auto-tune only with their owner's opt-in, a later change)",
+                "accept-sweep for run %d skipped: no improvement grid for %r", run_id, target
+            )
+            return
+        if len(candidates) < 2:
+            logger.info(
+                "accept-sweep for run %d skipped: %r yielded no challenger to test",
                 run_id,
                 target,
             )

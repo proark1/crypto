@@ -44,6 +44,7 @@ from tradebot.persistence import CandleStore, EvaluationStore
 from tradebot.strategies import (
     BreakoutConfig,
     BreakoutStrategy,
+    CompositeStrategy,
     MeanReversionConfig,
     MeanReversionStrategy,
     MomentumConfig,
@@ -101,26 +102,77 @@ def validate_family_params(family: str, params: Mapping[str, Any]) -> None:
         raise ValueError(f"unknown {family} parameters: {sorted(unknown)}")
 
 
+def validate_recipe_params(recipe: Mapping[str, Any]) -> None:
+    """Raise ``ValueError`` for a malformed recipe candidate, loudly.
+
+    A recipe candidate grades a whole custom-bot recipe (one or more
+    families combined by entry mode), so the typo guard applies to every
+    family it names. This mirrors ``competition.rules.validate_rules`` but
+    lives here to keep the sweep layer free of that module's import cycle;
+    the bot-create path still normalizes through ``validate_rules``.
+    """
+    families = recipe.get("families")
+    if not isinstance(families, Mapping) or not families:
+        raise ValueError("a recipe candidate needs at least one family")
+    if recipe.get("entry_mode", "any") not in ("any", "all"):
+        raise ValueError(f"entry_mode must be 'any' or 'all', got {recipe.get('entry_mode')!r}")
+    for family, params in families.items():
+        validate_family_params(family, params)
+
+
 class SweepCandidate(BaseModel):
-    """One named parameter set (of one strategy family) competing in the sweep."""
+    """One named competitor in a sweep.
+
+    Either a single strategy family's parameter set (``family`` + ``params``,
+    the default) or — when ``recipe`` is set — a whole custom-bot recipe
+    graded as the composite the bot actually trades.
+    """
 
     model_config = ConfigDict(frozen=True)
 
     name: str
-    params: dict[str, Any]
+    params: dict[str, Any] = Field(default_factory=dict)
     family: str = "trend_following"
+    recipe: dict[str, Any] | None = None
+    """A full custom-bot recipe (``{entry_mode, families}``) to grade as a
+    composite; when set, ``family`` and ``params`` are unused — a recipe
+    spans families, so a single family/params pair cannot describe it."""
 
     @model_validator(mode="after")
-    def _family_and_params_must_exist(self) -> SweepCandidate:
-        validate_family_params(self.family, self.params)
+    def _params_or_recipe_must_be_valid(self) -> SweepCandidate:
+        if self.recipe is not None:
+            if self.params:
+                raise ValueError("a recipe candidate must not also carry single-family params")
+            validate_recipe_params(self.recipe)
+        else:
+            validate_family_params(self.family, self.params)
         return self
 
 
 def build_candidate_strategy(candidate: SweepCandidate) -> Strategy:
     """Build one fresh strategy instance for ``candidate``."""
+    if candidate.recipe is not None:
+        return _build_recipe_strategy(candidate.recipe)
     validate_family_params(candidate.family, candidate.params)
     config_model, strategy_constructor = STRATEGY_FAMILIES[candidate.family]
     return strategy_constructor(config_model(**candidate.params))
+
+
+def _build_recipe_strategy(recipe: Mapping[str, Any]) -> Strategy:
+    """Build the composite a recipe candidate grades.
+
+    Parallels ``competition.rules.build_rules_strategy`` (single member
+    returned bare, multiple combined by entry mode); kept here so the sweep
+    layer needs no import from that module.
+    """
+    validate_recipe_params(recipe)
+    members: list[Strategy] = []
+    for family, params in recipe["families"].items():
+        config_model, strategy_constructor = STRATEGY_FAMILIES[family]
+        members.append(strategy_constructor(config_model(**params)))
+    if len(members) == 1:
+        return members[0]
+    return CompositeStrategy(members, require_all_entries=recipe.get("entry_mode") == "all")
 
 
 class SweepConfig(BaseModel):
@@ -387,6 +439,7 @@ def _score_block(score: CandidateScore, seed: int) -> dict[str, Any]:
     return {
         "params": score.candidate.params,
         "family": score.candidate.family,
+        "recipe": score.candidate.recipe,
         "scenario_count": score.scenario_count,
         **r_metrics(list(score.r_values)),
         "expectancy_ci_r": (

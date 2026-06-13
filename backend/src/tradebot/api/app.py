@@ -30,7 +30,11 @@ from tradebot.core.logging import log_event
 from tradebot.core.metrics import MetricsCollector, format_metric
 from tradebot.core.models import Candle, CandleInterval, utc_now
 from tradebot.engine import TradingEngine
-from tradebot.evaluation.improve import build_candidates_for, select_targeting_findings
+from tradebot.evaluation.improve import (
+    build_candidates_for,
+    build_recipe_candidates,
+    select_targeting_findings,
+)
 from tradebot.evaluation.models import LearningFinding, RunStatus
 from tradebot.evaluation.replay import load_replay
 from tradebot.evaluation.runner import EvaluationRunConfig
@@ -211,6 +215,10 @@ class BotState(Protocol):
 
     def evaluation_strategies(self) -> list[dict[str, str]]:
         """Every bot a run can grade: id, label, description, kind."""
+        ...
+
+    def recipe_for(self, bot_id: str) -> dict[str, Any] | None:
+        """Return a custom bot's recipe, or ``None`` for a built-in bot."""
         ...
 
     def improvement_status(self) -> dict[str, Any]:
@@ -1980,10 +1988,10 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
         Same curation as the automated cycle (§12.7): accepted findings
         outrank proposed ones, rejected findings never steer anything —
         and the grid matches the bot that run graded, so the button tests
-        the knobs the findings on screen point at. When the newest run
-        graded a bot with no improvement grid (a custom recipe), the
-        button falls back to challenging the production configuration,
-        untargeted, rather than sweeping wrong knobs.
+        the knobs the findings on screen point at. A custom-bot run sweeps
+        variants of its whole recipe; a built-in run sweeps its family
+        grid. When the newest run graded a bot whose grid cannot be built,
+        the button falls back to challenging the production configuration.
         """
         for run in await state.evaluation_store.list_runs(limit=10):
             if run.get("status") != RunStatus.COMPLETED.value:
@@ -1991,12 +1999,14 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
             findings = select_targeting_findings(
                 await state.evaluation_store.fetch_findings(run["id"])
             )
+            target = str(run.get("strategy") or "production")
+            recipe = state.recipe_for(target)
             try:
-                return build_candidates_for(
-                    str(run.get("strategy") or "production"), state.strategy_params, findings
-                )
+                if recipe is not None:
+                    return build_recipe_candidates(recipe, findings)
+                return build_candidates_for(target, state.strategy_params, findings)
             except ValueError:
-                break  # custom recipe: no grid for it (yet) — fall back
+                break  # no grid for it — fall back to the production grid
         return build_candidates_for("production", state.strategy_params, [])
 
     @protected.post("/sweeps")

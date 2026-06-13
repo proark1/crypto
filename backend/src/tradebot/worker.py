@@ -315,6 +315,7 @@ class Worker:
                 sweeps=self.sweeps,
                 store=self.evaluation_store,
                 active_params=lambda: self.strategy_params,
+                recipe_for=self.recipe_for,
                 spawn=self._spawn_background,
                 delay=timedelta(seconds=config.accept_sweep_delay_seconds),
                 timeframe=config.auto_improve_timeframe,
@@ -1166,6 +1167,19 @@ class Worker:
         if runtime.rules is not None:
             return ScopedSignalStrategy(build_rules_strategy(runtime.rules), runtime.spec.bot_id)
         return build_challenger_strategy(runtime.spec, self.strategy_params)
+
+    def recipe_for(self, bot_id: str) -> dict[str, Any] | None:
+        """Return ``bot_id``'s custom-bot recipe, or ``None`` for a built-in.
+
+        The accept-triggered and manual sweeps use this to decide whether a
+        run's verdicts sweep variants of a whole recipe (a custom bot) or a
+        family grid (a built-in). A snapshot copy, because a sweep grades
+        the recipe as it was when the verdict was given.
+        """
+        runtime = self.challengers.get(bot_id)
+        if runtime is not None and runtime.rules is not None:
+            return dict(runtime.rules)
+        return None
 
     def _scenario_evaluator_for(self, strategy_id: str) -> ScenarioEvaluator:
         """One evaluator grading the named bot on fresh instances.

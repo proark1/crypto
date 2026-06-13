@@ -299,6 +299,10 @@ class StubBot:
             )
         return rows
 
+    def recipe_for(self, bot_id: str) -> dict[str, Any] | None:
+        bot = self.custom_bots.get(bot_id)
+        return dict(bot["rules"]) if bot is not None else None
+
     def note_finding_acceptance(self, run_id: int) -> None:
         # The worker arms a coalescing sweep timer here; the stub records
         # the trigger so accept-path tests can assert it fired (and the run
