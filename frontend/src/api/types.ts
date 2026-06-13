@@ -339,6 +339,56 @@ export interface ComparisonGroupResponse {
   runs: EvaluationRunResponse[];
 }
 
+export interface BakeOffStartResponse {
+  job_id: number;
+  cells_total: number;
+  detail: string;
+}
+
+/** One contestant's standing across the grid, money kept as a string. */
+export interface BakeOffRankingEntry {
+  bot_id: string;
+  /** Mean return fraction over the cells this bot could trade (e.g. "0.034"). */
+  average_return_fraction: string;
+  cells_scored: number;
+  total_trades: number;
+}
+
+/** One grid cell's outcome: every contestant's result, or insufficient data. */
+export interface BakeOffCellRecord {
+  timeframe: string;
+  history_days: number;
+  comparison_group: number | null;
+  /** "completed" or "insufficient_data" (too little history to trade). */
+  status: string;
+  /** bot_id -> that contestant's result in this cell; empty when infeasible. */
+  results: Record<
+    string,
+    { return_fraction: string; net_pnl_quote: string; trade_count: number }
+  >;
+}
+
+/** The bake-off's accumulated leaderboard and per-cell detail (null until
+ * the first cell finishes). */
+export interface BakeOffResults {
+  ranking: BakeOffRankingEntry[];
+  cells: BakeOffCellRecord[];
+}
+
+/** One bake-off job: the grid run, its progress, and the (live or final)
+ * ranking. Mirrors the backend's ``bake_off_jobs`` row. */
+export interface BakeOffJobResponse {
+  id: number;
+  created_at: string;
+  updated_at: string;
+  status: string;
+  config: Record<string, unknown>;
+  contestants: string[];
+  cells_done: number;
+  cells_total: number;
+  results: BakeOffResults | null;
+}
+
 /** How a multi-rule custom bot combines its rules' buy signals. */
 export type EntryMode = "any" | "all";
 

@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  fetchBakeOffs,
   fetchComparisons,
   fetchEvaluations,
   fetchEvaluationStrategies,
@@ -23,6 +24,7 @@ vi.mock("../api/client", () => {
     fetchSweeps: rejecting(),
     fetchStrategyVersions: rejecting(),
     fetchComparisons: rejecting(),
+    fetchBakeOffs: rejecting(),
     fetchEvaluationStrategies: rejecting(),
     fetchEvaluationSuggestions: rejecting(),
     fetchImprovementStatus: rejecting(),
@@ -131,6 +133,7 @@ describe("ResearchScreen", () => {
     vi.mocked(fetchSweeps).mockResolvedValue([]);
     vi.mocked(fetchStrategyVersions).mockResolvedValue([]);
     vi.mocked(fetchComparisons).mockResolvedValue([]);
+    vi.mocked(fetchBakeOffs).mockResolvedValue([]);
     vi.mocked(fetchEvaluationSuggestions).mockResolvedValue([]);
     vi.mocked(fetchImprovementStatus).mockResolvedValue({
       enabled: false,
