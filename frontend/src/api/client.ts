@@ -29,6 +29,7 @@ import type {
   ScenarioReplayResponse,
   ScenarioSummaryResponse,
   DivergenceReportResponse,
+  RoutingCandidacyResponse,
   StatusResponse,
   StrategyVersionResponse,
   SuggestedEvaluationResponse,
@@ -390,4 +391,11 @@ export function cancelSweep(sweepId: number): Promise<CommandResponse> {
  * diffs), sweep verdicts, and settings promotions as one feed. */
 export function fetchResearchTimeline(limit = 50): Promise<TimelineEventResponse[]> {
   return request<TimelineEventResponse[]>(`/research/timeline?limit=${String(limit)}`, "GET");
+}
+
+/** The §13.7 routing-evidence gate per research family — flag, never flip.
+ * Whether each family has earned a validated edge in a regime, beaten the
+ * incumbent across batches, and soaked positively in live paper for 8 weeks. */
+export function fetchRoutingCandidacy(): Promise<RoutingCandidacyResponse[]> {
+  return request<RoutingCandidacyResponse[]>("/research/candidacy", "GET");
 }

@@ -8,6 +8,7 @@ import {
   fetchEvaluationStrategies,
   fetchEvaluationSuggestions,
   fetchImprovementStatus,
+  fetchRoutingCandidacy,
   fetchStrategyVersions,
   fetchSweeps,
   startEvaluation,
@@ -24,6 +25,7 @@ vi.mock("../api/client", () => {
     fetchSweeps: rejecting(),
     fetchStrategyVersions: rejecting(),
     fetchComparisons: rejecting(),
+    fetchRoutingCandidacy: rejecting(),
     fetchBakeOffs: rejecting(),
     fetchEvaluationStrategies: rejecting(),
     fetchEvaluationSuggestions: rejecting(),
@@ -133,6 +135,7 @@ describe("ResearchScreen", () => {
     vi.mocked(fetchSweeps).mockResolvedValue([]);
     vi.mocked(fetchStrategyVersions).mockResolvedValue([]);
     vi.mocked(fetchComparisons).mockResolvedValue([]);
+    vi.mocked(fetchRoutingCandidacy).mockResolvedValue([]);
     vi.mocked(fetchBakeOffs).mockResolvedValue([]);
     vi.mocked(fetchEvaluationSuggestions).mockResolvedValue([]);
     vi.mocked(fetchImprovementStatus).mockResolvedValue({

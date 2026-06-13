@@ -1038,6 +1038,19 @@ The decision is recorded by amending §5.2 and §13.1 in the same PR that
 adds the route, with the evidence linked — the same lineage discipline
 as every promotion (§12.5).
 
+The three conditions are **auto-evaluated and surfaced** so the gate is a
+read, not a manual audit across screens (`competition/candidacy.py`,
+`GET /research/candidacy`, the research screen's Compare tab). For each
+research family the panel grades each condition from the persisted record —
+the validated edge and its best regime bucket from the family's sweeps and
+the §12.3 `by_archetype` breakdowns; the head-to-head from the comparison
+batches (family vs. the incumbent, counting only wins ≥ two weeks apart);
+the live soak from its competition account's return, breaker state, and
+first-fill age — and reports whether all three hold. The evaluation is pure
+over the fetched record (database-free, fully tested); the surface only
+flags candidacy, exactly as this section requires — it never routes
+anything.
+
 ### 13.8 The bake-off (one button, the whole grid)
 
 The competition (§13.1–13.4) runs forward in real time; the research

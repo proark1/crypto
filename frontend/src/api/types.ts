@@ -473,3 +473,18 @@ export interface SuggestedEvaluationResponse {
   title: string;
   rationale: string;
 }
+
+/** One §13.7 routing condition: whether it is met, and a plain-words reason. */
+export interface CandidacyConditionResponse {
+  met: boolean;
+  detail: string;
+}
+
+/** One research family's §13.7 routing-evidence verdict (flag, never flip). */
+export interface RoutingCandidacyResponse {
+  family: string;
+  is_candidate: boolean;
+  validated_edge: CandidacyConditionResponse;
+  beats_incumbent: CandidacyConditionResponse;
+  live_paper: CandidacyConditionResponse;
+}

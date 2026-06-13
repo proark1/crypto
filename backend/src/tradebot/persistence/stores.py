@@ -343,6 +343,20 @@ class FillStore:
             rows = (await connection.execute(statement)).mappings().all()
         return [(int(row["id"]), Fill.model_validate(dict(row))) for row in reversed(rows)]
 
+    async def earliest_fill_time(self) -> datetime | None:
+        """Return this bot's first fill time, or ``None`` if it never traded.
+
+        The competition account's "started trading" moment — the §13.7
+        live-paper soak clock. A single indexed aggregate, cheap enough for
+        the research endpoint that reads it.
+        """
+        statement = select(func.min(fills_table.c.filled_at)).where(
+            fills_table.c.bot_id == self._bot_id
+        )
+        async with self._database.engine.connect() as connection:
+            value: datetime | None = (await connection.execute(statement)).scalar()
+        return value
+
     async def count_by_side(self) -> dict[str, int]:
         """Return this bot's fill counts per side — leaderboard activity, cheap.
 
