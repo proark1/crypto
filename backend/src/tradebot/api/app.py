@@ -25,6 +25,7 @@ from pydantic import BaseModel, ValidationError
 
 from tradebot.backtest.parity import DivergenceReport
 from tradebot.competition import ENTRY_MODES, FAMILY_DESCRIPTIONS, LINEUP
+from tradebot.competition.candidacy import Condition, RoutingCandidacy
 from tradebot.core.config import AppConfig
 from tradebot.core.logging import log_event
 from tradebot.core.metrics import MetricsCollector, format_metric
@@ -108,6 +109,10 @@ class BotState(Protocol):
 
     async def competition_snapshot(self) -> list[dict[str, Any]]:
         """Leaderboard rows (Decimal amounts), best equity first."""
+        ...
+
+    async def routing_candidacies(self) -> list[RoutingCandidacy]:
+        """§13.7 routing-evidence gate per research family (flag, never flip)."""
         ...
 
     async def start_comparison(self, config: EvaluationRunConfig) -> list[int]:
@@ -575,6 +580,38 @@ class CompetitorResponse(BaseModel):
     entry_fills: int
     exit_fills: int
     breaker_tripped_reason: str | None
+
+
+class CandidacyConditionResponse(BaseModel):
+    """One §13.7 condition: whether it is met, and a plain-words reason."""
+
+    met: bool
+    detail: str
+
+
+class RoutingCandidacyResponse(BaseModel):
+    """One research family's §13.7 routing-evidence verdict (flag, never flip)."""
+
+    family: str
+    is_candidate: bool
+    validated_edge: CandidacyConditionResponse
+    beats_incumbent: CandidacyConditionResponse
+    live_paper: CandidacyConditionResponse
+
+
+def _condition_response(condition: Condition) -> CandidacyConditionResponse:
+    return CandidacyConditionResponse(met=condition.met, detail=condition.detail)
+
+
+def _candidacy_response(candidacy: RoutingCandidacy) -> RoutingCandidacyResponse:
+    """Serialize one family's routing candidacy for the research screen."""
+    return RoutingCandidacyResponse(
+        family=candidacy.family,
+        is_candidate=candidacy.is_candidate,
+        validated_edge=_condition_response(candidacy.validated_edge),
+        beats_incumbent=_condition_response(candidacy.beats_incumbent),
+        live_paper=_condition_response(candidacy.live_paper),
+    )
 
 
 def _competitor_response(row: Mapping[str, Any]) -> CompetitorResponse:
@@ -1842,6 +1879,20 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
             )
             for batch in await state.evaluation_store.list_comparisons()
         ]
+
+    @protected.get("/research/candidacy")
+    async def get_routing_candidacy() -> list[RoutingCandidacyResponse]:
+        """Grade the §13.7 routing-evidence gate per research family.
+
+        For each research family (breakout, momentum, squeeze) reports the
+        three conditions — a validated edge in a named regime, beating the
+        incumbent across comparison batches weeks apart, and an eight-week
+        positive live-paper soak — and whether all three are met. It only
+        flags candidacy; routing a family into the production router stays a
+        human decision (§13.7).
+        """
+        candidacies = await state.routing_candidacies()
+        return [_candidacy_response(candidacy) for candidacy in candidacies]
 
     @protected.post("/research/bakeoff")
     async def start_bake_off(request: BakeOffStartRequest) -> BakeOffStartResponse:

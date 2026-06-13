@@ -12,6 +12,7 @@ import pytest
 from tradebot.api import create_app, create_health_only_app
 from tradebot.backtest.parity import DivergenceReport, compare_fills
 from tradebot.competition import LINEUP
+from tradebot.competition.candidacy import RoutingCandidacy, assemble_candidacies
 from tradebot.core.config import AppConfig, TradingMode
 from tradebot.core.metrics import MetricsCollector
 from tradebot.core.models import (
@@ -159,6 +160,18 @@ class StubBot:
         for bot_id, bot in self.custom_bots.items():
             rows.append(self._snapshot_row(bot_id, bot["label"], bot["description"], "custom"))
         return rows
+
+    async def routing_candidacies(self) -> list[RoutingCandidacy]:
+        # Empty record: three research families, none a candidate yet — enough
+        # surface for the endpoint's serialization to be exercised.
+        return assemble_candidacies(
+            sweeps=[],
+            runs=[],
+            comparisons=[],
+            competition=[],
+            started_at={},
+            now=datetime.now(UTC),
+        )
 
     async def bot_detail(self, bot_id: str) -> dict[str, Any]:
         rows = await self.competition_snapshot()
@@ -2000,6 +2013,26 @@ class TestCompetitionEndpoint:
         assert row["initial_balance_quote"] == "10000"
         assert row["return_fraction"] == "0"
         assert row["entry_fills"] == 0 and row["exit_fills"] == 0
+
+
+class TestRoutingCandidacyEndpoint:
+    async def test_grades_each_research_family_flagging_not_flipping(
+        self, database: Database
+    ) -> None:
+        bot = StubBot(database)
+        async with make_client(bot) as client:
+            response = await client.get("/research/candidacy")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert [row["family"] for row in body] == ["breakout", "momentum", "squeeze"]
+        for row in body:
+            # An empty record: no family is a candidate, and every condition
+            # reports a plain-words reason why not.
+            assert row["is_candidate"] is False
+            for key in ("validated_edge", "beats_incumbent", "live_paper"):
+                assert row[key]["met"] is False
+                assert row[key]["detail"]
 
 
 class TestComparisonEndpoints:

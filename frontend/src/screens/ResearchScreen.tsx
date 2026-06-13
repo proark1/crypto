@@ -12,6 +12,7 @@ import {
   fetchFindings,
   fetchImprovementStatus,
   fetchResearchTimeline,
+  fetchRoutingCandidacy,
   fetchScenarioReplay,
   fetchScenarios,
   fetchStrategyVersions,
@@ -31,6 +32,7 @@ import type {
   FindingResponse,
   ImprovementStatusResponse,
   ScenarioReplayResponse,
+  RoutingCandidacyResponse,
   ScenarioSummaryResponse,
   StrategyVersionResponse,
   SuggestedEvaluationResponse,
@@ -45,6 +47,7 @@ import { FindingsPanel } from "../components/FindingsPanel";
 import { ImprovementsPanel } from "../components/ImprovementsPanel";
 import { ImproverStatusCard } from "../components/ImproverStatusCard";
 import { ResearchTimeline } from "../components/ResearchTimeline";
+import { RoutingCandidacyPanel } from "../components/RoutingCandidacyPanel";
 import { ScenarioReplay } from "../components/ScenarioReplay";
 import { SweepPanel } from "../components/SweepPanel";
 import {
@@ -369,6 +372,7 @@ export function ResearchScreen() {
   const [versions, setVersions] = useState<StrategyVersionResponse[]>([]);
   const [suggestions, setSuggestions] = useState<SuggestedEvaluationResponse[]>([]);
   const [comparisons, setComparisons] = useState<ComparisonGroupResponse[]>([]);
+  const [candidacies, setCandidacies] = useState<RoutingCandidacyResponse[]>([]);
   const [comparisonPending, setComparisonPending] = useState(false);
   const [bakeOffs, setBakeOffs] = useState<BakeOffJobResponse[]>([]);
   const [bakeOffPending, setBakeOffPending] = useState(false);
@@ -388,6 +392,7 @@ export function ResearchScreen() {
       setSweeps(await fetchSweeps());
       setVersions(await fetchStrategyVersions());
       setComparisons(await fetchComparisons());
+      setCandidacies(await fetchRoutingCandidacy());
       setBakeOffs(await fetchBakeOffs());
       // Cheap and current: the selector follows custom bots being created
       // or deleted, and the improver card follows the loop's cycles.
@@ -810,11 +815,14 @@ export function ResearchScreen() {
       )}
 
       {researchTab === "compare" && (
-        <ComparisonPanel
-          groups={comparisons}
-          onStart={handleStartComparison}
-          startDisabled={comparisonPending || comparisonRunning}
-        />
+        <div className="space-y-4">
+          <ComparisonPanel
+            groups={comparisons}
+            onStart={handleStartComparison}
+            startDisabled={comparisonPending || comparisonRunning}
+          />
+          <RoutingCandidacyPanel candidacies={candidacies} />
+        </div>
       )}
 
       {researchTab === "bakeoff" && (

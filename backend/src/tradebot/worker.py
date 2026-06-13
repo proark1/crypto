@@ -41,12 +41,17 @@ from tradebot.competition import (
     spec_for,
     validate_rules,
 )
+from tradebot.competition.candidacy import (
+    RESEARCH_FAMILIES,
+    RoutingCandidacy,
+    assemble_candidacies,
+)
 from tradebot.competition.lineup import ScopedSignalStrategy
 from tradebot.core.config import AppConfig, TradingMode, validate_symbol_quote
 from tradebot.core.events import CandleClosed, EventBus
 from tradebot.core.logging import configure_logging, log_event
 from tradebot.core.metrics import MetricsCollector
-from tradebot.core.models import AutonomyMode, CandleInterval, Fill, SymbolFilters
+from tradebot.core.models import AutonomyMode, CandleInterval, Fill, SymbolFilters, utc_now
 from tradebot.engine import TradingEngine
 from tradebot.evaluation import ScenarioEvaluator
 from tradebot.evaluation.bakeoff import BakeOffConfig, BakeOffManager
@@ -734,6 +739,28 @@ class Worker:
             )
         rows.sort(key=lambda row: (row["equity_quote"] is None, -(row["equity_quote"] or 0)))
         return rows
+
+    async def routing_candidacies(self) -> list[RoutingCandidacy]:
+        """Grade each research family against the §13.7 routing-evidence gate.
+
+        Reads the accumulated record — validated sweeps, comparison batches,
+        the family's solo runs, and its competition account (return, breaker,
+        and the soak clock from its first fill) — and reports whether each
+        research family has earned routing *candidacy* yet. Flags only:
+        routing a family into the production router stays a human decision.
+        """
+        started_at = {
+            family: await FillStore(self._database, bot_id=family).earliest_fill_time()
+            for family in RESEARCH_FAMILIES
+        }
+        return assemble_candidacies(
+            sweeps=await self.evaluation_store.list_sweeps(),
+            runs=await self.evaluation_store.list_runs(),
+            comparisons=await self.evaluation_store.list_comparisons(),
+            competition=await self.competition_snapshot(),
+            started_at=started_at,
+            now=utc_now(),
+        )
 
     def _runtime_for(self, bot_id: str) -> CompetitorRuntime:
         """Return ``bot_id``'s challenger account; ``KeyError`` if unknown."""
