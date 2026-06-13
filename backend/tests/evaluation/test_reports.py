@@ -99,6 +99,14 @@ class TestBuildSummary:
         assert summary["trade_count"] == 0
         assert summary["final_balance_quote"] == "10000.00"
 
+    def test_summary_buckets_scenarios_by_named_archetype(self) -> None:
+        records = [_record(Decimal("1"), 1), _record(Decimal("-0.5"), 2)]
+        summary = build_summary(records)
+        # The _record helper builds an UP / NORMAL window — a bull archetype —
+        # so both graded trades land in the "bull" bucket.
+        assert "by_archetype" in summary
+        assert summary["by_archetype"]["bull"]["trade_count"] == 2
+
 
 class TestRiskMetrics:
     """The distributional risk metrics are order-free functions of the R set."""

@@ -7,11 +7,12 @@ scoring, and the mined learning findings — it never places orders and never
 changes trading rules; improvements always pass through a human.
 """
 
-from tradebot.evaluation.classifier import classify_window, window_volatility
+from tradebot.evaluation.classifier import archetype, classify_window, window_volatility
 from tradebot.evaluation.engine import EvaluatedDecision, ScenarioEvaluator, ScenarioSpec
 from tradebot.evaluation.generator import GeneratorConfig, generate_specs
 from tradebot.evaluation.learning import mine_findings
 from tradebot.evaluation.models import (
+    Archetype,
     EventLabel,
     LearningFinding,
     MarketConditions,
@@ -31,6 +32,7 @@ from tradebot.evaluation.models import (
 # import-cycle-free.
 
 __all__ = [
+    "Archetype",
     "EvaluatedDecision",
     "EventLabel",
     "GeneratorConfig",
@@ -46,6 +48,7 @@ __all__ = [
     "TrendLabel",
     "Verdict",
     "VolatilityLabel",
+    "archetype",
     "classify_window",
     "generate_specs",
     "mine_findings",

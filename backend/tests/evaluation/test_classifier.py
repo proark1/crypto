@@ -7,9 +7,12 @@ import pytest
 
 from tradebot.core.models import Candle, CandleInterval
 from tradebot.evaluation import (
+    Archetype,
     EventLabel,
+    MarketConditions,
     TrendLabel,
     VolatilityLabel,
+    archetype,
     classify_window,
     window_volatility,
 )
@@ -140,6 +143,69 @@ class TestEvents:
     def test_quiet_window_has_no_events(self) -> None:
         closes = [100.0 + wobble(i) for i in range(40)]
         assert classify_window(make_window(closes)).events == ()
+
+
+def conditions(
+    trend: TrendLabel,
+    volatility: VolatilityLabel = VolatilityLabel.NORMAL,
+    events: tuple[EventLabel, ...] = (),
+) -> MarketConditions:
+    return MarketConditions(trend=trend, volatility=volatility, events=events)
+
+
+class TestArchetype:
+    def test_trend_with_no_event_is_bull_or_bear(self) -> None:
+        assert archetype(conditions(TrendLabel.UP)) == Archetype.BULL
+        assert archetype(conditions(TrendLabel.DOWN)) == Archetype.BEAR
+
+    def test_a_range_splits_by_volatility(self) -> None:
+        assert archetype(conditions(TrendLabel.RANGING, VolatilityLabel.HIGH)) == Archetype.CHOP
+        assert (
+            archetype(conditions(TrendLabel.RANGING, VolatilityLabel.LOW)) == Archetype.COMPRESSION
+        )
+        assert archetype(conditions(TrendLabel.RANGING, VolatilityLabel.NORMAL)) == Archetype.RANGE
+
+    def test_a_trend_ignores_volatility(self) -> None:
+        # Bull is bull whether calm or wild — the chop/compression split is a
+        # rangebound distinction only.
+        assert archetype(conditions(TrendLabel.UP, VolatilityLabel.HIGH)) == Archetype.BULL
+
+    def test_events_outrank_trend(self) -> None:
+        assert archetype(conditions(TrendLabel.UP, events=(EventLabel.PUMP,))) == Archetype.PUMP
+        assert archetype(conditions(TrendLabel.DOWN, events=(EventLabel.DUMP,))) == Archetype.CRASH
+        breakout = conditions(TrendLabel.UP, events=(EventLabel.BREAKOUT_REAL,))
+        assert archetype(breakout) == Archetype.BREAKOUT
+        fakeout = conditions(TrendLabel.RANGING, events=(EventLabel.BREAKOUT_FAKE,))
+        assert archetype(fakeout) == Archetype.FAKEOUT
+
+    def test_priority_order_among_coexisting_events(self) -> None:
+        # Recovery is the most specific and outranks the dump it followed;
+        # a held break outranks a fake one when the tail whipsawed both ways.
+        recovery = conditions(
+            TrendLabel.DOWN, events=(EventLabel.DUMP, EventLabel.POST_CRASH_RECOVERY)
+        )
+        assert archetype(recovery) == Archetype.RECOVERY
+        both_breaks = conditions(
+            TrendLabel.RANGING, events=(EventLabel.BREAKOUT_REAL, EventLabel.BREAKOUT_FAKE)
+        )
+        assert archetype(both_breaks) == Archetype.BREAKOUT
+
+    def test_every_archetype_is_reachable(self) -> None:
+        # The mapping is total: the ten archetypes are exactly the values
+        # produced over the label space, so no heatmap column is dead.
+        produced = {
+            archetype(conditions(TrendLabel.UP)),
+            archetype(conditions(TrendLabel.DOWN)),
+            archetype(conditions(TrendLabel.RANGING, VolatilityLabel.HIGH)),
+            archetype(conditions(TrendLabel.RANGING, VolatilityLabel.LOW)),
+            archetype(conditions(TrendLabel.RANGING, VolatilityLabel.NORMAL)),
+            archetype(conditions(TrendLabel.UP, events=(EventLabel.PUMP,))),
+            archetype(conditions(TrendLabel.DOWN, events=(EventLabel.DUMP,))),
+            archetype(conditions(TrendLabel.UP, events=(EventLabel.BREAKOUT_REAL,))),
+            archetype(conditions(TrendLabel.RANGING, events=(EventLabel.BREAKOUT_FAKE,))),
+            archetype(conditions(TrendLabel.DOWN, events=(EventLabel.POST_CRASH_RECOVERY,))),
+        }
+        assert produced == set(Archetype)
 
 
 class TestGuards:

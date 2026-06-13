@@ -59,6 +59,27 @@ class EventLabel(enum.StrEnum):
     POST_CRASH_RECOVERY = "post_crash_recovery"
 
 
+class Archetype(enum.StrEnum):
+    """A single named market archetype for one window (frozen partition).
+
+    Derived from the frozen trend/volatility/event labels by the priority
+    order in ``classifier.archetype`` — every window maps to exactly one, so
+    "which bot wins in chop?" has buckets that sum to the whole. The plain
+    names are what the research heatmap reads in.
+    """
+
+    RECOVERY = "recovery"
+    CRASH = "crash"
+    PUMP = "pump"
+    BREAKOUT = "breakout"
+    FAKEOUT = "fakeout"
+    BULL = "bull"
+    BEAR = "bear"
+    CHOP = "chop"
+    COMPRESSION = "compression"
+    RANGE = "range"
+
+
 class Verdict(enum.StrEnum):
     """The graded outcome of one scenario decision (frozen R bands)."""
 

@@ -20,6 +20,7 @@ from math import sqrt
 
 from tradebot.core.models import Candle
 from tradebot.evaluation.models import (
+    Archetype,
     EventLabel,
     MarketConditions,
     TrendLabel,
@@ -80,6 +81,46 @@ def window_volatility(candles: Sequence[Candle]) -> float:
     closes = [float(candle.close_quote) for candle in candles]
     returns = [closes[i] / closes[i - 1] - 1 for i in range(1, len(closes))]
     return statistics.pstdev(returns) if len(returns) > 1 else 0.0
+
+
+def archetype(conditions: MarketConditions) -> Archetype:
+    """Map one window's frozen labels onto a single named market archetype.
+
+    A *partition*: every window gets exactly one archetype (unlike the event
+    labels, which can co-occur), so a report can ask "which bot wins in chop?"
+    and the buckets sum to the whole. The priority order below is itself
+    **frozen** — it re-buckets every archetype breakdown, so it changes only
+    with an ARCHITECTURE.md amendment, like the §12.2 constants it reads:
+
+    1. a post-crash *recovery* (the most specific event) outranks everything;
+    2. then a single-candle *crash* (dump), then a *pump*;
+    3. then a *breakout* that held, or a *fakeout* that did not;
+    4. with no salient event, *bull* / *bear* by trend direction;
+    5. and a rangebound window splits by volatility into *chop* (high),
+       *compression* (low), or a plain *range* (normal) — the distinction the
+       families live and die by (mean reversion dies in chop, the squeeze
+       coils in compression).
+    """
+    events = conditions.events
+    if EventLabel.POST_CRASH_RECOVERY in events:
+        return Archetype.RECOVERY
+    if EventLabel.DUMP in events:
+        return Archetype.CRASH
+    if EventLabel.PUMP in events:
+        return Archetype.PUMP
+    if EventLabel.BREAKOUT_REAL in events:
+        return Archetype.BREAKOUT
+    if EventLabel.BREAKOUT_FAKE in events:
+        return Archetype.FAKEOUT
+    if conditions.trend == TrendLabel.UP:
+        return Archetype.BULL
+    if conditions.trend == TrendLabel.DOWN:
+        return Archetype.BEAR
+    if conditions.volatility == VolatilityLabel.HIGH:
+        return Archetype.CHOP
+    if conditions.volatility == VolatilityLabel.LOW:
+        return Archetype.COMPRESSION
+    return Archetype.RANGE
 
 
 def _trend(net_return: float, volatility: float, sample_count: int) -> TrendLabel:
