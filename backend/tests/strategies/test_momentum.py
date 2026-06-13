@@ -15,7 +15,12 @@ BASE_TIME = datetime(2026, 1, 2, 0, 0, tzinfo=UTC)
 CONFIG = MomentumConfig(fast_ema_period=3, slow_ema_period=6, signal_ema_period=3, atr_period=3)
 
 
-def make_candle(index: int, close: float) -> Candle:
+def volume_filtered(min_volume_ratio: float) -> MomentumConfig:
+    """CONFIG plus an armed volume-confirmation filter."""
+    return CONFIG.model_copy(update={"volume_ema_period": 3, "min_volume_ratio": min_volume_ratio})
+
+
+def make_candle(index: int, close: float, volume: float = 10.0) -> Candle:
     open_time = BASE_TIME + timedelta(minutes=index)
     close_price = Decimal(str(close))
     return Candle(
@@ -27,7 +32,7 @@ def make_candle(index: int, close: float) -> Candle:
         high_quote=close_price + Decimal("0.5"),
         low_quote=close_price - Decimal("0.5"),
         close_quote=close_price,
-        volume_base=Decimal("10"),
+        volume_base=Decimal(str(volume)),
     )
 
 
@@ -84,6 +89,18 @@ class TestMomentumEntries:
         for index in range(9):
             assert strategy.on_candle(make_candle(index, 100.0 + index), None) is None
 
+    def test_low_volume_crossovers_are_filtered(self) -> None:
+        strategy = MomentumStrategy(volume_filtered(1.5))
+        warmed_up(strategy)
+        # Baseline EMA sits at 10; a crossover on 10 misses the 1.5x bar.
+        assert strategy.on_candle(make_candle(12, 110.0, volume=10.0), None) is None
+
+    def test_high_volume_crossovers_pass_the_filter(self) -> None:
+        strategy = MomentumStrategy(volume_filtered(1.5))
+        warmed_up(strategy)
+        signal = strategy.on_candle(make_candle(12, 110.0, volume=20.0), None)
+        assert signal is not None and signal.side == Side.BUY
+
 
 class TestMomentumExits:
     def test_histogram_crossing_negative_sells(self) -> None:
@@ -101,6 +118,14 @@ class TestMomentumExits:
         warmed_up(strategy)
         strategy.on_candle(make_candle(12, 110.0), None)
         assert strategy.on_candle(make_candle(13, 112.0), position_of()) is None
+
+    def test_exits_are_never_volume_filtered(self) -> None:
+        strategy = MomentumStrategy(volume_filtered(5.0))
+        warmed_up(strategy)
+        strategy.on_candle(make_candle(12, 110.0), None)
+        # Volume far below the 5x bar; the momentum-down exit still fires.
+        signal = strategy.on_candle(make_candle(13, 90.0, volume=0.1), position_of())
+        assert signal is not None and signal.side == Side.SELL
 
 
 class TestContracts:

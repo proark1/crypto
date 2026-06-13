@@ -331,8 +331,9 @@ def _breakout_candidates(
     Single-knob steps like the production grid; clamps keep channels
     meaningful (never below 5 candles). The family-specific mapping is the
     fake-breakout one: losses labeled ``breakout_fake`` toggle the
-    minimum-channel-width filter, the knob that exists precisely to skip
-    breakouts from channels too narrow to mean anything.
+    minimum-channel-width and volume-confirmation filters, the two knobs
+    that exist precisely to skip breakouts with no width or participation
+    behind them.
     """
     breakout = BreakoutConfig(**active.get("breakout", {}))
     channel, exit_channel = breakout.channel_period, breakout.exit_channel_period
@@ -383,6 +384,14 @@ def _breakout_candidates(
                 params=breakout.model_copy(
                     update={"min_channel_width_atr": width_toggle}
                 ).model_dump(),
+            )
+        )
+        volume_toggle = 1.0 if breakout.min_volume_ratio == 0 else 0.0
+        raw.append(
+            SweepCandidate(
+                name="volume_confirm" if volume_toggle else "no_volume_confirm",
+                family="breakout",
+                params=breakout.model_copy(update={"min_volume_ratio": volume_toggle}).model_dump(),
             )
         )
     wrong_hold_ids = [
@@ -440,8 +449,10 @@ def _momentum_candidates(
 
     The zero-line filter is the family's gate: chasing or losing entries
     test turning it on (fewer, stronger signals); staying flat through
-    moves tests turning it off (more entries). EMA clamps mirror the trend
-    family's (fast strictly below slow).
+    moves tests turning it off (more entries). The same losing-entry
+    patterns also toggle the volume-confirmation filter — a crossover
+    nobody traded is the other false-positive shape. EMA clamps mirror
+    the trend family's (fast strictly below slow).
     """
     momentum = MomentumConfig(**active.get("momentum", {}))
     fast, slow = momentum.fast_ema_period, momentum.slow_ema_period
@@ -494,13 +505,22 @@ def _momentum_candidates(
         for finding_id, pattern in findings
         if "chase" in pattern or "trend is down" in pattern or "trend is ranging" in pattern
     ]
-    if losing_entry_ids and not momentum.require_positive_macd:
+    if losing_entry_ids:
         motivating += losing_entry_ids
+        if not momentum.require_positive_macd:
+            raw.append(
+                SweepCandidate(
+                    name="zero_line_filter",
+                    family="momentum",
+                    params=momentum.model_copy(update={"require_positive_macd": True}).model_dump(),
+                )
+            )
+        volume_toggle = 1.0 if momentum.min_volume_ratio == 0 else 0.0
         raw.append(
             SweepCandidate(
-                name="zero_line_filter",
+                name="volume_confirm" if volume_toggle else "no_volume_confirm",
                 family="momentum",
-                params=momentum.model_copy(update={"require_positive_macd": True}).model_dump(),
+                params=momentum.model_copy(update={"min_volume_ratio": volume_toggle}).model_dump(),
             )
         )
     missed_ids = [finding_id for finding_id, pattern in findings if "stays flat" in pattern]

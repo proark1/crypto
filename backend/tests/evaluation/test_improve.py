@@ -392,7 +392,20 @@ class TestPerFamilyGrids:
         )
         widths = next(c for c in candidates if c.name == "min_width_filter")
         assert widths.params["min_channel_width_atr"] == 0.5
+        volumes = next(c for c in candidates if c.name == "volume_confirm")
+        assert volumes.params["min_volume_ratio"] == 1.0
         assert motivating == (9,)
+
+    def test_an_active_volume_filter_toggles_off_for_fake_breakouts(self) -> None:
+        from tradebot.evaluation.improve import build_candidates_for
+
+        candidates, _ = build_candidates_for(
+            "breakout",
+            {"breakout": {"min_volume_ratio": 1.5}},
+            [(9, "entries lose money when event is breakout_fake")],
+        )
+        toggled = next(c for c in candidates if c.name == "no_volume_confirm")
+        assert toggled.params["min_volume_ratio"] == 0.0
 
     def test_an_early_exit_finding_lengthens_the_breakout_exit_channel(self) -> None:
         from tradebot.evaluation.improve import build_candidates_for
@@ -412,12 +425,14 @@ class TestPerFamilyGrids:
         )
         assert any(c.name == "no_zero_line_filter" for c in flat)
         assert flat_motivating == (7,)
-        # ...and chasing cannot test adding it — it is already on.
+        # ...and chasing cannot test adding it — it is already on — but the
+        # volume-confirmation toggle still gives the finding a knob to test.
         chase, chase_motivating = build_candidates_for(
             "momentum", {}, [(8, "entries chase moves that are already over")]
         )
         assert all(c.name != "zero_line_filter" for c in chase)
-        assert chase_motivating == ()
+        assert any(c.name == "volume_confirm" for c in chase)
+        assert chase_motivating == (8,)
         # With the filter off, losing entries test turning it on.
         losing, losing_motivating = build_candidates_for(
             "momentum",

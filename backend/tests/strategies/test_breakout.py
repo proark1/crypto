@@ -15,8 +15,19 @@ BASE_TIME = datetime(2026, 1, 2, 0, 0, tzinfo=UTC)
 CONFIG = BreakoutConfig(channel_period=5, exit_channel_period=3, atr_period=3)
 
 
+def volume_filtered(min_volume_ratio: float, volume_ema_period: int = 3) -> BreakoutConfig:
+    """CONFIG plus an armed volume-confirmation filter."""
+    return CONFIG.model_copy(
+        update={"volume_ema_period": volume_ema_period, "min_volume_ratio": min_volume_ratio}
+    )
+
+
 def make_candle(
-    index: int, close: float, high: float | None = None, low: float | None = None
+    index: int,
+    close: float,
+    high: float | None = None,
+    low: float | None = None,
+    volume: float = 10.0,
 ) -> Candle:
     open_time = BASE_TIME + timedelta(minutes=index)
     close_price = Decimal(str(close))
@@ -29,7 +40,7 @@ def make_candle(
         high_quote=Decimal(str(high if high is not None else close + 0.5)),
         low_quote=Decimal(str(low if low is not None else close - 0.5)),
         close_quote=close_price,
-        volume_base=Decimal("10"),
+        volume_base=Decimal(str(volume)),
     )
 
 
@@ -83,6 +94,28 @@ class TestBreakoutEntries:
         for index in range(4):  # channel not yet full
             assert strategy.on_candle(make_candle(index, 100.0 + index * 5), None) is None
 
+    def test_low_volume_breakouts_are_filtered(self) -> None:
+        strategy = BreakoutStrategy(volume_filtered(1.5))
+        for index in range(5):
+            strategy.on_candle(make_candle(index, 100.0), None)
+        # Baseline EMA sits at 10; a breakout on 10 misses the 1.5x bar.
+        assert strategy.on_candle(make_candle(5, 103.0, volume=10.0), None) is None
+
+    def test_high_volume_breakouts_pass_the_filter(self) -> None:
+        strategy = BreakoutStrategy(volume_filtered(1.5))
+        for index in range(5):
+            strategy.on_candle(make_candle(index, 100.0), None)
+        signal = strategy.on_candle(make_candle(5, 103.0, volume=20.0), None)
+        assert signal is not None and signal.side == Side.BUY
+
+    def test_the_filter_waits_for_the_volume_baseline(self) -> None:
+        """An unformed baseline blocks entries rather than guessing."""
+        strategy = BreakoutStrategy(volume_filtered(1.0, volume_ema_period=10))
+        for index in range(5):
+            strategy.on_candle(make_candle(index, 100.0), None)
+        # The channel is full but the 10-candle volume EMA is not formed.
+        assert strategy.on_candle(make_candle(5, 103.0, volume=1000.0), None) is None
+
 
 class TestBreakoutExits:
     def test_close_below_the_exit_channel_floor_sells(self) -> None:
@@ -99,6 +132,14 @@ class TestBreakoutExits:
         for index in range(5):
             strategy.on_candle(make_candle(index, 100.0), position_of())
         assert strategy.on_candle(make_candle(5, 100.0), position_of()) is None
+
+    def test_exits_are_never_volume_filtered(self) -> None:
+        strategy = BreakoutStrategy(volume_filtered(5.0))
+        for index in range(5):
+            strategy.on_candle(make_candle(index, 100.0), position_of())
+        # Volume far below the 5x bar; the exit must still fire.
+        signal = strategy.on_candle(make_candle(5, 95.0, volume=0.1), position_of())
+        assert signal is not None and signal.side == Side.SELL
 
 
 class TestContracts:
