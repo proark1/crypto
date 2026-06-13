@@ -3,16 +3,19 @@
 from tradebot.competition.lineup import PRODUCTION_BOT_ID
 from tradebot.evaluation.presets import (
     BAKE_OFF_CONTESTANTS,
+    CONTROL_CONTESTANTS,
     ENERGY_PRESETS,
     contestant_for,
 )
-from tradebot.evaluation.sweep import SweepCandidate, build_candidate_strategy
+from tradebot.evaluation.sweep import STRATEGY_FAMILIES, SweepCandidate, build_candidate_strategy
+from tradebot.strategies.controls import build_control_strategy
 
 
 class TestRoster:
-    def test_ten_energy_presets_plus_the_production_baseline(self) -> None:
+    def test_baseline_plus_ten_energy_presets_plus_the_controls(self) -> None:
         assert len(ENERGY_PRESETS) == 10
-        assert len(BAKE_OFF_CONTESTANTS) == 11
+        assert len(CONTROL_CONTESTANTS) == 1
+        assert len(BAKE_OFF_CONTESTANTS) == 1 + len(ENERGY_PRESETS) + len(CONTROL_CONTESTANTS)
         # The baseline leads (the comparison's baseline slot) and names no
         # family — the worker builds the regime router for it.
         assert BAKE_OFF_CONTESTANTS[0].bot_id == PRODUCTION_BOT_ID
@@ -45,3 +48,21 @@ class TestRoster:
         # A bot id that is not a contestant returns None so the worker's
         # evaluator factory can fall through to the lineup / custom paths.
         assert contestant_for("not_a_contestant") is None
+
+
+class TestControlContestants:
+    def test_each_control_builds_and_is_not_a_family(self) -> None:
+        # Controls resolve like any contestant but build from the separate
+        # control registry — never STRATEGY_FAMILIES — so they stay out of
+        # sweeps and promotion.
+        for contestant in CONTROL_CONTESTANTS:
+            assert contestant.control is not None
+            assert contestant.family is None
+            assert contestant.control not in STRATEGY_FAMILIES
+            assert contestant_for(contestant.bot_id) is contestant
+            strategy = build_control_strategy(contestant.control, dict(contestant.params))
+            assert strategy.name == contestant.control
+
+    def test_the_random_entry_control_is_present(self) -> None:
+        ids = [c.bot_id for c in CONTROL_CONTESTANTS]
+        assert "random_entry" in ids

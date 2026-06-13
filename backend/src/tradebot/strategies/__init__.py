@@ -9,6 +9,13 @@ all of that belongs to the risk manager.
 from tradebot.strategies.base import Strategy
 from tradebot.strategies.breakout import BreakoutConfig, BreakoutStrategy
 from tradebot.strategies.composite import CompositeStrategy
+from tradebot.strategies.controls import (
+    CONTROL_STRATEGIES,
+    RandomEntryConfig,
+    RandomEntryStrategy,
+    build_control_strategy,
+    validate_control_params,
+)
 from tradebot.strategies.mean_reversion import MeanReversionConfig, MeanReversionStrategy
 from tradebot.strategies.momentum import MomentumConfig, MomentumStrategy
 from tradebot.strategies.router import RegimeStrategyRouter
@@ -16,6 +23,7 @@ from tradebot.strategies.squeeze import SqueezeConfig, SqueezeStrategy
 from tradebot.strategies.trend_following import TrendFollowingConfig, TrendFollowingStrategy
 
 __all__ = [
+    "CONTROL_STRATEGIES",
     "BreakoutConfig",
     "BreakoutStrategy",
     "CompositeStrategy",
@@ -23,10 +31,14 @@ __all__ = [
     "MeanReversionStrategy",
     "MomentumConfig",
     "MomentumStrategy",
+    "RandomEntryConfig",
+    "RandomEntryStrategy",
     "RegimeStrategyRouter",
     "SqueezeConfig",
     "SqueezeStrategy",
     "Strategy",
     "TrendFollowingConfig",
     "TrendFollowingStrategy",
+    "build_control_strategy",
+    "validate_control_params",
 ]

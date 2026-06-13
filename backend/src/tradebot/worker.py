@@ -100,6 +100,7 @@ from tradebot.strategies import (
     Strategy,
     TrendFollowingConfig,
     TrendFollowingStrategy,
+    build_control_strategy,
 )
 
 if TYPE_CHECKING:  # runtime import stays local to its start method
@@ -1231,6 +1232,14 @@ class Worker:
             rules = dict(runtime.rules)
             return ScenarioEvaluator(lambda: build_rules_strategy(rules))
         contestant = contestant_for(strategy_id)
+        if contestant is not None and contestant.control is not None:
+            # A bake-off reference control (e.g. the random-entry noise
+            # floor): built from the separate control registry, graded bare
+            # like any solo strategy. Checked before the family branch
+            # because controls carry no family.
+            control_id = contestant.control
+            control_params = dict(contestant.params)
+            return ScenarioEvaluator(lambda: build_control_strategy(control_id, control_params))
         if contestant is not None and contestant.family is not None:
             # A bake-off energy preset: a single family at fixed parameters,
             # graded bare like any solo-family scenario strategy. The

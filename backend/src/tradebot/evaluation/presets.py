@@ -26,22 +26,27 @@ from typing import Any
 
 from tradebot.competition.lineup import PRODUCTION_BOT_ID
 from tradebot.evaluation.sweep import STRATEGY_FAMILIES, validate_family_params
+from tradebot.strategies.controls import validate_control_params
 
 
 @dataclass(frozen=True)
 class BakeOffContestant:
     """One bake-off entry: a stable id, a label, and what it trades.
 
-    ``family`` is ``None`` only for the production baseline, whose strategy
-    the worker builds (the regime router needs the live regime wiring);
-    every preset names a single family and the parameter overrides — its
-    "energy" — applied over that family's defaults.
+    Exactly one of ``family`` / ``control`` is set, or neither:
+    - ``family`` names a single strategy family with the parameter overrides
+      — its "energy" — applied over that family's defaults (the energy presets);
+    - ``control`` names a reference control (``strategies/controls.py``), a
+      no-skill yardstick like the random-entry noise floor;
+    - both ``None`` marks the production baseline, whose strategy the worker
+      builds (the regime router needs the live regime wiring).
     """
 
     bot_id: str
     label: str
     family: str | None
     params: Mapping[str, Any] = field(default_factory=dict)
+    control: str | None = None
 
 
 # The production router as a reference line: not an energy preset, but the
@@ -145,10 +150,28 @@ ENERGY_PRESETS: tuple[BakeOffContestant, ...] = (
     ),
 )
 
+# Reference controls: no-skill yardsticks, not energy presets. The
+# random-entry control is the tournament's noise floor — a family that
+# cannot out-earn random coin-flip trading (paying the same fees, stops, and
+# slippage) has no demonstrable edge (ARCHITECTURE.md §13.8). Controls are
+# built from the separate control registry, never swept or promoted.
+CONTROL_CONTESTANTS: tuple[BakeOffContestant, ...] = (
+    BakeOffContestant(
+        bot_id="random_entry",
+        label="Random entry (control)",
+        family=None,
+        control="random_entry",
+    ),
+)
+
 # The full roster the bake-off grades each cell: the baseline first (it
 # leads the comparison group, the sweep contract's baseline slot), then the
-# ten energy presets.
-BAKE_OFF_CONTESTANTS: tuple[BakeOffContestant, ...] = (PRODUCTION_BASELINE, *ENERGY_PRESETS)
+# ten energy presets, then the reference controls.
+BAKE_OFF_CONTESTANTS: tuple[BakeOffContestant, ...] = (
+    PRODUCTION_BASELINE,
+    *ENERGY_PRESETS,
+    *CONTROL_CONTESTANTS,
+)
 
 _BY_ID: Mapping[str, BakeOffContestant] = {c.bot_id: c for c in BAKE_OFF_CONTESTANTS}
 
@@ -164,12 +187,16 @@ def contestant_for(bot_id: str) -> BakeOffContestant | None:
 
 
 def validate_presets() -> None:
-    """Raise ``ValueError`` if any preset names an unknown family or param.
+    """Raise ``ValueError`` if any contestant names an unknown family/control or param.
 
-    Called once at import time below so a typo in a preset fails the build,
-    not the first bake-off hours later. The baseline (no family) is skipped.
+    Called once at import time below so a typo in a contestant fails the
+    build, not the first bake-off hours later. The baseline (neither family
+    nor control) is skipped.
     """
     for contestant in BAKE_OFF_CONTESTANTS:
+        if contestant.control is not None:
+            validate_control_params(contestant.control, contestant.params)
+            continue
         if contestant.family is None:
             continue
         if contestant.family not in STRATEGY_FAMILIES:
