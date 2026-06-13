@@ -155,8 +155,15 @@ export function BakeOffPanel(props: {
   jobs: BakeOffJobResponse[];
   onStart: () => void;
   startDisabled: boolean;
+  /** Controlled selection: when the parent passes these, it owns the
+   * selected job (e.g. to jump to a bake-off it just started). Omit both and
+   * the panel manages selection itself, defaulting to the newest job. */
+  selectedId?: number | null;
+  onSelectId?: (id: number) => void;
 }) {
-  const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [internalSelectedId, setInternalSelectedId] = useState<number | null>(null);
+  const selectedId = props.selectedId !== undefined ? props.selectedId : internalSelectedId;
+  const setSelectedId: (id: number) => void = props.onSelectId ?? setInternalSelectedId;
   const selected = props.jobs.find((job) => job.id === selectedId) ?? props.jobs[0];
 
   return (

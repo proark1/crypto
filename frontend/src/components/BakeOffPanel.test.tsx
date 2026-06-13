@@ -106,6 +106,26 @@ describe("BakeOffPanel", () => {
     expect(screen.getByText(/running · 1\/9 cells/)).toBeTruthy();
   });
 
+  it("honours a parent-controlled selection and reports clicks", () => {
+    const onSelectId = vi.fn();
+    const older = makeJob({ id: 1, cells_done: 2 });
+    const newer = makeJob({ id: 2, status: "running", cells_done: 1, cells_total: 9 });
+    render(
+      <BakeOffPanel
+        jobs={[newer, older]}
+        onStart={() => undefined}
+        startDisabled={false}
+        selectedId={1}
+        onSelectId={onSelectId}
+      />,
+    );
+    // selectedId=1 (the older, completed job) is shown, not the newest default.
+    expect(screen.getByText(/completed · 2\/2 cells/)).toBeTruthy();
+    // Clicking the running job reports up to the parent rather than self-managing.
+    fireEvent.click(screen.getByRole("button", { name: /bake-off #2/ }));
+    expect(onSelectId).toHaveBeenCalledWith(2);
+  });
+
   it("disables the start button and fires onStart otherwise", () => {
     const onStart = vi.fn();
     const { rerender } = render(

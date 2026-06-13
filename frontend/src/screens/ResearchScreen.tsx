@@ -372,6 +372,7 @@ export function ResearchScreen() {
   const [comparisonPending, setComparisonPending] = useState(false);
   const [bakeOffs, setBakeOffs] = useState<BakeOffJobResponse[]>([]);
   const [bakeOffPending, setBakeOffPending] = useState(false);
+  const [selectedBakeOffId, setSelectedBakeOffId] = useState<number | null>(null);
   // Research deliberately leaves auth/token UX to the overview screen, but a
   // poll that keeps failing must not look like a quiet, up-to-date screen:
   // track the last successful refresh so the UI can show it has gone stale.
@@ -531,6 +532,9 @@ export function ResearchScreen() {
       (started) => {
         setBakeOffPending(false);
         setNotice(started.detail);
+        // Jump to the run just started: clicking the button is intent to
+        // watch it, even if an older job was on screen.
+        setSelectedBakeOffId(started.job_id);
         void refresh();
       },
       (caught: unknown) => {
@@ -818,6 +822,8 @@ export function ResearchScreen() {
           jobs={bakeOffs}
           onStart={handleStartBakeOff}
           startDisabled={bakeOffPending || bakeOffRunning}
+          selectedId={selectedBakeOffId}
+          onSelectId={setSelectedBakeOffId}
         />
       )}
 
