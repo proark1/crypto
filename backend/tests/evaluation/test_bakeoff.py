@@ -70,7 +70,8 @@ class TestAggregateRanking:
         ]
         ranking = aggregate_ranking(cells)
         assert [r["bot_id"] for r in ranking] == ["alpha", "beta"]
-        assert ranking[0]["average_return_fraction"] == "0.15"  # (0.10 + 0.20) / 2
+        # (0.10 + 0.20) / 2, quantized to the leaderboard's four places.
+        assert ranking[0]["average_return_fraction"] == "0.1500"
         assert ranking[0]["cells_scored"] == 2
         assert ranking[0]["total_trades"] == 8
 
@@ -98,6 +99,18 @@ class TestAggregateRanking:
         ]
         ranking = aggregate_ranking(cells)
         assert [r["bot_id"] for r in ranking] == ["high_trades", "low_trades"]
+
+    def test_average_return_is_quantized_not_unbounded(self) -> None:
+        # 0.10 and 0.05 over three cells average to 0.0833..., which must be
+        # rounded to the leaderboard's four places, never persisted as a
+        # repeating-decimal string.
+        cells = [
+            self._cell("completed", {"a": {"return_fraction": "0.10", "trade_count": 1}}),
+            self._cell("completed", {"a": {"return_fraction": "0.10", "trade_count": 1}}),
+            self._cell("completed", {"a": {"return_fraction": "0.05", "trade_count": 1}}),
+        ]
+        ranking = aggregate_ranking(cells)
+        assert ranking[0]["average_return_fraction"] == "0.0833"
 
 
 class FakeEvaluations:

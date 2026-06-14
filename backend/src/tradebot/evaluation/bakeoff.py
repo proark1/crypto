@@ -28,7 +28,7 @@ import logging
 from collections.abc import Callable, Coroutine, Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from decimal import Decimal
+from decimal import ROUND_HALF_EVEN, Decimal
 from itertools import product
 from typing import Any
 
@@ -68,6 +68,11 @@ POLL_SECONDS = 5.0
 CELL_TIMEOUT_SECONDS = 60.0 * 60.0
 """A single cell silent this long is abandoned and marked failed; the
 bake-off moves on rather than hanging forever on one stuck comparison."""
+
+_RETURN_FRACTION_RESOLUTION = Decimal("0.0001")
+"""Display resolution for the ranking's averaged return — the same four
+places ``money_result`` rounds a return fraction to, so the leaderboard
+never persists an unbounded-precision quotient (e.g. ``0.11666...67``)."""
 
 _TERMINAL = {RunStatus.COMPLETED.value, RunStatus.FAILED.value, RunStatus.INTERRUPTED.value}
 
@@ -161,11 +166,17 @@ def aggregate_ranking(cells: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
         )
         for bot_id, values in returns.items()
     ]
+    # Rank on the full-precision average so ties are real ties, then round
+    # only the persisted/displayed figure to the leaderboard's resolution.
     ranks.sort(key=lambda r: (r.average_return_fraction, r.total_trades, r.bot_id), reverse=True)
     return [
         {
             "bot_id": rank.bot_id,
-            "average_return_fraction": str(rank.average_return_fraction),
+            "average_return_fraction": str(
+                rank.average_return_fraction.quantize(
+                    _RETURN_FRACTION_RESOLUTION, rounding=ROUND_HALF_EVEN
+                )
+            ),
             "cells_scored": rank.cells_scored,
             "total_trades": rank.total_trades,
         }
