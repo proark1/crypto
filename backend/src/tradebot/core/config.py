@@ -337,6 +337,32 @@ class AppConfig(BaseSettings):
     the whole curated set), and the timer never resets, so latency stays
     bounded."""
 
+    ai_advisor_enabled: bool = False
+    """Run the AI research advisor (ARCHITECTURE.md §12.9): on demand, ask a
+    Claude model to read a completed research run's report and mined findings
+    and propose experiment hypotheses a human can choose to sweep. Off by
+    default and advisory-only — it never places an order, never promotes a
+    configuration, never runs on the candle hot path, and never feeds the
+    deterministic backtest; its output is a recommendation surfaced in the
+    research UI, and arming a sweep from a hypothesis stays the existing
+    human-initiated path. Enabling it also needs ``ANTHROPIC_API_KEY`` in the
+    environment and the optional ``anthropic`` dependency (the ``ai`` extra);
+    absent either, the advisor stays silent rather than failing a request —
+    the fail-safe direction for an advisory feature that moves no money
+    (CLAUDE.md invariants 4 and 6)."""
+
+    ai_advisor_model: str = "claude-opus-4-8"
+    """Claude model id the advisor calls. Advisory text only — never on the
+    candle hot path, never a deterministic input."""
+
+    ai_advisor_max_tokens: int = Field(default=4000, gt=0)
+    """Output-token ceiling for one advisory response (a diagnosis plus a few
+    hypotheses is small); bounds the cost and latency of a best-effort call."""
+
+    ai_advisor_timeout_seconds: float = Field(default=90.0, gt=0)
+    """Hard per-call timeout in seconds. The advisor is best-effort: a slow or
+    hung call degrades to no advice rather than blocking the API response."""
+
     proposal_ttl_seconds: int = 900
     """Co-pilot proposals expire after this many seconds unanswered."""
 

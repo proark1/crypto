@@ -861,6 +861,44 @@ automated improvement loop (§12.7): in paper mode a *validated*
 challenger is promoted automatically; anything touching live trading
 remains a human action.
 
+### 12.9 AI research advisor (advisory, human-approved)
+
+The findings miner (§12.8) reports *mechanical* patterns; the **AI research
+advisor** (`evaluation/advisor.py`) is an optional layer on top that reads a
+completed run's report and its mined findings and asks a Claude model to
+synthesize them into a short diagnosis plus a few **experiment hypotheses** —
+"what looks broken, and what would you try next." It exists because the gap
+between a wall of metrics and a concrete next experiment is exactly the work a
+language model is good at, and the rest of §12 already produces the evidence to
+ground it.
+
+It is deliberately powerless, and the boundary is the whole point:
+
+- **Advisory only — no order or promotion path.** The advisor returns a
+  `ResearchAdvice` object (a diagnosis and a list of hypotheses, each with a
+  plain-words `parameter_hint`) and nothing else. A hypothesis becomes a test
+  only when a human chooses to arm a sweep from it, through the same
+  human-initiated path the run-sweep button and accept-triggered sweeps already
+  use (§12.7). Nothing the model writes is parsed into an applied configuration,
+  and it never places an order (CLAUDE.md invariants 4).
+- **Off the hot path, out of the deterministic core.** It is an on-demand call
+  from the control API, never on the candle→signal→order loop, and it is never
+  an input to the scenario engine or the fill simulator — so the golden backtest
+  is byte-identical whether or not the advisor ran. It reads R-multiples and
+  money *strings* off an already-built report to compose prose; it does no money
+  arithmetic and produces no size.
+- **Fail-safe and opt-in.** Off by default (`TRADEBOT_AI_ADVISOR_ENABLED`,
+  defaulting false). The SDK is an optional dependency (the `ai` extra) and the
+  credential is an environment variable (`ANTHROPIC_API_KEY`) — never in the
+  repo. A disabled flag, a missing package, a missing key, a model refusal, a
+  timeout, or any SDK error all resolve to "no advice" (`None`), never to an
+  error that could fail the surrounding request. The call uses structured
+  outputs (a typed schema) and adaptive thinking; the model id, token ceiling,
+  and timeout are configured.
+
+In short: the deterministic pipeline earns the evidence and keeps the veto; the
+model only ever *suggests* the next experiment a human runs.
+
 ---
 
 ## 13. Strategy competition (six bots, one winner)
