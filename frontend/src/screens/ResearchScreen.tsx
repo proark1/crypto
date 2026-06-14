@@ -41,6 +41,7 @@ import type {
 } from "../api/types";
 import { formatFractionPercent, formatMoney, formatTime } from "../lib/format";
 import { Alert, GLOSSARY, InfoTooltip, StatTile, type GlossaryTerm } from "../ui";
+import { AdvisorPanel } from "../components/AdvisorPanel";
 import { BakeOffPanel } from "../components/BakeOffPanel";
 import { ComparisonPanel } from "../components/ComparisonPanel";
 import { FindingsPanel } from "../components/FindingsPanel";
@@ -852,6 +853,7 @@ export function ResearchScreen() {
                     onReject={decideFinding(rejectFinding)}
                     onReplayEvidence={openReplay}
                   />
+                  {selected.summary !== null && <AdvisorPanel runId={selected.id} />}
                   <ScenarioTable scenarios={scenarios} onReplay={openReplay} />
                 </div>
               ) : selectedId !== null ? (

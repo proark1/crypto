@@ -26,6 +26,7 @@ import type {
   FillResponse,
   FindingResponse,
   ProposalResponse,
+  ResearchAdviceResponse,
   ScenarioReplayResponse,
   ScenarioSummaryResponse,
   DivergenceReportResponse,
@@ -359,6 +360,13 @@ export function acceptFinding(findingId: number): Promise<FindingResponse> {
 
 export function rejectFinding(findingId: number): Promise<FindingResponse> {
   return request<FindingResponse>(`/evaluations/findings/${String(findingId)}/reject`, "POST");
+}
+
+/** Ask the AI research advisor (§12.9) to read a completed run and propose
+ * experiments. Advisory only: the envelope carries `available: false` (never an
+ * error) when the advisor is disabled, unavailable, or declines. */
+export function requestResearchAdvice(runId: number): Promise<ResearchAdviceResponse> {
+  return request<ResearchAdviceResponse>(`/evaluations/${String(runId)}/advise`, "POST");
 }
 
 export function fetchStrategyVersions(): Promise<StrategyVersionResponse[]> {

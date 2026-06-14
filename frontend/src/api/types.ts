@@ -339,6 +339,29 @@ export interface ComparisonGroupResponse {
   runs: EvaluationRunResponse[];
 }
 
+/** One experiment the AI research advisor proposes (§12.9). Advisory only:
+ * `parameter_hint` is prose a human reads, never an applied configuration. */
+export interface ResearchHypothesisResponse {
+  title: string;
+  family: string;
+  rationale: string;
+  parameter_hint: string;
+}
+
+/** The advisor's read of a run: a plain-language diagnosis plus experiments. */
+export interface ResearchAdvice {
+  diagnosis: string;
+  hypotheses: ResearchHypothesisResponse[];
+}
+
+/** The advise endpoint's envelope: `advice` when the advisor ran, otherwise
+ * `available: false` (it is off by default, unavailable, or declined) — the
+ * caller treats that as "nothing to show", never as an error. */
+export interface ResearchAdviceResponse {
+  available: boolean;
+  advice: ResearchAdvice | null;
+}
+
 export interface BakeOffStartResponse {
   job_id: number;
   cells_total: number;
