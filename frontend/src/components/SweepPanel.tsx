@@ -161,7 +161,12 @@ function CostSensitivity(props: { data: Record<string, unknown> | null }) {
       <h4 className="mb-1 text-xs uppercase tracking-wide text-zinc-500">
         cost sensitivity — winner at worse fees &amp; slippage
       </h4>
-      <div className="overflow-x-auto">
+      <div
+        className="overflow-x-auto rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/50"
+        tabIndex={0}
+        role="region"
+        aria-label="cost sensitivity"
+      >
         <table className="w-full text-left text-sm">
           <thead className="text-xs text-zinc-500">
             <tr>
@@ -215,7 +220,12 @@ function ScoreTable(props: { title: string; data: Record<string, unknown> | null
   return (
     <div>
       <h4 className="mb-1 text-xs uppercase tracking-wide text-zinc-500">{props.title}</h4>
-      <div className="overflow-x-auto">
+      <div
+        className="overflow-x-auto rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/50"
+        tabIndex={0}
+        role="region"
+        aria-label={props.title}
+      >
         <table className="w-full text-left text-sm">
           <thead className="text-xs text-zinc-500">
             <tr>

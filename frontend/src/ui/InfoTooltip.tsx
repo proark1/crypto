@@ -35,6 +35,9 @@ export function InfoTooltip(props: {
         onPointerLeave={() => {
           setOpen(false);
         }}
+        onFocus={() => {
+          setOpen(true);
+        }}
         onBlur={() => {
           setOpen(false);
         }}
