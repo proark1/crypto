@@ -75,17 +75,21 @@ const FALLBACK_STRATEGIES: EvaluationStrategyResponse[] = [
   },
 ];
 
-/** The research workspace splits into four jobs so the page is not one long
- * scroll: run and read evaluations, compare strategies head to head, tune
- * the production strategy (sweeps and the version history they promote),
- * and follow the learning loop's progress as one story. */
+/** The research workspace reads as one loop, left to right: run the broad
+ * bake-off tournament to see which energies are winning, narrow to a
+ * head-to-head comparison, tune the production strategy (sweeps and the
+ * version history they promote), follow the learning loop's progress as one
+ * story, and finally inspect a single bot's full report. The bake-off is the
+ * entry point; Inspect is the drill-in destination both Compare and Progress
+ * hand off to — so its id stays "evaluate" (it is still where evaluations are
+ * launched and read), only its label reflects the new role. */
 type ResearchTab = "evaluate" | "compare" | "bakeoff" | "tune" | "progress";
 const RESEARCH_TABS: { id: ResearchTab; label: string }[] = [
-  { id: "evaluate", label: "Evaluate" },
-  { id: "compare", label: "Compare" },
   { id: "bakeoff", label: "Bake-off" },
+  { id: "compare", label: "Compare" },
   { id: "tune", label: "Tune" },
   { id: "progress", label: "Progress" },
+  { id: "evaluate", label: "Inspect" },
 ];
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -382,7 +386,9 @@ export function ResearchScreen() {
   // track the last successful refresh so the UI can show it has gone stale.
   const [lastUpdated, setLastUpdated] = useState<number | null>(null);
   const [pollStale, setPollStale] = useState(false);
-  const [researchTab, setResearchTab] = useState<ResearchTab>("evaluate");
+  // The bake-off is the loop's entry point: the broad tournament lands first,
+  // and the detail tabs (Inspect especially) are drilled into from there.
+  const [researchTab, setResearchTab] = useState<ResearchTab>("bakeoff");
 
   const suggestionsLoaded = useRef(false);
 
@@ -462,7 +468,7 @@ export function ResearchScreen() {
   }, [refresh]);
 
   // A status message belongs to the action that set it; the notice line only
-  // renders on the Evaluate tab, so a message from an action on another tab
+  // renders on the Inspect tab, so a message from an action on another tab
   // (start a comparison, a bake-off, a revert) would otherwise linger there
   // unrelated. Clear it whenever the research tab changes.
   useEffect(() => {
@@ -854,6 +860,13 @@ export function ResearchScreen() {
             groups={comparisons}
             onStart={handleStartComparison}
             startDisabled={comparisonPending || comparisonRunning}
+            onInspectRun={(runId) => {
+              // A comparison column is a real evaluation run; clicking it hands
+              // off to Inspect with that run selected — the same drill-in the
+              // Progress timeline uses, so both land on one detail view.
+              setSelectedId(runId);
+              setResearchTab("evaluate");
+            }}
           />
           <RoutingCandidacyPanel candidacies={candidacies} />
         </div>

@@ -114,19 +114,21 @@ describe("ResearchScreen", () => {
     });
   });
 
-  it("splits the workspace into Evaluate / Compare / Tune sub-tabs", async () => {
+  it("opens on the Bake-off tab and carries the evaluation form under Inspect", async () => {
     render(<ResearchScreen />);
     await waitFor(() => {
       expect(screen.getByText("not refreshing")).toBeDefined();
     });
-    // The Evaluate tab is the default and shows the custom-evaluation form.
+    // The bake-off tournament is the loop's entry point, so it lands first:
+    // its run button is present and the single-bot evaluation form is not.
+    expect(screen.getByRole("button", { name: "run bake-off" })).toBeDefined();
+    expect(screen.queryByRole("button", { name: "start evaluation" })).toBeNull();
+    // Inspect is the drill-in destination that carries the custom-evaluation form.
+    fireEvent.click(screen.getByRole("button", { name: "Inspect" }));
     expect(screen.getByRole("button", { name: "start evaluation" })).toBeDefined();
-    // Switching to Compare hides the evaluation form.
+    // Switching to Compare hides the evaluation form again.
     fireEvent.click(screen.getByRole("button", { name: "Compare" }));
     expect(screen.queryByRole("button", { name: "start evaluation" })).toBeNull();
-    // And back again brings it into view.
-    fireEvent.click(screen.getByRole("button", { name: "Evaluate" }));
-    expect(screen.getByRole("button", { name: "start evaluation" })).toBeDefined();
   });
 
   it("offers every gradeable bot and submits the chosen one", async () => {
@@ -165,6 +167,9 @@ describe("ResearchScreen", () => {
     vi.mocked(startEvaluation).mockResolvedValue({ run_id: 7, detail: "evaluation started" });
     render(<ResearchScreen />);
 
+    // The custom-evaluation form now lives on the Inspect tab (the bake-off is
+    // the default landing), so open it before driving the selector.
+    fireEvent.click(screen.getByRole("button", { name: "Inspect" }));
     // Options arrive from the backend, never hardcoded in the frontend.
     await waitFor(() => {
       expect(screen.getByRole("option", { name: "Breakout" })).toBeDefined();
@@ -179,5 +184,29 @@ describe("ResearchScreen", () => {
         expect.objectContaining({ strategy: "breakout" }),
       );
     });
+  });
+
+  it("drills from a comparison column into that run's report on Inspect", async () => {
+    // The same run object must appear both in the comparison group and in the
+    // evaluations list, since Inspect resolves the selection from that list.
+    const compRun: EvaluationRunResponse = { ...RUN, id: 42, strategy: "breakout" };
+    vi.mocked(fetchEvaluations).mockResolvedValue([compRun]);
+    vi.mocked(fetchComparisons).mockResolvedValue([
+      { group_id: 3, created_at: "2026-06-10T12:00:00+00:00", runs: [compRun] },
+    ]);
+    render(<ResearchScreen />);
+
+    // Move to Compare and wait for the strategy column to render.
+    fireEvent.click(screen.getByRole("button", { name: "Compare" }));
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Breakout" })).toBeDefined();
+    });
+    // Clicking the column header hands off to Inspect with run #42 selected.
+    fireEvent.click(screen.getByRole("button", { name: "Breakout" }));
+    await waitFor(() => {
+      expect(screen.getByText(/bot: breakout/)).toBeDefined();
+    });
+    // And the Inspect form is now in view, confirming the tab switched.
+    expect(screen.getByRole("button", { name: "start evaluation" })).toBeDefined();
   });
 });
