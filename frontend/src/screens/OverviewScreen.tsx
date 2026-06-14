@@ -254,6 +254,7 @@ export function OverviewScreen(props: { theme: Theme; onToggleTheme: () => void 
         >
           <input
             type="password"
+            aria-label="API token"
             value={tokenDraft}
             onChange={(event) => {
               setTokenDraft(event.target.value);
