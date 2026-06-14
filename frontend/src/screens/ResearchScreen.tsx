@@ -41,11 +41,13 @@ import type {
 } from "../api/types";
 import { formatFractionPercent, formatMoney, formatTime } from "../lib/format";
 import { Alert, GLOSSARY, InfoTooltip, StatTile, type GlossaryTerm } from "../ui";
+import { AdvisorPanel } from "../components/AdvisorPanel";
 import { BakeOffPanel } from "../components/BakeOffPanel";
 import { ComparisonPanel } from "../components/ComparisonPanel";
 import { FindingsPanel } from "../components/FindingsPanel";
 import { ImprovementsPanel } from "../components/ImprovementsPanel";
 import { ImproverStatusCard } from "../components/ImproverStatusCard";
+import { ResearchHome } from "../components/ResearchHome";
 import { ResearchTimeline } from "../components/ResearchTimeline";
 import { RoutingCandidacyPanel } from "../components/RoutingCandidacyPanel";
 import { ScenarioReplay } from "../components/ScenarioReplay";
@@ -75,17 +77,21 @@ const FALLBACK_STRATEGIES: EvaluationStrategyResponse[] = [
   },
 ];
 
-/** The research workspace splits into four jobs so the page is not one long
- * scroll: run and read evaluations, compare strategies head to head, tune
- * the production strategy (sweeps and the version history they promote),
- * and follow the learning loop's progress as one story. */
+/** The research workspace reads as one loop, left to right: run the broad
+ * bake-off tournament to see which energies are winning, narrow to a
+ * head-to-head comparison, tune the production strategy (sweeps and the
+ * version history they promote), follow the learning loop's progress as one
+ * story, and finally inspect a single bot's full report. The bake-off is the
+ * entry point; Inspect is the drill-in destination both Compare and Progress
+ * hand off to — so its id stays "evaluate" (it is still where evaluations are
+ * launched and read), only its label reflects the new role. */
 type ResearchTab = "evaluate" | "compare" | "bakeoff" | "tune" | "progress";
 const RESEARCH_TABS: { id: ResearchTab; label: string }[] = [
-  { id: "evaluate", label: "Evaluate" },
-  { id: "compare", label: "Compare" },
   { id: "bakeoff", label: "Bake-off" },
+  { id: "compare", label: "Compare" },
   { id: "tune", label: "Tune" },
   { id: "progress", label: "Progress" },
+  { id: "evaluate", label: "Inspect" },
 ];
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -382,7 +388,9 @@ export function ResearchScreen() {
   // track the last successful refresh so the UI can show it has gone stale.
   const [lastUpdated, setLastUpdated] = useState<number | null>(null);
   const [pollStale, setPollStale] = useState(false);
-  const [researchTab, setResearchTab] = useState<ResearchTab>("evaluate");
+  // The bake-off is the loop's entry point: the broad tournament lands first,
+  // and the detail tabs (Inspect especially) are drilled into from there.
+  const [researchTab, setResearchTab] = useState<ResearchTab>("bakeoff");
 
   const suggestionsLoaded = useRef(false);
 
@@ -462,14 +470,22 @@ export function ResearchScreen() {
   }, [refresh]);
 
   // A status message belongs to the action that set it; the notice line only
-  // renders on the Evaluate tab, so a message from an action on another tab
+  // renders on the Inspect tab, so a message from an action on another tab
   // (start a comparison, a bake-off, a revert) would otherwise linger there
   // unrelated. Clear it whenever the research tab changes.
   useEffect(() => {
     setNotice(null);
   }, [researchTab]);
 
-  const selected = runs.find((run) => run.id === selectedId) ?? runs[0] ?? null;
+  // No explicit selection → default to the newest run. An explicit selection
+  // that is not in the list — drilled in from Compare or Progress to a run
+  // that has rotated out of the fetch window, or while the list is still
+  // loading — resolves to null and shows a "not in the list" notice, never a
+  // silent swap to an unrelated run.
+  const selected =
+    selectedId === null
+      ? (runs[0] ?? null)
+      : (runs.find((run) => run.id === selectedId) ?? null);
   const selectedRunId = selected?.id ?? null;
   const selectedRunStatus = selected?.status ?? null;
 
@@ -625,6 +641,12 @@ export function ResearchScreen() {
           . If this persists, check the connection on the overview screen.
         </Alert>
       )}
+      <ResearchHome
+        bakeOffs={bakeOffs}
+        improver={improver}
+        candidacies={candidacies}
+        onNavigate={setResearchTab}
+      />
       <nav className="flex gap-1 rounded-lg bg-zinc-200/60 p-1 dark:bg-zinc-900">
         {RESEARCH_TABS.map((researchNavTab) => (
           <button
@@ -838,7 +860,13 @@ export function ResearchScreen() {
                     onReject={decideFinding(rejectFinding)}
                     onReplayEvidence={openReplay}
                   />
+                  {selected.summary !== null && <AdvisorPanel runId={selected.id} />}
                   <ScenarioTable scenarios={scenarios} onReplay={openReplay} />
+                </div>
+              ) : selectedId !== null ? (
+                <div className="text-sm text-zinc-500">
+                  run #{selectedId} isn&apos;t in the loaded list — it may have rotated out of
+                  recent runs. Pick a run from the list to inspect it.
                 </div>
               ) : (
                 <div className="text-sm text-zinc-500">start a run to see its report here</div>
@@ -854,6 +882,13 @@ export function ResearchScreen() {
             groups={comparisons}
             onStart={handleStartComparison}
             startDisabled={comparisonPending || comparisonRunning}
+            onInspectRun={(runId) => {
+              // A comparison column is a real evaluation run; clicking it hands
+              // off to Inspect with that run selected — the same drill-in the
+              // Progress timeline uses, so both land on one detail view.
+              setSelectedId(runId);
+              setResearchTab("evaluate");
+            }}
           />
           <RoutingCandidacyPanel candidacies={candidacies} />
         </div>

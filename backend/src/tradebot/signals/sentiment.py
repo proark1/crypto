@@ -1,7 +1,8 @@
 """Market-wide sentiment inputs for the regime gate (ARCHITECTURE.md 5.1 P1).
 
-Fear & Greed (alternative.me), BTC dominance (CoinGecko), and broad
-negative news flow. These are *advisory tighteners*: each can only push
+Fear & Greed (alternative.me), BTC dominance (CoinGecko), broad negative
+news flow, and perpetual funding rate (the exchange, fed by
+``signals/funding.py``). These are *advisory tighteners*: each can only push
 the gate toward risk-off, never open it — so missing or stale data simply
 contributes nothing, and the bot fails toward the ADX core that is always
 present. That asymmetry is what makes shipping free, best-effort sources
@@ -43,6 +44,13 @@ class SentimentConfig(BaseModel):
     """Fear & Greed at or above this is euphoria — historically where tops
     form; new entries pause rather than chase the blow-off."""
 
+    funding_crowded_long_at_or_above: float = Field(default=0.001, gt=0.0)
+    """Perp funding rate (per-interval fraction; 0.001 = 0.1% paid by longs
+    each funding window) at or above which new entries pause: persistently
+    high positive funding is crowded, over-leveraged longs — euphoria-like, so
+    every family pauses (as with extreme greed). Fed by ``signals/funding.py``;
+    stale or absent readings contribute nothing."""
+
     dominance_surge_points: float = Field(default=3.0, gt=0.0)
     dominance_window: timedelta = timedelta(days=2)
     """BTC dominance rising this many percentage points inside the window
@@ -64,6 +72,7 @@ class MarketSentiment:
         """Create an empty state: no readings, no opinions."""
         self._config = config or SentimentConfig()
         self._fear_greed: tuple[int, datetime] | None = None
+        self._funding: tuple[float, datetime] | None = None
         self._dominance: deque[tuple[float, datetime]] = deque(maxlen=500)
         self._negative_news: deque[datetime] = deque(maxlen=500)
 
@@ -84,6 +93,10 @@ class MarketSentiment:
         """Count one negative headline toward the broad-flow window."""
         self._negative_news.append(at)
 
+    def record_funding_rate(self, rate: float, at: datetime) -> None:
+        """Store the latest perp funding rate (per-interval fraction)."""
+        self._funding = (rate, at)
+
     def risk_off_reason(self, at: datetime, *, mean_reversion_entry: bool = False) -> str | None:
         """Return why entries should pause as of ``at``, or ``None``.
 
@@ -102,6 +115,16 @@ class MarketSentiment:
                     return f"Fear & Greed at {value} (extreme fear; trend entries pause)"
                 if value >= config.extreme_greed_at_or_above:
                     return f"Fear & Greed at {value} (extreme greed / euphoria)"
+        if self._funding is not None:
+            rate, seen_at = self._funding
+            # Crowded longs are euphoria-like, so every family pauses (no
+            # mean-reversion exemption): a funding-paid leveraged-long crowd is
+            # top risk regardless of which spot family is trying to enter.
+            if (
+                at - seen_at <= config.reading_ttl
+                and rate >= config.funding_crowded_long_at_or_above
+            ):
+                return f"perp funding at {rate:.4%} (crowded longs; new entries pause)"
         surge = self._dominance_surge(at)
         if surge is not None:
             return (

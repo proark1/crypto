@@ -167,6 +167,30 @@ class AppConfig(BaseSettings):
             )
         return self
 
+    funding_signal_enabled: bool = False
+    """Poll perpetual funding rate as an advisory tightener for the regime
+    gate (ARCHITECTURE.md §5.2). Off by default and opt-in: it is a newer,
+    less-proven positioning signal than Fear & Greed / dominance, and it needs
+    the venue to expose funding for ``funding_reference_symbol``. Like every
+    sentiment tightener it is one-way — it can only pause new entries (crowded
+    longs ≈ top risk), never open the gate — and a missing or stale feed
+    contributes nothing, so enabling it cannot trade more aggressively. It has
+    no effect on backtests: funding is a live signal only, never fed to the
+    deterministic scenario engine, so the golden backtest is unchanged.
+    Requires the regime gate (and sentiment) to exist — there is nothing to
+    tighten otherwise."""
+
+    funding_reference_symbol: str = ""
+    """The perpetual to read funding from (e.g. ``BTC/USDT:USDT``). Empty
+    disables the funding poll even when ``funding_signal_enabled`` is set: the
+    perp's market notation is venue-specific, so it is named explicitly rather
+    than guessed from the spot reference symbol."""
+
+    funding_crowded_long_at_or_above: float = Field(default=0.001, gt=0.0)
+    """Funding rate (per-interval fraction; 0.001 = 0.1% paid by longs each
+    funding window) at or above which new entries pause — persistently high
+    positive funding is crowded, over-leveraged longs."""
+
     cryptopanic_token: str | None = None
     """CryptoPanic API token. Unset disables news polling; the news gate
     still runs (scheduled-event windows work without any news source)."""
@@ -336,6 +360,32 @@ class AppConfig(BaseSettings):
     acceptance inside it rides the same sweep (one Bonferroni budget for
     the whole curated set), and the timer never resets, so latency stays
     bounded."""
+
+    ai_advisor_enabled: bool = False
+    """Run the AI research advisor (ARCHITECTURE.md §12.9): on demand, ask a
+    Claude model to read a completed research run's report and mined findings
+    and propose experiment hypotheses a human can choose to sweep. Off by
+    default and advisory-only — it never places an order, never promotes a
+    configuration, never runs on the candle hot path, and never feeds the
+    deterministic backtest; its output is a recommendation surfaced in the
+    research UI, and arming a sweep from a hypothesis stays the existing
+    human-initiated path. Enabling it also needs ``ANTHROPIC_API_KEY`` in the
+    environment and the optional ``anthropic`` dependency (the ``ai`` extra);
+    absent either, the advisor stays silent rather than failing a request —
+    the fail-safe direction for an advisory feature that moves no money
+    (CLAUDE.md invariants 4 and 6)."""
+
+    ai_advisor_model: str = "claude-opus-4-8"
+    """Claude model id the advisor calls. Advisory text only — never on the
+    candle hot path, never a deterministic input."""
+
+    ai_advisor_max_tokens: int = Field(default=4000, gt=0)
+    """Output-token ceiling for one advisory response (a diagnosis plus a few
+    hypotheses is small); bounds the cost and latency of a best-effort call."""
+
+    ai_advisor_timeout_seconds: float = Field(default=90.0, gt=0)
+    """Hard per-call timeout in seconds. The advisor is best-effort: a slow or
+    hung call degrades to no advice rather than blocking the API response."""
 
     proposal_ttl_seconds: int = 900
     """Co-pilot proposals expire after this many seconds unanswered."""

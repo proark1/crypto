@@ -96,11 +96,13 @@ from tradebot.signals import (
     DataHealthGate,
     EntryGate,
     FeedHealth,
+    FundingMonitor,
     MarketRegimeDetector,
     MarketSentiment,
     RegimeGate,
     SentimentConfig,
     SentimentMonitor,
+    ccxt_funding_fetcher,
 )
 from tradebot.strategies import (
     MeanReversionConfig,
@@ -372,6 +374,7 @@ class Worker:
                 SentimentConfig(
                     extreme_fear_at_or_below=config.sentiment_extreme_fear_at_or_below,
                     extreme_greed_at_or_above=config.sentiment_extreme_greed_at_or_above,
+                    funding_crowded_long_at_or_above=config.funding_crowded_long_at_or_above,
                 )
             )
             if config.sentiment_enabled and self.regime_detector is not None
@@ -2130,6 +2133,7 @@ class Worker:
         backup_client: httpx.AsyncClient | None = None
         sentiment_task: asyncio.Task[None] | None = None
         sentiment_client: httpx.AsyncClient | None = None
+        funding_task: asyncio.Task[None] | None = None
         try:
             # The API comes up before initialize(): the first boot's deep
             # history backfill can run for minutes, and the platform
@@ -2160,6 +2164,7 @@ class Worker:
             news_task, news_client = self._start_news_monitor_if_configured()
             backup_task, backup_client = self._start_backups_if_configured()
             sentiment_task, sentiment_client = self._start_sentiment_if_configured()
+            funding_task = self._start_funding_if_configured()
             improver_task = self._start_improver_if_enabled()
             # TaskGroup, not gather: if one feed crashes, the others must be
             # cancelled with it — a bot trading some symbols while blind on
@@ -2184,6 +2189,7 @@ class Worker:
                 news_task,
                 backup_task,
                 sentiment_task,
+                funding_task,
             ):
                 if task is None:
                     continue
@@ -2347,6 +2353,49 @@ class Worker:
             interval_minutes=self.config.sentiment_poll_minutes,
         )
         return task, client
+
+    def _start_funding_if_configured(self) -> asyncio.Task[None] | None:
+        """Start perp-funding polling when enabled, the gate exists, and a contract is named.
+
+        Funding feeds the shared sentiment state, so it rides the same
+        precondition as the other tighteners (a regime gate to tighten); an
+        unnamed reference contract leaves it off even when the flag is set,
+        since the perp's market notation is venue-specific. The poll reuses the
+        worker's market-data exchange (ccxt serializes its own REST calls) and
+        is best-effort — an unsupported venue or a transient error skips the
+        reading rather than crashing the worker.
+        """
+        if (
+            not self.config.funding_signal_enabled
+            or self.sentiment is None
+            or not self.config.funding_reference_symbol
+        ):
+            log_event(logger, logging.INFO, "funding_polling_disabled")
+            return None
+        monitor = FundingMonitor(
+            self.sentiment,
+            ccxt_funding_fetcher(self._exchange),
+            self.config.funding_reference_symbol,
+            poll_interval=timedelta(minutes=self.config.sentiment_poll_minutes),
+        )
+        task = asyncio.create_task(monitor.run())
+
+        def log_funding_outcome(finished: asyncio.Task[None]) -> None:
+            try:
+                finished.result()
+            except asyncio.CancelledError:
+                pass
+            except Exception:  # pragma: no cover - poll_once catches its own
+                log_event(logger, logging.ERROR, "funding_monitor_crashed", exc_info=True)
+
+        task.add_done_callback(log_funding_outcome)
+        log_event(
+            logger,
+            logging.INFO,
+            "funding_polling_enabled",
+            symbol=self.config.funding_reference_symbol,
+        )
+        return task
 
     def _start_backups_if_configured(
         self,

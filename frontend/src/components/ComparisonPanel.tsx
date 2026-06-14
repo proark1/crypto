@@ -141,8 +141,17 @@ function statusCell(run: EvaluationRunResponse): string {
  * One comparison batch rendered side by side: a column per strategy, the
  * same scenarios graded for each, so differences are the strategies' own.
  */
-function ComparisonTable(props: { group: ComparisonGroupResponse }) {
+function ComparisonTable(props: {
+  group: ComparisonGroupResponse;
+  /** When set, each strategy column header becomes a button that opens that
+   * run's full report (the Inspect drill-in). */
+  onInspectRun?: (runId: number) => void;
+}) {
   const runs = props.group.runs;
+  // Hoisted to a local const so its narrowing survives into the onClick
+  // closure below — a bare `props.onInspectRun(...)` there would not typecheck
+  // under strict null checks even inside the truthiness guard.
+  const { onInspectRun } = props;
   // Every strategy started from the identical stake, so the ending balance
   // ranks them directly; a run still in flight has no balance and ranks
   // nowhere. Ranked on the exact Decimal string — never float-coerced money.
@@ -162,7 +171,20 @@ function ComparisonTable(props: { group: ComparisonGroupResponse }) {
                 key={run.id}
                 className="py-1 pr-3 font-semibold text-zinc-700 dark:text-zinc-300"
               >
-                {strategyLabel(run.strategy)}
+                {onInspectRun ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onInspectRun(run.id);
+                    }}
+                    title="inspect this run's full report"
+                    className="font-semibold text-inherit hover:text-emerald-700 hover:underline dark:hover:text-emerald-300"
+                  >
+                    {strategyLabel(run.strategy)}
+                  </button>
+                ) : (
+                  strategyLabel(run.strategy)
+                )}
               </th>
             ))}
           </tr>
@@ -301,6 +323,9 @@ export function ComparisonPanel(props: {
   groups: ComparisonGroupResponse[];
   onStart: () => void;
   startDisabled: boolean;
+  /** When set, a strategy column can be clicked to open that run's full
+   * report on the Inspect tab. Omit it and the columns stay static text. */
+  onInspectRun?: (runId: number) => void;
 }) {
   const [selectedGroupId, setSelectedGroupId] = useState<number | null>(null);
   const selected =
@@ -351,7 +376,12 @@ export function ComparisonPanel(props: {
             ))}
           </ul>
           <div>
-            <ComparisonTable group={selected} />
+            {props.onInspectRun && (
+              <p className="mb-1 text-xs text-zinc-500">
+                tip: click a strategy&apos;s column header to open its full report in Inspect
+              </p>
+            )}
+            <ComparisonTable group={selected} onInspectRun={props.onInspectRun} />
             <ArchetypeHeatmap group={selected} />
           </div>
         </div>

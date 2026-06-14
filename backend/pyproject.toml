@@ -14,8 +14,19 @@ dependencies = [
     "uvicorn>=0.30",
 ]
 
+[project.optional-dependencies]
+# The AI research advisor (§12.9) is opt-in. Production installs this extra
+# only when TRADEBOT_AI_ADVISOR_ENABLED is set; the worker and API boot fine
+# without it, and the advisor stays silent when the package is absent.
+ai = [
+    "anthropic>=0.50",
+]
+
 [dependency-groups]
 dev = [
+    # The advisor's optional dependency is installed for the test/lint/type
+    # gates so its module is type-checked and its degrade paths are exercised.
+    "anthropic>=0.50",
     "mypy>=1.10",
     "pytest>=8.2",
     "pytest-asyncio>=0.23",

@@ -21,11 +21,11 @@ This document is the target design. Implementation status as of June 2026
 | Control API: status, pause/resume, kill, data endpoints (§6.4) | **Done** — bearer auth, public /health, CORS; SSE/WS push missing (dashboard polls) |
 | Co-pilot mode: proposal queue, approve/reject, TTL + drift guards (§6.3) | **Done** — entries only; exits never wait for approval |
 | Telegram notifications (§6.2) | **Done** — alerts only; command handling missing |
-| Dashboard: status, chart, decisions, proposals, controls (§6.1) | **Done** — per-coin view with coin switcher, trade journal, decision/proposal panels, the bot-builder wizard, and the research screens (evaluate/compare/tune/progress); SSE/WS push still missing (the dashboard polls) |
+| Dashboard: status, chart, decisions, proposals, controls (§6.1) | **Done** — per-coin view with coin switcher, trade journal, decision/proposal panels, the bot-builder wizard, and the research screens (the bake-off tournament is the landing tab, then compare/tune/progress, with inspect — the former evaluate tab — as the single-run drill-in that compare and progress hand off to); SSE/WS push still missing (the dashboard polls) |
 | Multi-coin support (§4.2) | **Done** — per-symbol feed+engine, shared account/breakers, per-coin dashboard, runtime add/remove via API + UI (coins persisted in Postgres; env var seeds first boot) |
 | Automated improvement: sweep-validated self-tuning (§12.7) | **Done** — paper-scoped; self-feeding cycle rotating per improvement target (production's two families as one budget, then each research family's solo account, target-first then symbols; per-target evaluations, findings, staleness, and family-specific grids — fake-breakout width and volume-confirmation filters, MACD zero-line and volume-confirmation toggles, squeeze keltner-width tightness); findings target the next sweep's challengers with recorded lineage; accepted findings outrank proposed ones, and accepting arms a coalesced accept-triggered sweep (family-matched to the run it came from) so a verdict visibly becomes a test; knob map covers downtrend/ranging, wrong-hold, chasing, early-exit, missed-opportunity, and fake-breakout patterns; promotes only statistically validated sweep winners that also survive the engine-backed confirmation gate (challenger vs incumbent replayed through the production engine — sizing, fees, stop lifecycle, breakers — before any promotion; a vetoed winner is alerted, never applied); research-family promotions tune their competition accounts and say so in the journal (routing stays §13.7); versioned settings journal with UI revert; Telegram alert per promotion; custom-bot recipes are sweepable through the human-initiated paths (the run-sweep button and accept-triggered sweeps grade variants of the whole recipe), but excluded from the auto-rotation and auto-promotion until owner opt-in |
 | Evaluation & training: blind walk-forward (§12) | **Done** — foundations, scenario engine (leak-tested), run orchestration + API, research screen, scenario replay viewer, learning findings (mined + human accept/reject), walk-forward parameter sweeps with explicit overfit verdicts, cross-family candidates, multiple validation windows, bootstrap confidence intervals + Bonferroni-corrected significance on every verdict; evaluation runs grade a chosen bot — any lineup entry or custom bot via the research bot selector, defaulting to the production shape (regime-routed families, self-classified per scenario); findings carry recurrence across a bot's runs and the research timeline serves the run/sweep/promotion story (§12.8) |
-| News pipeline, regime gates, signal fusion (§5.2, §5.3) | **Partial** — BTC regime gate done (ADX trend/range + drawdown risk-off; blocks every family only on risk-off/warm-up/stale data, while family routing is the router's preference rather than a gate veto so a healthy regime lets either family enter; exits never gated; verdicts journaled as `gated` decisions); sentiment tighteners done (Fear & Greed extremes, BTC dominance surges, broad negative news flow — advisory, one-way, stale data contributes nothing); news pipeline done defensively (CryptoPanic polling + keyword classifier, negative-news coin flags, env-configured event windows); confirmation filters partial (volume confirmation shipped as a sweepable per-family entry knob on breakout/momentum, §5.2.3; order-flow/funding P2 data missing) and automated calendar ingestion missing |
+| News pipeline, regime gates, signal fusion (§5.2, §5.3) | **Partial** — BTC regime gate done (ADX trend/range + drawdown risk-off; blocks every family only on risk-off/warm-up/stale data, while family routing is the router's preference rather than a gate veto so a healthy regime lets either family enter; exits never gated; verdicts journaled as `gated` decisions); sentiment tighteners done (Fear & Greed extremes, BTC dominance surges, broad negative news flow — advisory, one-way, stale data contributes nothing); news pipeline done defensively (CryptoPanic polling + keyword classifier, negative-news coin flags, env-configured event windows); confirmation filters partial (volume confirmation shipped as a sweepable per-family entry knob on breakout/momentum, §5.2.3; perp-funding tightener shipped opt-in (§5.2; crowded-long funding pauses entries, live-only, off the backtest path), order-flow P2 data still missing) and automated calendar ingestion missing |
 | Breakout strategy family (§5.2, review item 9) | **Research + competition** — Donchian-channel entries (close clears the prior N-candle ceiling), turtle-style channel exits, shared ATR stop convention and managed-stop knobs, optional volume-confirmation entry filter (§5.2.3, off by default); registered for sweeps/evaluation and auto-tuned by the §12.7 rotation (promotions change its solo competition account), but deliberately unrouted in production: which regime activates it (and at whose expense) is the §13.7 human decision the accumulating evidence exists to inform |
 | Mean-reversion strategy family (§5.2 routing) | **Done** — RSI oversold-recovery entries, midline exits, same ATR stop convention as trend; optional trend-filter EMA (skip falling knives) as a sweepable knob; regime-routed per coin, both families' indicators always warm, exits pass from either family in any regime |
 | Squeeze strategy family (§13) | **Research + competition** — volatility-squeeze breakout: enters the *upward release* of a Bollinger-band-inside-Keltner-channel compression (TTM-style coil), exits when the close falls back below the Bollinger basis, shared ATR stop convention and managed-stop knobs, optional volume-confirmation entry filter (§5.2.3, off by default); built from the new TA-Lib-verified incremental Bollinger plus the existing EMA/ATR; sweepable, evaluated, auto-tuned by the §12.7 rotation (its keltner-width knob is the squeeze tightness the grid tunes), and traded solo by its competition account; unrouted in production until the §13.7 evidence gate is met and a human routes it |
@@ -292,12 +292,24 @@ A trade decision is a pipeline of gates, not a vote among equals:
    preference; the gate no longer vetoes the non-preferred family in a healthy
    regime. (Solo competition challengers remain fully ungated by the regime gate.)
    The sentiment tighteners are family-aware where it matters: extreme *greed*,
-   dominance surges, and broad negative news pause every family's entries, but
-   extreme *fear* pauses only trend entries — mean-reversion exists to buy fear
-   behind its protective stop, and a genuine crash is still caught by the
-   drawdown-based risk-off state, which halts everything. Both Fear & Greed
-   thresholds are operator-tunable (`TRADEBOT_SENTIMENT_EXTREME_FEAR_AT_OR_BELOW`,
-   `TRADEBOT_SENTIMENT_EXTREME_GREED_AT_OR_ABOVE`).
+   dominance surges, broad negative news, and crowded-long perpetual funding
+   pause every family's entries, but extreme *fear* pauses only trend entries —
+   mean-reversion exists to buy fear behind its protective stop, and a genuine
+   crash is still caught by the drawdown-based risk-off state, which halts
+   everything. Both Fear & Greed thresholds are operator-tunable
+   (`TRADEBOT_SENTIMENT_EXTREME_FEAR_AT_OR_BELOW`,
+   `TRADEBOT_SENTIMENT_EXTREME_GREED_AT_OR_ABOVE`). **Perp funding** is the
+   newest such tightener (`signals/funding.py` feeding the shared sentiment
+   state): persistently high positive funding on the matching perpetual is a
+   crowded, over-leveraged long, so new entries pause. It is one-way and
+   stale-safe like the others, **opt-in** (off by default — a newer, less-proven
+   positioning signal that needs the venue to expose funding for the configured
+   contract), and a **live signal only** — never fed to the deterministic
+   scenario engine, so the golden backtest is unaffected. The worker polls the
+   contract's funding off its market-data exchange and feeds the shared
+   sentiment state, opt-in via `TRADEBOT_FUNDING_SIGNAL_ENABLED` and
+   `TRADEBOT_FUNDING_REFERENCE_SYMBOL` (threshold
+   `TRADEBOT_FUNDING_CROWDED_LONG_AT_OR_ABOVE`).
 2. **Entry signal (TA, per coin):** the active strategy produces the candidate
    buy/sell signal with stop and target. TA is the trigger; everything else filters.
 3. **Confirmation filters (market microstructure & positioning):** order-flow (CVD
@@ -860,6 +872,44 @@ not read). Findings always only recommend. Sweep verdicts feed the
 automated improvement loop (§12.7): in paper mode a *validated*
 challenger is promoted automatically; anything touching live trading
 remains a human action.
+
+### 12.9 AI research advisor (advisory, human-approved)
+
+The findings miner (§12.8) reports *mechanical* patterns; the **AI research
+advisor** (`evaluation/advisor.py`) is an optional layer on top that reads a
+completed run's report and its mined findings and asks a Claude model to
+synthesize them into a short diagnosis plus a few **experiment hypotheses** —
+"what looks broken, and what would you try next." It exists because the gap
+between a wall of metrics and a concrete next experiment is exactly the work a
+language model is good at, and the rest of §12 already produces the evidence to
+ground it.
+
+It is deliberately powerless, and the boundary is the whole point:
+
+- **Advisory only — no order or promotion path.** The advisor returns a
+  `ResearchAdvice` object (a diagnosis and a list of hypotheses, each with a
+  plain-words `parameter_hint`) and nothing else. A hypothesis becomes a test
+  only when a human chooses to arm a sweep from it, through the same
+  human-initiated path the run-sweep button and accept-triggered sweeps already
+  use (§12.7). Nothing the model writes is parsed into an applied configuration,
+  and it never places an order (CLAUDE.md invariants 4).
+- **Off the hot path, out of the deterministic core.** It is an on-demand call
+  from the control API, never on the candle→signal→order loop, and it is never
+  an input to the scenario engine or the fill simulator — so the golden backtest
+  is byte-identical whether or not the advisor ran. It reads R-multiples and
+  money *strings* off an already-built report to compose prose; it does no money
+  arithmetic and produces no size.
+- **Fail-safe and opt-in.** Off by default (`TRADEBOT_AI_ADVISOR_ENABLED`,
+  defaulting false). The SDK is an optional dependency (the `ai` extra) and the
+  credential is an environment variable (`ANTHROPIC_API_KEY`) — never in the
+  repo. A disabled flag, a missing package, a missing key, a model refusal, a
+  timeout, or any SDK error all resolve to "no advice" (`None`), never to an
+  error that could fail the surrounding request. The call uses structured
+  outputs (a typed schema) and adaptive thinking; the model id, token ceiling,
+  and timeout are configured.
+
+In short: the deterministic pipeline earns the evidence and keeps the veto; the
+model only ever *suggests* the next experiment a human runs.
 
 ---
 
