@@ -85,6 +85,17 @@ describe("ScenarioReplay", () => {
     expect(screen.queryByText("excellent")).toBeNull();
   });
 
+  it("never flashes the grade when the horizon is empty", () => {
+    const noHorizon: ScenarioReplayResponse = { ...REPLAY, horizon: [] };
+    render(<ScenarioReplay replay={noHorizon} onBack={() => undefined} />);
+    // 0 / 0 revealed must NOT count as fully revealed: the grade stays hidden
+    // and the reveal buttons are disabled (nothing to reveal).
+    expect(screen.getByText(/grade is hidden/)).toBeDefined();
+    expect(screen.queryByText("excellent")).toBeNull();
+    expect(screen.getByText("reveal next candle").closest("button")?.disabled).toBe(true);
+    expect(screen.getByText("reveal all").closest("button")?.disabled).toBe(true);
+  });
+
   it("calls onBack from the back button", () => {
     const onBack = vi.fn();
     render(<ScenarioReplay replay={REPLAY} onBack={onBack} />);

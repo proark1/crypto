@@ -1,7 +1,13 @@
 import { useState } from "react";
 
 import type { ComparisonGroupResponse, EvaluationRunResponse } from "../api/types";
-import { formatFractionPercent, formatMoney, formatTime, signClass } from "../lib/format";
+import {
+  formatFractionPercent,
+  formatMoney,
+  formatTime,
+  rankMoneyDescending,
+  signClass,
+} from "../lib/format";
 import { Button, Card } from "../ui";
 import { ArchetypeHeatmap } from "./ArchetypeHeatmap";
 
@@ -51,15 +57,6 @@ function asPercent(value: unknown): string {
  * (a run still in flight has no balance yet) fall back to a dash. */
 function asMoney(value: unknown): string {
   return typeof value === "string" && value.trim() !== "" ? formatMoney(value) : "—";
-}
-
-/** Standard competition ranking of values, highest first (1 = best). Ties
- * share a rank; nulls (runs still in flight) rank nowhere. */
-function rankDescending(values: (number | null)[]): (number | null)[] {
-  const ordered = [...new Set(values.filter((value): value is number => value !== null))].sort(
-    (a, b) => b - a,
-  );
-  return values.map((value) => (value === null ? null : ordered.indexOf(value) + 1));
 }
 
 /** "1st", "2nd", "3rd", … with a medal for the podium so the winner reads at
@@ -148,9 +145,12 @@ function ComparisonTable(props: { group: ComparisonGroupResponse }) {
   const runs = props.group.runs;
   // Every strategy started from the identical stake, so the ending balance
   // ranks them directly; a run still in flight has no balance and ranks
-  // nowhere.
-  const finalBalances = runs.map((run) => asNumber(metricValue(run, "final_balance_quote")));
-  const ranks = rankDescending(finalBalances);
+  // nowhere. Ranked on the exact Decimal string — never float-coerced money.
+  const finalBalances = runs.map((run) => {
+    const value = metricValue(run, "final_balance_quote");
+    return typeof value === "string" && value.trim() !== "" ? value : null;
+  });
+  const ranks = rankMoneyDescending(finalBalances);
   return (
     <div className="overflow-x-auto">
       <table className="w-full text-left text-sm">
