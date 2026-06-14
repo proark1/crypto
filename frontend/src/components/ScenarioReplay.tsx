@@ -2,6 +2,7 @@ import { useState } from "react";
 
 import type { ScenarioReplayResponse } from "../api/types";
 import { toReplayMarkers } from "../lib/chart";
+import { formatTime } from "../lib/format";
 import { GLOSSARY, InfoTooltip, type GlossaryTerm } from "../ui";
 import { CandleChart } from "./CandleChart";
 
@@ -16,7 +17,13 @@ export function ScenarioReplay(props: { replay: ScenarioReplayResponse; onBack: 
   const { replay } = props;
   const [revealed, setRevealed] = useState(0);
   const horizonTotal = replay.horizon.length;
-  const fullyRevealed = revealed >= horizonTotal;
+  const nothingMoreToReveal = revealed >= horizonTotal;
+  // The grade is only "fully revealed" when there was a horizon to reveal in
+  // the first place: a scenario whose stored horizon is gone (0 candles) must
+  // not flash its verdict with nothing shown — that would defeat the blind
+  // replay exactly when the price action it should be judged against is
+  // missing.
+  const fullyRevealed = horizonTotal > 0 && nothingMoreToReveal;
   const candles = [...replay.window, ...replay.horizon.slice(0, revealed)];
 
   const conditionChips = [
@@ -54,7 +61,7 @@ export function ScenarioReplay(props: { replay: ScenarioReplayResponse; onBack: 
 
       <div className="rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900 p-4">
         <div className="text-xs uppercase tracking-wide text-zinc-500">
-          decided blind at {replay.scenario.decision_time}
+          decided blind at {formatTime(replay.scenario.decision_time)}
         </div>
         <div className="mt-1 text-lg font-semibold text-zinc-900 dark:text-zinc-100">
           {replay.scenario.decision.toUpperCase()}
@@ -82,7 +89,7 @@ export function ScenarioReplay(props: { replay: ScenarioReplayResponse; onBack: 
       <div className="flex flex-wrap items-center gap-2">
         <button
           type="button"
-          disabled={fullyRevealed}
+          disabled={nothingMoreToReveal}
           onClick={() => {
             setRevealed((count) => Math.min(count + 1, horizonTotal));
           }}
@@ -92,7 +99,7 @@ export function ScenarioReplay(props: { replay: ScenarioReplayResponse; onBack: 
         </button>
         <button
           type="button"
-          disabled={fullyRevealed}
+          disabled={nothingMoreToReveal}
           onClick={() => {
             setRevealed(horizonTotal);
           }}

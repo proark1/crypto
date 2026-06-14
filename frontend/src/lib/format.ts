@@ -64,7 +64,82 @@ export function formatFractionPercent(fraction: string | null): string {
     return "—";
   }
   const percent = (parsed * 100).toFixed(2);
+  // A sub-basis-point fraction rounds to "0.00" (or "-0.00"): show a plain,
+  // unsigned zero rather than implying a direction on an apparent nothing.
+  if (Number(percent) === 0) {
+    return "0.00%";
+  }
   return parsed > 0 ? `+${percent}%` : `${percent}%`;
+}
+
+/**
+ * Compare two exact Decimal-string amounts, returning -1, 0, or 1 (a<b, a=b,
+ * a>b). Money is never coerced to a JS number for ordering — two balances
+ * differing only beyond float precision would otherwise rank wrong. Pure
+ * string work on the Decimal-exact values.
+ */
+export function compareDecimalStrings(a: string, b: string): number {
+  const left = a.trim();
+  const right = b.trim();
+  const unsignedA = left.startsWith("-") ? left.slice(1) : left;
+  const unsignedB = right.startsWith("-") ? right.slice(1) : right;
+  // Negative zero ("-0", "-0.00") is mathematically zero: a zero magnitude
+  // takes a positive sign so it never sorts below a plain "0".
+  const signA = left.startsWith("-") && compareUnsignedDecimal(unsignedA, "0") !== 0 ? -1 : 1;
+  const signB = right.startsWith("-") && compareUnsignedDecimal(unsignedB, "0") !== 0 ? -1 : 1;
+  if (signA !== signB) {
+    return signA < signB ? -1 : 1;
+  }
+  const magnitude = compareUnsignedDecimal(unsignedA, unsignedB);
+  return signA === -1 ? -magnitude : magnitude;
+}
+
+function compareUnsignedDecimal(a: string, b: string): number {
+  const dotA = a.indexOf(".");
+  const dotB = b.indexOf(".");
+  const intA = (dotA === -1 ? a : a.slice(0, dotA)).replace(/^0+(?=\d)/, "");
+  const intB = (dotB === -1 ? b : b.slice(0, dotB)).replace(/^0+(?=\d)/, "");
+  if (intA.length !== intB.length) {
+    return intA.length < intB.length ? -1 : 1;
+  }
+  if (intA !== intB) {
+    return intA < intB ? -1 : 1;
+  }
+  const fracA = dotA === -1 ? "" : a.slice(dotA + 1);
+  const fracB = dotB === -1 ? "" : b.slice(dotB + 1);
+  const width = Math.max(fracA.length, fracB.length);
+  const paddedA = fracA.padEnd(width, "0");
+  const paddedB = fracB.padEnd(width, "0");
+  if (paddedA === paddedB) {
+    return 0;
+  }
+  return paddedA < paddedB ? -1 : 1;
+}
+
+/**
+ * Dense ranking of exact money-string amounts, highest first (1 = best):
+ * tied values share a rank and the next distinct value takes the next rank.
+ * Nulls (e.g. a run still in flight) rank nowhere. Ordering is Decimal-exact
+ * — never via float coercion.
+ */
+export function rankMoneyDescending(values: (string | null)[]): (number | null)[] {
+  const present = values.filter(
+    (value): value is string => value !== null && value.trim() !== "",
+  );
+  const sorted = [...present].sort((a, b) => compareDecimalStrings(b, a));
+  const unique: string[] = [];
+  let previous: string | null = null;
+  for (const value of sorted) {
+    if (previous === null || compareDecimalStrings(previous, value) !== 0) {
+      unique.push(value);
+      previous = value;
+    }
+  }
+  return values.map((value) =>
+    value === null || value.trim() === ""
+      ? null
+      : unique.findIndex((entry) => compareDecimalStrings(entry, value) === 0) + 1,
+  );
 }
 
 export function signClass(amount: string | null): string {

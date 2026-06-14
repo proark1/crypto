@@ -387,33 +387,59 @@ export function ResearchScreen() {
   const suggestionsLoaded = useRef(false);
 
   const refresh = useCallback(async () => {
-    try {
-      setRuns(await fetchEvaluations());
-      setSweeps(await fetchSweeps());
-      setVersions(await fetchStrategyVersions());
-      setComparisons(await fetchComparisons());
-      setCandidacies(await fetchRoutingCandidacy());
-      setBakeOffs(await fetchBakeOffs());
+    // Each endpoint is fetched concurrently and applied on its own: a single
+    // slow or failing endpoint (a transient 500 on, say, candidacy) must not
+    // stall the rest or grey the whole tab — the panels that did load keep
+    // updating, and only their own failure marks them stale.
+    const results = await Promise.allSettled([
+      fetchEvaluations().then((value) => {
+        setRuns(value);
+      }),
+      fetchSweeps().then((value) => {
+        setSweeps(value);
+      }),
+      fetchStrategyVersions().then((value) => {
+        setVersions(value);
+      }),
+      fetchComparisons().then((value) => {
+        setComparisons(value);
+      }),
+      fetchRoutingCandidacy().then((value) => {
+        setCandidacies(value);
+      }),
+      fetchBakeOffs().then((value) => {
+        setBakeOffs(value);
+      }),
       // Cheap and current: the selector follows custom bots being created
       // or deleted, and the improver card follows the loop's cycles.
-      setStrategies(await fetchEvaluationStrategies());
-      setImprover(await fetchImprovementStatus());
-      setTimeline(await fetchResearchTimeline());
-      // Suggestions ride the poll only until the first success: stored
-      // history depth moves a day at a time, so once loaded they stay put —
-      // but a fetch that failed (token not entered yet, transient outage)
-      // must retry, or the panel would sit empty until a full reload.
-      if (!suggestionsLoaded.current) {
+      fetchEvaluationStrategies().then((value) => {
+        setStrategies(value);
+      }),
+      fetchImprovementStatus().then((value) => {
+        setImprover(value);
+      }),
+      fetchResearchTimeline().then((value) => {
+        setTimeline(value);
+      }),
+    ]);
+    // Suggestions ride the poll only until the first success: stored history
+    // depth moves a day at a time, so once loaded they stay put — but a fetch
+    // that failed (token not entered yet, transient outage) must retry, or the
+    // panel would sit empty until a full reload.
+    if (!suggestionsLoaded.current) {
+      try {
         setSuggestions(await fetchEvaluationSuggestions());
         suggestionsLoaded.current = true;
+      } catch {
+        // Leave it for the next tick to retry; not fatal to the rest.
       }
-      setLastUpdated(Date.now());
-      setPollStale(false);
-    } catch {
-      // Auth/error prompts stay with the overview screen; here we only flag
-      // that the data on screen is no longer being refreshed.
-      setPollStale(true);
     }
+    // The clock advances if anything refreshed; staleness flags only when an
+    // endpoint actually failed, so a partial outage reads honestly.
+    if (results.some((result) => result.status === "fulfilled")) {
+      setLastUpdated(Date.now());
+    }
+    setPollStale(results.some((result) => result.status === "rejected"));
   }, []);
 
   useEffect(() => {
@@ -434,6 +460,14 @@ export function ResearchScreen() {
       clearTimeout(timer);
     };
   }, [refresh]);
+
+  // A status message belongs to the action that set it; the notice line only
+  // renders on the Evaluate tab, so a message from an action on another tab
+  // (start a comparison, a bake-off, a revert) would otherwise linger there
+  // unrelated. Clear it whenever the research tab changes.
+  useEffect(() => {
+    setNotice(null);
+  }, [researchTab]);
 
   const selected = runs.find((run) => run.id === selectedId) ?? runs[0] ?? null;
   const selectedRunId = selected?.id ?? null;

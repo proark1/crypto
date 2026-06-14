@@ -110,6 +110,22 @@ def spec_at(index: int) -> ScenarioSpec:
     return ScenarioSpec(decision_index=index, lookback=LOOKBACK, horizon=HORIZON)
 
 
+def ohlc(open_: float, high: float, low: float, close: float, index: int) -> Candle:
+    """A candle with explicit OHLC — for gaps ``make_series`` cannot express."""
+    open_time = BASE_TIME + timedelta(minutes=index)
+    return Candle(
+        symbol="BTC/USDT",
+        interval=CandleInterval.M1,
+        open_time=open_time,
+        close_time=open_time + timedelta(minutes=1),
+        open_quote=Decimal(str(open_)),
+        high_quote=Decimal(str(high)),
+        low_quote=Decimal(str(low)),
+        close_quote=Decimal(str(close)),
+        volume_base=Decimal("1"),
+    )
+
+
 # A decline longer than the lookback, then a rise: the real strategy's
 # cross lands on the final window candle at decision index 42.
 DOWN = [100.0 - 0.3 * i for i in range(40)]
@@ -192,6 +208,25 @@ class TestEntryGrading:
         assert outcome.mae_r is not None and outcome.mae_r <= Decimal("-0.5")
         assert outcome.timing == TimingLabel.EARLY_ENTRY
 
+    def test_strategy_exit_that_gaps_through_the_stop_is_a_stop_out(self) -> None:
+        # Buy at the decision (stop 10 below → 90), the strategy sells on the
+        # first horizon candle, and the next candle gaps open to 85 — below the
+        # resting stop. The exit fills at that open either way, but it must be
+        # graded a stop-out and the MAE must capture the gap, not stay at the
+        # prior candle's shallow low.
+        window = [ohlc(100, 100.5, 99.5, 100, i) for i in range(LOOKBACK)]
+        horizon = [ohlc(100, 101, 99, 100, LOOKBACK)]  # strategy sells here; no breach
+        horizon.append(ohlc(85, 86, 80, 82, LOOKBACK + 1))  # gaps below the 90 stop
+        horizon += [ohlc(82, 83, 81, 82, LOOKBACK + 2 + i) for i in range(HORIZON - 2)]
+        outcome = scripted(buy_on=LOOKBACK, sell_on=LOOKBACK + 1, stop_distance="10").evaluate(
+            window + horizon, spec_at(LOOKBACK)
+        )
+
+        assert outcome.decision == "buy"
+        assert outcome.stop_hit is True  # the gap-down open reached the resting stop
+        assert outcome.mae_r is not None and outcome.mae_r <= Decimal("-1")
+        assert outcome.r_multiple is not None and outcome.r_multiple < 0
+
     def test_fixed_time_exit_closes_at_horizon_end(self) -> None:
         flat = [100.0] * LOOKBACK
         drift = [100.5 + 0.4 * i for i in range(HORIZON)]
@@ -246,6 +281,27 @@ class TestHoldingClass:
         assert outcome.decision == "sell"
         assert outcome.r_multiple is not None and outcome.r_multiple > 0  # still a winner
         assert outcome.timing == TimingLabel.LATE_EXIT  # but it gave back > 0.5R
+
+    def test_holding_exit_oracle_includes_the_in_window_peak(self) -> None:
+        # Ran up to ~115 in-window, slid to ~104 by the decision; the horizon
+        # never revisits the peak. The hindsight-best exit reflects the
+        # in-window run-up, so oracle_r can never read below the trade's own
+        # MFE the way a horizon-only peak could.
+        window = (
+            [100.0] * 10
+            + [101.0 + 2.0 * i for i in range(8)]
+            + [115.0 - 1.0 * i for i in range(12)]
+        )
+        horizon = [104.0] * HORIZON
+        candles = make_series(window + horizon)
+        outcome = scripted(buy_on=10, sell_on=LOOKBACK, stop_distance="10").evaluate(
+            candles, spec_at(LOOKBACK)
+        )
+
+        assert outcome.scenario_class == ScenarioClass.HOLDING
+        assert outcome.decision == "sell"
+        assert outcome.oracle_r is not None and outcome.mfe_r is not None
+        assert outcome.oracle_r >= outcome.mfe_r
 
     def test_exit_right_before_a_rocket_is_early(self) -> None:
         window = [100.0] * LOOKBACK

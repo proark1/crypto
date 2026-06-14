@@ -319,7 +319,11 @@ class ScenarioEvaluator:
             mfe_r=_ratio(trade.peak_high_quote - entry, risk),
             duration_candles=1,
             stop_hit=False,
-            oracle_r=_ratio(peak_after_exit - entry, risk),
+            # The hindsight-best exit is the highest price reachable across the
+            # whole hold — the run-up before the decision (the in-window peak)
+            # as well as the horizon — so it can never read below this trade's
+            # own MFE the way a horizon-only peak could.
+            oracle_r=_ratio(max(trade.peak_high_quote, peak_after_exit) - entry, risk),
             verdict=_trade_verdict(r),
             timing=timing,
         )
@@ -376,7 +380,17 @@ class ScenarioEvaluator:
         for index, candle in enumerate(horizon):
             current_stop = managed.stop_price_quote if managed is not None else stop
             if pending_exit:
-                return self._slipped(candle.open_quote, buying=False), index, False, peak, trough
+                # The strategy's exit fills at this candle's open; the position
+                # was held right up to that price, so it bounds the excursion
+                # like any held candle (the stop paths below record the exit
+                # candle's extreme too — this keeps them consistent). If the
+                # open has already reached or gapped through the resting stop,
+                # the protective stop is what closed the trade: the fill price
+                # is the same, but it must be graded as a stop-out.
+                exit_price = self._slipped(candle.open_quote, buying=False)
+                peak = max(peak, candle.open_quote)
+                trough = min(trough, candle.open_quote)
+                return exit_price, index, candle.open_quote <= current_stop, peak, trough
             if candle.open_quote <= current_stop:
                 exit_price = self._slipped(candle.open_quote, buying=False)
                 trough = min(trough, candle.open_quote)
