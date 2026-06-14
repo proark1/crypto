@@ -18,7 +18,9 @@ a normal, inspectable evaluation run.
 Feasibility is honest: a short window on a high timeframe may hold too few
 candles to host a single scenario (a 10-day window is ten daily candles).
 Such a cell is recorded as ``insufficient_data`` and simply excluded from
-the averages — a bot is never charged for a cell nobody could trade.
+the averages — a bot is never charged for a cell nobody could trade. The
+default grid (``DEFAULT_GRID``) is sized so every one of its cells clears
+that floor; only a hand-picked grid can land on an infeasible cell.
 """
 
 from __future__ import annotations
@@ -29,7 +31,6 @@ from collections.abc import Callable, Coroutine, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import ROUND_HALF_EVEN, Decimal
-from itertools import product
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -43,11 +44,24 @@ from tradebot.persistence.evaluation_store import EvaluationStore
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_TIMEFRAMES: tuple[str, ...] = ("1h", "4h", "1d")
-"""The candle intervals the grid sweeps, fast to slow."""
+DEFAULT_GRID: tuple[tuple[str, tuple[int, ...]], ...] = (
+    ("1h", (10, 50, 100)),
+    ("4h", (40, 90, 180)),
+    ("1d", (180, 270, 365)),
+)
+"""The grid swept by default: each timeframe paired with the history depths
+(in days) it is graded over — fast timeframe to slow, recent window to deep.
 
-DEFAULT_HISTORY_WINDOWS: tuple[int, ...] = (10, 50, 100)
-"""History depths in days the grid sweeps, recent to deep."""
+The depths are timeframe-relative on purpose. Feasibility is a *candle*
+count, not a day count, and a day buys 24 candles at ``1h`` but only one at
+``1d``; a scenario needs ``DEFAULT_LOOKBACK_CANDLES`` + ``DEFAULT_HORIZON_CANDLES``
+(= 150) candles before a cell can host even one. A single day-window list
+shared across timeframes cannot win both ends: windows shallow enough to
+probe recent ``1h`` behaviour (10 days = 240 candles) are far too thin on
+``1d`` (10 candles), and windows deep enough for ``1d`` bury the ``1h`` row
+in years of history. So each timeframe sweeps depths sized to its own bar,
+and every cell here clears the 150-candle floor — no default cell is dead on
+arrival, and the leaderboard grades the whole grid."""
 
 DEFAULT_SCENARIO_COUNT = 150
 """Scenarios per contestant per cell. Lower than a solo evaluation's
@@ -56,8 +70,8 @@ the budget trades some statistical depth for finishing in reasonable time."""
 
 DEFAULT_LOOKBACK_CANDLES = 120
 """Context per scenario. Covers the slowest preset indicator (an 80-period
-EMA) with slack, while staying small enough that the shorter windows can
-still host scenarios."""
+EMA) with slack; ``DEFAULT_GRID`` sizes every cell's window to clear this
+plus the horizon, so each default cell can host a scenario."""
 
 DEFAULT_HORIZON_CANDLES = 30
 """Candles of future revealed for grading each decision."""
@@ -83,22 +97,25 @@ class BakeOffConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     symbols: tuple[str, ...] = Field(min_length=1)
-    timeframes: tuple[str, ...] = DEFAULT_TIMEFRAMES
-    history_windows: tuple[int, ...] = DEFAULT_HISTORY_WINDOWS
+    grid: tuple[tuple[str, tuple[int, ...]], ...] = DEFAULT_GRID
+    """The cells to sweep: each ``(timeframe, history-depths-in-days)`` pair.
+    A tuple of pairs rather than a mapping so the frozen config stays
+    hashable; the timeframes are its keys, in sweep order."""
     scenario_count: int = Field(default=DEFAULT_SCENARIO_COUNT, gt=0)
     lookback_candles: int = Field(default=DEFAULT_LOOKBACK_CANDLES, ge=60)
     horizon_candles: int = Field(default=DEFAULT_HORIZON_CANDLES, gt=0)
     seed: int = 7
 
     def validated(self) -> BakeOffConfig:
-        """Parse the timeframes and windows, raising ``ValueError`` on bad ones."""
-        if not self.timeframes:
-            raise ValueError("a bake-off needs at least one timeframe")
-        if not self.history_windows:
-            raise ValueError("a bake-off needs at least one history window")
-        tuple(CandleInterval(timeframe) for timeframe in self.timeframes)
-        if any(days <= 0 for days in self.history_windows):
-            raise ValueError("history windows must be positive day counts")
+        """Parse the grid, raising ``ValueError`` on a bad timeframe or window."""
+        if not self.grid:
+            raise ValueError("a bake-off needs at least one timeframe in its grid")
+        for timeframe, windows in self.grid:
+            CandleInterval(timeframe)  # raises ValueError on an unknown timeframe
+            if not windows:
+                raise ValueError(f"timeframe {timeframe!r} needs at least one history window")
+            if any(days <= 0 for days in windows):
+                raise ValueError("history windows must be positive day counts")
         return self
 
 
@@ -118,9 +135,8 @@ def expand_cells(config: BakeOffConfig) -> list[BakeOffCell]:
     """
     return [
         BakeOffCell(timeframe=timeframe, history_days=days)
-        for timeframe, days in product(
-            config.timeframes, sorted(config.history_windows, reverse=True)
-        )
+        for timeframe, windows in config.grid
+        for days in sorted(windows, reverse=True)
     ]
 
 

@@ -316,7 +316,7 @@ export function fetchComparisons(): Promise<ComparisonGroupResponse[]> {
 }
 
 /** Start a bake-off: the contestant roster across the whole grid. An empty
- * body takes the backend's defaults (the live coins, the 3x3 grid); 409 = a
+ * body takes the backend's defaults (the live coins, the nine-cell grid); 409 = a
  * bake-off is already running, 400 = bad grid. */
 export function startBakeOff(
   body: Record<string, unknown> = {},

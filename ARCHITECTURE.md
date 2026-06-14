@@ -1130,12 +1130,17 @@ research tab's one-click experiment — start it and walk away.
   never swept, lineup'd, or promoted. The roster is code-defined and frozen
   so two bake-offs are comparable; every contestant is validated buildable at
   import.
-- **The grid.** Every (timeframe, history-window) pair is a *cell* — by
-  default `{1h, 4h, 1d} × {10, 50, 100 days}`, nine cells. Each cell is one
-  ordinary comparison (§13.6): all contestants on byte-identical scenarios
-  (one frozen window end, one seed), so within a cell the only variable is
-  the strategy. Every per-cell number is a normal, inspectable evaluation
-  run, linked by its `comparison_group`.
+- **The grid.** Each *cell* is one (timeframe, history-window) pair. The
+  default grid pairs each timeframe with depths sized to its own bar —
+  `1h × {10, 50, 100d}`, `4h × {40, 90, 180d}`, `1d × {180, 270, 365d}`,
+  nine cells — because feasibility is a candle count, not a day count: a
+  scenario needs lookback + horizon candles (150 by default), and a day buys
+  24 candles at 1h but only one at 1d, so a single day-window list shared
+  across timeframes is either too thin to trade on 1d or buries 1h in years
+  of history. Each cell is one ordinary comparison (§13.6): all contestants
+  on byte-identical scenarios (one frozen window end, one seed), so within a
+  cell the only variable is the strategy. Every per-cell number is a normal,
+  inspectable evaluation run, linked by its `comparison_group`.
 - **One research lane.** The orchestrator drives the cells through the
   evaluation manager one at a time and polls them to completion, exactly as
   the §12.7 improver polls its sweeps — never a second workload competing
@@ -1144,7 +1149,8 @@ research tab's one-click experiment — start it and walk away.
 - **Honest feasibility.** A short window on a high timeframe may hold too
   few candles to host a scenario (ten daily candles cannot). Such a cell is
   recorded `insufficient_data` and excluded from the averages — no bot is
-  charged for a window nobody could trade.
+  charged for a window nobody could trade. The default grid is sized so
+  every cell clears that floor; only a hand-picked grid can land on one.
 - **Ranking.** Each contestant is scored by its **average return fraction**
   across the cells it could trade (raw money is not comparable across a
   10-day and a 100-day window). The leaderboard updates after every cell,
