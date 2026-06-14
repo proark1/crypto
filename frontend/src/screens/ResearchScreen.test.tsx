@@ -209,4 +209,27 @@ describe("ResearchScreen", () => {
     // And the Inspect form is now in view, confirming the tab switched.
     expect(screen.getByRole("button", { name: "start evaluation" })).toBeDefined();
   });
+
+  it("shows a not-in-list notice instead of silently swapping in another run", async () => {
+    // The comparison references run #99, but the evaluations list holds only
+    // #7 — drilling in must say #99 is missing, never quietly show #7's report.
+    const listedRun: EvaluationRunResponse = { ...RUN, id: 7, strategy: "production" };
+    const rotatedRun: EvaluationRunResponse = { ...RUN, id: 99, strategy: "breakout" };
+    vi.mocked(fetchEvaluations).mockResolvedValue([listedRun]);
+    vi.mocked(fetchComparisons).mockResolvedValue([
+      { group_id: 5, created_at: "2026-06-10T12:00:00+00:00", runs: [rotatedRun] },
+    ]);
+    render(<ResearchScreen />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Compare" }));
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Breakout" })).toBeDefined();
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Breakout" }));
+    await waitFor(() => {
+      expect(screen.getByText(/run #99 isn't in the loaded list/)).toBeDefined();
+    });
+    // The unrelated listed run must not be shown in its place.
+    expect(screen.queryByText(/bot: production/)).toBeNull();
+  });
 });

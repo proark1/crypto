@@ -148,6 +148,10 @@ function ComparisonTable(props: {
   onInspectRun?: (runId: number) => void;
 }) {
   const runs = props.group.runs;
+  // Hoisted to a local const so its narrowing survives into the onClick
+  // closure below — a bare `props.onInspectRun(...)` there would not typecheck
+  // under strict null checks even inside the truthiness guard.
+  const { onInspectRun } = props;
   // Every strategy started from the identical stake, so the ending balance
   // ranks them directly; a run still in flight has no balance and ranks
   // nowhere. Ranked on the exact Decimal string — never float-coerced money.
@@ -167,11 +171,11 @@ function ComparisonTable(props: {
                 key={run.id}
                 className="py-1 pr-3 font-semibold text-zinc-700 dark:text-zinc-300"
               >
-                {props.onInspectRun ? (
+                {onInspectRun ? (
                   <button
                     type="button"
                     onClick={() => {
-                      props.onInspectRun?.(run.id);
+                      onInspectRun(run.id);
                     }}
                     title="inspect this run's full report"
                     className="font-semibold text-inherit hover:text-emerald-700 hover:underline dark:hover:text-emerald-300"

@@ -475,7 +475,15 @@ export function ResearchScreen() {
     setNotice(null);
   }, [researchTab]);
 
-  const selected = runs.find((run) => run.id === selectedId) ?? runs[0] ?? null;
+  // No explicit selection → default to the newest run. An explicit selection
+  // that is not in the list — drilled in from Compare or Progress to a run
+  // that has rotated out of the fetch window, or while the list is still
+  // loading — resolves to null and shows a "not in the list" notice, never a
+  // silent swap to an unrelated run.
+  const selected =
+    selectedId === null
+      ? (runs[0] ?? null)
+      : (runs.find((run) => run.id === selectedId) ?? null);
   const selectedRunId = selected?.id ?? null;
   const selectedRunStatus = selected?.status ?? null;
 
@@ -845,6 +853,11 @@ export function ResearchScreen() {
                     onReplayEvidence={openReplay}
                   />
                   <ScenarioTable scenarios={scenarios} onReplay={openReplay} />
+                </div>
+              ) : selectedId !== null ? (
+                <div className="text-sm text-zinc-500">
+                  run #{selectedId} isn&apos;t in the loaded list — it may have rotated out of
+                  recent runs. Pick a run from the list to inspect it.
                 </div>
               ) : (
                 <div className="text-sm text-zinc-500">start a run to see its report here</div>
