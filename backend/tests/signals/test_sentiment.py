@@ -53,6 +53,27 @@ class TestRiskOffReason:
         assert sentiment.risk_off_reason(NOW + timedelta(hours=1)) is not None
         assert sentiment.risk_off_reason(NOW + timedelta(hours=3)) is None
 
+    def test_crowded_long_funding_blocks_every_family(self) -> None:
+        """High positive funding is euphoria-like: no mean-reversion exemption."""
+        sentiment = MarketSentiment(SentimentConfig(funding_crowded_long_at_or_above=0.001))
+        sentiment.record_funding_rate(0.0012, NOW)
+        reason = sentiment.risk_off_reason(NOW)
+        assert reason is not None and "crowded longs" in reason
+        # Unlike extreme fear, this pauses mean-reversion entries too.
+        assert "crowded longs" in str(sentiment.risk_off_reason(NOW, mean_reversion_entry=True))
+
+        # Below the threshold: no opinion.
+        calm = MarketSentiment(SentimentConfig(funding_crowded_long_at_or_above=0.001))
+        calm.record_funding_rate(0.0003, NOW)
+        assert calm.risk_off_reason(NOW) is None
+
+        # A stale reading contributes nothing.
+        aged = MarketSentiment(
+            SentimentConfig(funding_crowded_long_at_or_above=0.001, reading_ttl=timedelta(hours=2))
+        )
+        aged.record_funding_rate(0.0012, NOW)
+        assert aged.risk_off_reason(NOW + timedelta(hours=3)) is None
+
     def test_dominance_surge_blocks_and_drift_does_not(self) -> None:
         sentiment = MarketSentiment()
         for hours, percent in enumerate([52.0, 52.5, 53.0, 55.5]):
