@@ -333,3 +333,90 @@ class TestHoldingClass:
 
         assert outcome.verdict == Verdict.CORRECT_HOLD
         assert outcome.stop_hit is False
+
+
+# Lookback 2 / horizon 3, with a flat 100 window so the buy on the last window
+# candle sets a stop at 90 and the entry fills at the first horizon open.
+_EXACT_SPEC = ScenarioSpec(decision_index=2, lookback=2, horizon=3)
+_FLAT_WINDOW = [ohlc(100, 100, 100, 100, 0), ohlc(100, 100, 100, 100, 1)]
+
+
+class TestExactArithmetic:
+    """Golden trade math: every monetary and R figure pinned to a value
+    derived by hand from the documented formulas, so any drift in the
+    slippage / fee / PnL / R / excursion arithmetic fails loudly and
+    reproducibly (independently re-derivable, not copied from code output).
+
+    Constants are the FillSimulatorConfig defaults: market slippage 5 bps,
+    taker fee 10 bps. A buy fills at open*(1+0.0005), a sell at price*(1-0.0005),
+    each fee is price*0.001, all quantized to 1e-12. With lookback 2 / horizon 3
+    the bot buys on the last window candle (close 100 → stop = 100-10 = 90) and
+    the entry fills at the first horizon candle's open (100 → 100.05), so the
+    initial risk is 100.05 - 90 = 10.05 throughout.
+    """
+
+    def test_fixed_time_exit_values(self) -> None:
+        # No stop is hit and the strategy never sells, so the trade exits at the
+        # last close (110 → sell 109.945):
+        #   fees   = 100.05*0.001 + 109.945*0.001 = 0.209995
+        #   pnl    = 109.945 - 100.05 - 0.209995  = 9.685005
+        #   R      = 9.685005 / 10.05             = 0.963682089552
+        #   peak 112 (last high)  → MFE = 11.95/10.05 =  1.189054726368
+        #   trough 99 (first low) → MAE = -1.05/10.05 = -0.104477611940
+        #   oracle = max horizon high 112 → 1.189054726368 (≥ MFE)
+        candles = [
+            *_FLAT_WINDOW,
+            ohlc(100, 105, 99, 100, 2),
+            ohlc(101, 108, 101, 104, 3),
+            ohlc(103, 112, 103, 110, 4),
+        ]
+        out = scripted(buy_on=2, stop_distance="10").evaluate(candles, _EXACT_SPEC)
+        assert out.entry_price_quote == Decimal("100.050000000000")
+        assert out.exit_price_quote == Decimal("109.945000000000")
+        assert out.pnl_quote == Decimal("9.685005000000")
+        assert out.r_multiple == Decimal("0.963682089552")
+        assert out.mfe_r == Decimal("1.189054726368")
+        assert out.mae_r == Decimal("-0.104477611940")
+        assert out.oracle_r == Decimal("1.189054726368")
+        assert out.duration_candles == 3
+        assert out.stop_hit is False
+
+    def test_intra_candle_stop_values(self) -> None:
+        # First horizon candle dips to 85 (< stop 90): the stop fills AT 90 minus
+        # slippage = 89.955.
+        #   pnl = 89.955 - 100.05 - (0.10005 + 0.089955) = -10.285005
+        #   R   = -10.285005 / 10.05 = -1.023383582090
+        #   trough 85 → MAE = -15.05/10.05 = -1.497512437811
+        candles = [
+            *_FLAT_WINDOW,
+            ohlc(100, 101, 85, 95, 2),
+            ohlc(95, 96, 90, 94, 3),
+            ohlc(94, 95, 93, 94, 4),
+        ]
+        out = scripted(buy_on=2, stop_distance="10").evaluate(candles, _EXACT_SPEC)
+        assert out.entry_price_quote == Decimal("100.050000000000")
+        assert out.exit_price_quote == Decimal("89.955000000000")
+        assert out.pnl_quote == Decimal("-10.285005000000")
+        assert out.r_multiple == Decimal("-1.023383582090")
+        assert out.mae_r == Decimal("-1.497512437811")
+        assert out.stop_hit is True
+        assert out.duration_candles == 1
+
+    def test_strategy_exit_gapping_through_stop_values(self) -> None:
+        # Strategy sells on horizon[0]; horizon[1] gaps open to 85 (< stop 90),
+        # so the exit fills at that open (85 → 84.9575) and is graded a stop-out.
+        #   pnl = 84.9575 - 100.05 - (0.10005 + 0.0849575) = -15.2775075
+        #   R   = -15.2775075 / 10.05 = -1.520150000000
+        candles = [
+            *_FLAT_WINDOW,
+            ohlc(100, 101, 99, 100, 2),
+            ohlc(85, 86, 80, 82, 3),
+            ohlc(82, 83, 81, 82, 4),
+        ]
+        out = scripted(buy_on=2, sell_on=3, stop_distance="10").evaluate(candles, _EXACT_SPEC)
+        assert out.entry_price_quote == Decimal("100.050000000000")
+        assert out.exit_price_quote == Decimal("84.957500000000")
+        assert out.pnl_quote == Decimal("-15.277507500000")
+        assert out.r_multiple == Decimal("-1.520150000000")
+        assert out.stop_hit is True
+        assert out.duration_candles == 2
