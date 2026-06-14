@@ -375,7 +375,10 @@ export function ComparisonPanel(props: {
               </li>
             ))}
           </ul>
-          <div>
+          {/* min-w-0: let this 1fr track shrink below the wide comparison and
+              heatmap tables' intrinsic width so each scrolls inside its own
+              overflow-x-auto instead of pushing past the card. */}
+          <div className="min-w-0">
             {props.onInspectRun && (
               <p className="mb-1 text-xs text-zinc-500">
                 tip: click a strategy&apos;s column header to open its full report in Inspect
