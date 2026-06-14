@@ -9,10 +9,18 @@ evidence conditions the gate names are met yet:
 1. a statistically **validated** out-of-sample edge (§12.5 bar) concentrated
    in an identifiable regime bucket (the archetype the router would activate
    it in), not a diffuse average;
-2. it **beats the incumbent** router on byte-identical comparison scenarios
-   across at least two separate batches run weeks apart;
+2. it **beats the incumbent** router *in that regime's scenarios* — the
+   family's expectancy in the edge regime bucket clears the incumbent's on
+   byte-identical comparison scenarios, across at least two separate batches
+   run weeks apart (a whole-run average could hide a regime where it loses);
 3. **live paper evidence**: its solo competition account is positive over at
    least eight weeks without tripping its own circuit breakers.
+
+Conditions 2 and 3 lean on the regime identified by condition 1: condition 2
+reads the comparison runs' §12.3 ``by_archetype`` expectancy for that regime
+rather than the blended top-line. (The live soak of condition 3 stays an
+overall-account check — its return is not bucketed by regime; §13.7 records
+that as the measurable form of the soak.)
 
 Meeting all three flags a *candidacy*; a human still decides which regime
 activates the family, at whose expense, and whether the added router
@@ -51,6 +59,16 @@ apart") — two wins on the same afternoon are one observation, not two."""
 LIVE_PAPER_MIN = timedelta(weeks=8)
 """Minimum live-paper soak for the third condition (§13.7: "at least eight
 weeks of live paper trading")."""
+
+# How far back the candidacy read reaches. §13.7 evidence accumulates over
+# months (an 8-week soak; comparison batches "weeks apart"), so the assembly
+# must look past the store's small default page sizes — otherwise a qualifying
+# sweep, run, or comparison batch silently scrolls out of view as newer
+# research piles up and the flag flickers off. Generous but bounded: the read
+# is on-demand (a control-plane GET), never the candle hot path.
+EVIDENCE_SWEEP_LIMIT = 500
+EVIDENCE_RUN_LIMIT = 500
+EVIDENCE_COMPARISON_LIMIT = 200
 
 
 @dataclass(frozen=True)
@@ -253,7 +271,7 @@ def _evidence_for(
         has_validated_sweep=_has_validated_sweep(sweeps, family),
         edge_regime=regime,
         edge_regime_expectancy_r=expectancy,
-        comparisons=_comparison_outcomes(comparisons, family),
+        comparisons=_comparison_outcomes(comparisons, family, regime),
         live_return_fraction=_as_decimal(row.get("return_fraction")),
         live_started_at=started_at.get(family),
         live_breaker_tripped=row.get("breaker_tripped_reason") is not None,
@@ -304,9 +322,16 @@ def _family_archetype_expectancies(
 
 
 def _comparison_outcomes(
-    comparisons: Sequence[Sequence[Mapping[str, Any]]], family: str
+    comparisons: Sequence[Sequence[Mapping[str, Any]]], family: str, regime: str | None
 ) -> tuple[ComparisonOutcome, ...]:
-    """One outcome per batch that graded both the family and the incumbent."""
+    """One outcome per batch that graded both the family and the incumbent.
+
+    Each side's expectancy is read in the edge ``regime`` (condition 1's
+    bucket), so the head-to-head is "beats the incumbent *in that regime*",
+    not on a blended whole-run average. A batch whose scenarios never visited
+    the regime — the bucket is absent on a side — yields ``None`` there, so it
+    cannot count as a win (``ComparisonOutcome.family_won`` needs both sides).
+    """
     outcomes: list[ComparisonOutcome] = []
     for batch in comparisons:
         incumbent = _run_named(batch, "production")
@@ -319,8 +344,8 @@ def _comparison_outcomes(
         outcomes.append(
             ComparisonOutcome(
                 decided_at=decided_at,
-                family_expectancy_r=_run_expectancy(challenger),
-                incumbent_expectancy_r=_run_expectancy(incumbent),
+                family_expectancy_r=_run_expectancy(challenger, regime),
+                incumbent_expectancy_r=_run_expectancy(incumbent, regime),
             )
         )
     return tuple(outcomes)
@@ -330,10 +355,18 @@ def _run_named(batch: Sequence[Mapping[str, Any]], strategy: str) -> Mapping[str
     return next((run for run in batch if run.get("strategy") == strategy), None)
 
 
-def _run_expectancy(run: Mapping[str, Any]) -> Decimal | None:
-    if run.get("status") != "completed":
+def _run_expectancy(run: Mapping[str, Any], regime: str | None) -> Decimal | None:
+    """Return a completed run's expectancy in the edge ``regime``'s bucket.
+
+    ``None`` when the run did not complete, when no edge regime was identified
+    (condition 1 has already failed in that case), or when the run's
+    ``by_archetype`` breakdown has no entry for the regime (its scenarios
+    never visited it) — never a silent fall back to the blended top-line.
+    """
+    if run.get("status") != "completed" or regime is None:
         return None
-    return _as_decimal((run.get("summary") or {}).get("expectancy_r"))
+    by_archetype = (run.get("summary") or {}).get("by_archetype") or {}
+    return _as_decimal((by_archetype.get(regime) or {}).get("expectancy_r"))
 
 
 def _as_decimal(value: object) -> Decimal | None:

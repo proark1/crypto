@@ -1027,8 +1027,11 @@ the following hold:
    separate comparison batches run weeks apart.
 3. **Live paper evidence.** Its solo competition account shows a
    positive return over at least eight weeks of live paper trading
-   without tripping its own circuit breakers, covering the regime in
-   question.
+   without tripping its own circuit breakers. This soak is judged on the
+   account's *overall* return — live PnL is not attributed per regime, so
+   the regime concentration is carried by condition 1 and the
+   regime-scoped head-to-head of condition 2; the soak confirms the family
+   survives real conditions over a span long enough to cover them.
 
 Meeting the gate flags the candidacy; it never flips the switch. The
 human decision that remains is exactly the part evidence cannot answer:
@@ -1044,9 +1047,10 @@ read, not a manual audit across screens (`competition/candidacy.py`,
 research family the panel grades each condition from the persisted record —
 the validated edge and its best regime bucket from the family's sweeps and
 the §12.3 `by_archetype` breakdowns; the head-to-head from the comparison
-batches (family vs. the incumbent, counting only wins ≥ two weeks apart);
-the live soak from its competition account's return, breaker state, and
-first-fill age — and reports whether all three hold. The evaluation is pure
+batches' `by_archetype` expectancy *in that regime* (family vs. the
+incumbent, counting only wins ≥ two weeks apart); the live soak from its
+competition account's overall return, breaker state, and first-fill age —
+and reports whether all three hold. The evaluation is pure
 over the fetched record (database-free, fully tested); the surface only
 flags candidacy, exactly as this section requires — it never routes
 anything.

@@ -946,6 +946,22 @@ class AutoImprover:
             logger.warning("improvement sweep %d validated no challenger; skipping", sweep_id)
             self._finish_cycle(f"sweep #{sweep_id} validated no challenger; nothing promoted")
             return sweep_id
+        if winner.recipe is not None:
+            # Recipe winners describe a whole custom-bot composite, not a
+            # single family/params pair — ARCHITECTURE.md keeps them out of
+            # auto-promotion until owner opt-in. Auto-promoting one here would
+            # silently push ``winner.family``'s default with empty params (the
+            # wrong bot). Refuse loudly rather than promote a stand-in.
+            logger.warning(
+                "improvement sweep %d validated a recipe winner (%s); recipes are not "
+                "auto-promoted, skipping",
+                sweep_id,
+                winner.name,
+            )
+            self._finish_cycle(
+                f"sweep #{sweep_id} validated recipe {winner.name}; recipes are not auto-promoted"
+            )
+            return sweep_id
         explanation = str(report.get("explanation", ""))
         if self._confirm is not None:
             veto_reason = await self._confirm(winner.family, winner.params, symbol)

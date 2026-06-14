@@ -197,6 +197,61 @@ class TestAssembly:
         assert breakout.live_paper.met
         assert breakout.is_candidate
 
+    def test_winning_only_outside_the_edge_regime_does_not_count(self) -> None:
+        # The edge regime is breakout (the run's best, positive). In both
+        # comparison batches the family beats the incumbent on the *blended*
+        # top-line and in chop, but LOSES in breakout — the regime the router
+        # would activate it in. The §13.7 head-to-head is regime-scoped, so
+        # these must not count as wins (a blended average would have).
+        sweeps = [
+            {
+                "report": {"verdict": "validated", "winner": "w"},
+                "config": {"candidates": [{"name": "w", "family": "breakout"}]},
+            }
+        ]
+        runs = [
+            {
+                "strategy": "breakout",
+                "status": "completed",
+                "summary": {"by_archetype": {"breakout": {"expectancy_r": "0.6"}}},
+            }
+        ]
+
+        def batch(when: datetime) -> list[dict[str, object]]:
+            return [
+                {
+                    "strategy": "production",
+                    "status": "completed",
+                    "created_at": when,
+                    "summary": {
+                        "expectancy_r": "0.1",  # weak blended (old code: incumbent loses)
+                        "by_archetype": {"breakout": {"expectancy_r": "0.5"}},  # strong in regime
+                    },
+                },
+                {
+                    "strategy": "breakout",
+                    "status": "completed",
+                    "created_at": when,
+                    "summary": {
+                        "expectancy_r": "0.4",  # strong blended (old code: family wins)
+                        "by_archetype": {"breakout": {"expectancy_r": "0.1"}},  # weak in regime
+                    },
+                },
+            ]
+
+        comparisons = [batch(NOW - timedelta(weeks=5)), batch(NOW - timedelta(weeks=1))]
+        result = assemble_candidacies(
+            sweeps=sweeps,
+            runs=runs,
+            comparisons=comparisons,
+            competition=[],
+            started_at={},
+            now=NOW,
+        )
+        breakout = next(c for c in result if c.family == "breakout")
+        assert breakout.validated_edge.met  # the edge itself is real
+        assert not breakout.beats_incumbent.met  # but it loses the head-to-head in that regime
+
     def test_a_validated_sweep_with_a_losing_best_regime_is_not_an_edge(self) -> None:
         sweeps = [
             {
@@ -238,11 +293,18 @@ class TestAssembly:
         assert "breaker" in squeeze.live_paper.detail
 
 
-def _crun(strategy: str, expectancy_r: str, created_at: datetime) -> dict[str, object]:
-    """A comparison-batch run row: completed, with an expectancy and a time."""
+def _crun(
+    strategy: str, expectancy_r: str, created_at: datetime, regime: str = "breakout"
+) -> dict[str, object]:
+    """A comparison-batch run row: completed, with an expectancy and a time.
+
+    The head-to-head reads the edge regime's ``by_archetype`` bucket, not the
+    blended top-line, so the expectancy lives under ``regime`` (the edge regime
+    in the assembly tests is ``breakout``).
+    """
     return {
         "strategy": strategy,
         "status": "completed",
-        "summary": {"expectancy_r": expectancy_r},
+        "summary": {"by_archetype": {regime: {"expectancy_r": expectancy_r}}},
         "created_at": created_at,
     }

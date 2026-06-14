@@ -42,6 +42,9 @@ from tradebot.competition import (
     validate_rules,
 )
 from tradebot.competition.candidacy import (
+    EVIDENCE_COMPARISON_LIMIT,
+    EVIDENCE_RUN_LIMIT,
+    EVIDENCE_SWEEP_LIMIT,
     RESEARCH_FAMILIES,
     RoutingCandidacy,
     assemble_candidacies,
@@ -754,9 +757,11 @@ class Worker:
             for family in RESEARCH_FAMILIES
         }
         return assemble_candidacies(
-            sweeps=await self.evaluation_store.list_sweeps(),
-            runs=await self.evaluation_store.list_runs(),
-            comparisons=await self.evaluation_store.list_comparisons(),
+            sweeps=await self.evaluation_store.list_sweeps(limit=EVIDENCE_SWEEP_LIMIT),
+            runs=await self.evaluation_store.list_runs(limit=EVIDENCE_RUN_LIMIT),
+            comparisons=await self.evaluation_store.list_comparisons(
+                limit=EVIDENCE_COMPARISON_LIMIT
+            ),
             competition=await self.competition_snapshot(),
             started_at=started_at,
             now=utc_now(),
