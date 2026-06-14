@@ -24,7 +24,7 @@ export function InfoTooltip(props: {
         type="button"
         aria-label={props.text}
         aria-expanded={open}
-        className="inline-flex items-center text-zinc-400 hover:text-zinc-600 focus:text-zinc-600 focus:outline-none dark:hover:text-zinc-200 dark:focus:text-zinc-200"
+        className="inline-flex items-center rounded text-zinc-400 hover:text-zinc-600 focus:text-zinc-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/50 dark:hover:text-zinc-200 dark:focus:text-zinc-200"
         onClick={(event) => {
           event.stopPropagation();
           setOpen((value) => !value);
@@ -34,6 +34,9 @@ export function InfoTooltip(props: {
         }}
         onPointerLeave={() => {
           setOpen(false);
+        }}
+        onFocus={() => {
+          setOpen(true);
         }}
         onBlur={() => {
           setOpen(false);

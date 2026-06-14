@@ -70,7 +70,7 @@ export function SweepPanel(props: {
               </li>
             ))}
           </ul>
-          <div>{selected && <SweepReport sweep={selected} />}</div>
+          <div className="min-w-0">{selected && <SweepReport sweep={selected} />}</div>
         </div>
       )}
     </Card>
@@ -161,36 +161,43 @@ function CostSensitivity(props: { data: Record<string, unknown> | null }) {
       <h4 className="mb-1 text-xs uppercase tracking-wide text-zinc-500">
         cost sensitivity — winner at worse fees &amp; slippage
       </h4>
-      <table className="w-full text-left text-sm">
-        <thead className="text-xs text-zinc-500">
-          <tr>
-            <th className="py-1 pr-2">× costs</th>
-            <th className="py-1 pr-2">trades</th>
-            <th className="py-1 pr-2">expectancy (R)</th>
-            <th className="py-1">return</th>
-          </tr>
-        </thead>
-        <tbody>
-          {points.map((raw, index) => {
-            const row = asRecord(raw);
-            return (
-              <tr
-                key={`${text(row?.multiplier)}-${String(index)}`}
-                className="border-t border-zinc-200/70 dark:border-zinc-800/60 text-zinc-700 dark:text-zinc-300"
-              >
-                <td className="py-1 pr-2">{text(row?.multiplier)}×</td>
-                <td className="py-1 pr-2">{text(row?.trade_count)}</td>
-                <td className="py-1 pr-2">{text(row?.expectancy_r)}</td>
-                <td className="py-1">
-                  {typeof row?.return_fraction === "string"
-                    ? formatFractionPercent(row.return_fraction)
-                    : "—"}
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
+      <div
+        className="overflow-x-auto rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/50"
+        tabIndex={0}
+        role="region"
+        aria-label="cost sensitivity"
+      >
+        <table className="w-full text-left text-sm">
+          <thead className="text-xs text-zinc-500">
+            <tr>
+              <th className="py-1 pr-2">× costs</th>
+              <th className="py-1 pr-2">trades</th>
+              <th className="py-1 pr-2">expectancy (R)</th>
+              <th className="py-1">return</th>
+            </tr>
+          </thead>
+          <tbody>
+            {points.map((raw, index) => {
+              const row = asRecord(raw);
+              return (
+                <tr
+                  key={`${text(row?.multiplier)}-${String(index)}`}
+                  className="border-t border-zinc-200/70 dark:border-zinc-800/60 text-zinc-700 dark:text-zinc-300"
+                >
+                  <td className="py-1 pr-2">{text(row?.multiplier)}×</td>
+                  <td className="py-1 pr-2">{text(row?.trade_count)}</td>
+                  <td className="py-1 pr-2">{text(row?.expectancy_r)}</td>
+                  <td className="py-1">
+                    {typeof row?.return_fraction === "string"
+                      ? formatFractionPercent(row.return_fraction)
+                      : "—"}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
       <p
         className={`mt-1 text-xs ${
           survives
@@ -213,34 +220,41 @@ function ScoreTable(props: { title: string; data: Record<string, unknown> | null
   return (
     <div>
       <h4 className="mb-1 text-xs uppercase tracking-wide text-zinc-500">{props.title}</h4>
-      <table className="w-full text-left text-sm">
-        <thead className="text-xs text-zinc-500">
-          <tr>
-            <th className="py-1 pr-2">candidate</th>
-            <th className="py-1 pr-2">trades</th>
-            <th className="py-1 pr-2">expectancy (R)</th>
-            <th className="py-1 pr-2">win rate</th>
-            <th className="py-1">profit factor</th>
-          </tr>
-        </thead>
-        <tbody>
-          {Object.entries(props.data).map(([name, raw]) => {
-            const row = asRecord(raw);
-            return (
-              <tr
-                key={name}
-                className="border-t border-zinc-200/70 dark:border-zinc-800/60 text-zinc-700 dark:text-zinc-300"
-              >
-                <td className="py-1 pr-2">{name.replace(/_/g, " ")}</td>
-                <td className="py-1 pr-2">{text(row?.trade_count)}</td>
-                <td className="py-1 pr-2">{text(row?.expectancy_r)}</td>
-                <td className="py-1 pr-2">{text(row?.win_rate)}</td>
-                <td className="py-1">{text(row?.profit_factor)}</td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
+      <div
+        className="overflow-x-auto rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/50"
+        tabIndex={0}
+        role="region"
+        aria-label={props.title}
+      >
+        <table className="w-full text-left text-sm">
+          <thead className="text-xs text-zinc-500">
+            <tr>
+              <th className="py-1 pr-2">candidate</th>
+              <th className="py-1 pr-2">trades</th>
+              <th className="py-1 pr-2">expectancy (R)</th>
+              <th className="py-1 pr-2">win rate</th>
+              <th className="py-1">profit factor</th>
+            </tr>
+          </thead>
+          <tbody>
+            {Object.entries(props.data).map(([name, raw]) => {
+              const row = asRecord(raw);
+              return (
+                <tr
+                  key={name}
+                  className="border-t border-zinc-200/70 dark:border-zinc-800/60 text-zinc-700 dark:text-zinc-300"
+                >
+                  <td className="py-1 pr-2">{name.replace(/_/g, " ")}</td>
+                  <td className="py-1 pr-2">{text(row?.trade_count)}</td>
+                  <td className="py-1 pr-2">{text(row?.expectancy_r)}</td>
+                  <td className="py-1 pr-2">{text(row?.win_rate)}</td>
+                  <td className="py-1">{text(row?.profit_factor)}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }

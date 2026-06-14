@@ -840,7 +840,7 @@ export function ResearchScreen() {
                 ))}
               </ul>
             </section>
-            <section className="rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900 p-4">
+            <section className="rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900 p-4 min-w-0">
               {replay ? (
                 <ScenarioReplay
                   replay={replay}
