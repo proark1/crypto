@@ -8,6 +8,7 @@ import {
   fetchCompetition,
   fetchDecisions,
   fetchFills,
+  fetchImprovementStatus,
   fetchProposals,
   fetchStatus,
   fetchWallet,
@@ -28,6 +29,7 @@ import type {
   CompetitionResponse,
   DecisionResponse,
   FillResponse,
+  ImprovementStatusResponse,
   ProposalResponse,
   StatusResponse,
   WalletResponse,
@@ -106,6 +108,7 @@ export function OverviewScreen(props: { theme: Theme; onToggleTheme: () => void 
   const [proposals, setProposals] = useState<ProposalResponse[]>([]);
   const [wallet, setWallet] = useState<WalletResponse | null>(null);
   const [competition, setCompetition] = useState<CompetitionResponse | null>(null);
+  const [improvement, setImprovement] = useState<ImprovementStatusResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [needsToken, setNeedsToken] = useState(getStoredToken() === "");
   const [tokenDraft, setTokenDraft] = useState("");
@@ -134,6 +137,7 @@ export function OverviewScreen(props: { theme: Theme; onToggleTheme: () => void 
         nextProposals,
         nextWallet,
         nextCompetition,
+        nextImprovement,
       ] = await Promise.all([
         fetchStatus(symbol),
         fetchFills(),
@@ -142,6 +146,7 @@ export function OverviewScreen(props: { theme: Theme; onToggleTheme: () => void 
         fetchProposals().catch(() => null),
         fetchWallet().catch(() => null),
         fetchCompetition().catch(() => null),
+        fetchImprovementStatus().catch(() => null),
       ]);
       if (requestId !== requestIdRef.current) {
         return;
@@ -162,6 +167,9 @@ export function OverviewScreen(props: { theme: Theme; onToggleTheme: () => void 
       }
       if (nextCompetition !== null) {
         setCompetition(nextCompetition);
+      }
+      if (nextImprovement !== null) {
+        setImprovement(nextImprovement);
       }
       setError(null);
       setNeedsToken(false);
@@ -345,6 +353,7 @@ export function OverviewScreen(props: { theme: Theme; onToggleTheme: () => void 
           competition={competition}
           wallet={wallet}
           proposals={proposals}
+          improvement={improvement}
           disabled={commandPending}
           onApprove={(signalId) => void runCommand(() => approveProposal(signalId))}
           onReject={(signalId) => void runCommand(() => rejectProposal(signalId))}
@@ -353,6 +362,9 @@ export function OverviewScreen(props: { theme: Theme; onToggleTheme: () => void 
           }}
           onSelectBot={(botId) => {
             setView({ name: "bot", botId });
+          }}
+          onOpenResearch={() => {
+            setView({ name: "research" });
           }}
         />
       )}

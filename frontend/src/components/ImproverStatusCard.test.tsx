@@ -1,5 +1,5 @@
-import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { fireEvent, render, screen } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
 
 import type { ImprovementStatusResponse } from "../api/types";
 import { ImproverStatusCard } from "./ImproverStatusCard";
@@ -18,12 +18,12 @@ const STATUS: ImprovementStatusResponse = {
 describe("ImproverStatusCard", () => {
   it("shows the loop's cadence and the last cycle's outcome in its own words", () => {
     render(<ImproverStatusCard status={STATUS} />);
-    expect(screen.getByText("automated improver")).toBeDefined();
+    expect(screen.getByText("self-improvement")).toBeDefined();
     expect(screen.getByText("on")).toBeDefined();
     expect(
       screen.getByText("sweep #4 kept the active configuration (verdict: overfit)"),
     ).toBeDefined();
-    expect(screen.getByText(/next cycle:/)).toBeDefined();
+    expect(screen.getByText(/next check:/)).toBeDefined();
   });
 
   it("flags a cycle still in progress instead of looking idle", () => {
@@ -36,8 +36,20 @@ describe("ImproverStatusCard", () => {
         }}
       />,
     );
-    expect(screen.getByText("cycle in progress")).toBeDefined();
+    expect(screen.getByText(/running now/)).toBeDefined();
     expect(screen.getByText(/sweep #5 running/)).toBeDefined();
+  });
+
+  it("links to the research detail view when given an onOpenDetails handler", () => {
+    const onOpenDetails = vi.fn();
+    render(<ImproverStatusCard status={STATUS} onOpenDetails={onOpenDetails} />);
+    fireEvent.click(screen.getByText(/see what it has changed/));
+    expect(onOpenDetails).toHaveBeenCalledTimes(1);
+  });
+
+  it("omits the detail link when no handler is given (e.g. on the Tune tab)", () => {
+    render(<ImproverStatusCard status={STATUS} />);
+    expect(screen.queryByText(/see what it has changed/)).toBeNull();
   });
 
   it("says when the loop has not completed a cycle yet", () => {

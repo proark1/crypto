@@ -7,10 +7,12 @@
  */
 import type {
   CompetitionResponse,
+  ImprovementStatusResponse,
   ProposalResponse,
   StatusResponse,
   WalletResponse,
 } from "../api/types";
+import { ImproverStatusCard } from "../components/ImproverStatusCard";
 import { MiniLeaderboard } from "../components/MiniLeaderboard";
 import { PortfolioSummary } from "../components/PortfolioSummary";
 import { ProposalsPanel } from "../components/ProposalsPanel";
@@ -22,11 +24,13 @@ export function DashboardScreen(props: {
   competition: CompetitionResponse | null;
   wallet: WalletResponse | null;
   proposals: ProposalResponse[];
+  improvement: ImprovementStatusResponse | null;
   disabled: boolean;
   onApprove: (signalId: string) => void;
   onReject: (signalId: string) => void;
   onViewAllBots: () => void;
   onSelectBot: (botId: string) => void;
+  onOpenResearch: () => void;
 }) {
   return (
     <div className="space-y-4">
@@ -43,6 +47,7 @@ export function DashboardScreen(props: {
         onViewAll={props.onViewAllBots}
         onSelectBot={props.onSelectBot}
       />
+      <ImproverStatusCard status={props.improvement} onOpenDetails={props.onOpenResearch} />
       <WalletCard wallet={props.wallet} />
     </div>
   );
