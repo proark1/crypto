@@ -47,6 +47,7 @@ import { ComparisonPanel } from "../components/ComparisonPanel";
 import { FindingsPanel } from "../components/FindingsPanel";
 import { ImprovementsPanel } from "../components/ImprovementsPanel";
 import { ImproverStatusCard } from "../components/ImproverStatusCard";
+import { ResearchHome } from "../components/ResearchHome";
 import { ResearchTimeline } from "../components/ResearchTimeline";
 import { RoutingCandidacyPanel } from "../components/RoutingCandidacyPanel";
 import { ScenarioReplay } from "../components/ScenarioReplay";
@@ -640,6 +641,12 @@ export function ResearchScreen() {
           . If this persists, check the connection on the overview screen.
         </Alert>
       )}
+      <ResearchHome
+        bakeOffs={bakeOffs}
+        improver={improver}
+        candidacies={candidacies}
+        onNavigate={setResearchTab}
+      />
       <nav className="flex gap-1 rounded-lg bg-zinc-200/60 p-1 dark:bg-zinc-900">
         {RESEARCH_TABS.map((researchNavTab) => (
           <button
