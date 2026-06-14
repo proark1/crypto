@@ -1169,6 +1169,46 @@ async def seed_completed_run(
     return run_id, finding_ids
 
 
+class TestResearchAdvisor:
+    async def test_advise_disabled_returns_unavailable(self, database: Database) -> None:
+        # The advisor is off by default, so the route wires straight through to a
+        # fail-safe "no advice" answer — no model is ever called from this path.
+        bot = StubBot(database)
+        assert bot.config.ai_advisor_enabled is False
+        run_id, _ = await seed_completed_run(
+            bot,
+            created_at=BASE_TIME,
+            patterns={"chasing extended moves": "proposed"},
+            summary={"expectancy_r": "0.18", "trade_count": 142},
+        )
+        async with make_client(bot) as client:
+            response = await client.post(f"/evaluations/{run_id}/advise")
+        assert response.status_code == 200
+        assert response.json() == {"available": False, "advice": None}
+
+    async def test_advise_unknown_run_is_404(self, database: Database) -> None:
+        bot = StubBot(database)
+        async with make_client(bot) as client:
+            response = await client.post("/evaluations/999999/advise")
+        assert response.status_code == 404
+
+    async def test_advise_incomplete_run_is_409(self, database: Database) -> None:
+        # A run with no report yet cannot be advised on — advising nothing.
+        bot = StubBot(database)
+        run_id = await bot.evaluation_store.create_run(
+            symbols=["BTC/USDT"],
+            timeframes=["1h"],
+            config={},
+            code_version="test",
+            progress_total=10,
+            created_at=BASE_TIME,
+            strategy="production",
+        )
+        async with make_client(bot) as client:
+            response = await client.post(f"/evaluations/{run_id}/advise")
+        assert response.status_code == 409
+
+
 class TestFindingRecurrence:
     async def test_findings_carry_their_history_across_runs(self, database: Database) -> None:
         bot = StubBot(database)

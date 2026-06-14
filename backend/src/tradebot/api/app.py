@@ -31,6 +31,7 @@ from tradebot.core.logging import log_event
 from tradebot.core.metrics import MetricsCollector, format_metric
 from tradebot.core.models import Candle, CandleInterval, utc_now
 from tradebot.engine import TradingEngine
+from tradebot.evaluation.advisor import ResearchAdvice, synthesize_advice
 from tradebot.evaluation.bakeoff import (
     DEFAULT_HISTORY_WINDOWS,
     DEFAULT_TIMEFRAMES,
@@ -968,6 +969,20 @@ class FindingResponse(BaseModel):
 
     latest_sweep_status: str | None = None
     latest_sweep_verdict: str | None = None
+
+
+class ResearchAdviceResponse(BaseModel):
+    """The AI advisor's read of a run (§12.9), or ``available=false`` when absent.
+
+    Advisory only: ``advice`` is a recommendation a human may act on by arming
+    a sweep from a hypothesis — it never changes the strategy. ``available`` is
+    false (with ``advice`` null) whenever the advisor is disabled, lacks its
+    optional dependency or key, or the model declined or errored, so the UI can
+    distinguish "no advice to show" from a request failure.
+    """
+
+    available: bool
+    advice: ResearchAdvice | None = None
 
 
 def _finding_response(
@@ -1953,6 +1968,51 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
                 status_code=status.HTTP_404_NOT_FOUND, detail=f"no evaluation run {run_id}"
             )
         return _run_response(run)
+
+    @protected.post("/evaluations/{run_id}/advise")
+    async def advise_evaluation(run_id: int) -> ResearchAdviceResponse:
+        """Ask the AI advisor (§12.9) to diagnose a run and propose experiments.
+
+        Advisory only: the response is a recommendation a human may act on by
+        arming a sweep from a hypothesis — it never changes the strategy, never
+        places an order, and never feeds the deterministic backtest. Returns
+        ``available=false`` (a normal 200, not an error) whenever the advisor is
+        disabled or could not produce advice, so a fail-safe feature never turns
+        a research click into a failed request.
+        """
+        run = await state.evaluation_store.fetch_run(run_id)
+        if run is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail=f"no evaluation run {run_id}"
+            )
+        summary = run.get("summary")
+        if not isinstance(summary, dict):
+            # Advising an unfinished run would be advising on nothing.
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"evaluation run {run_id} has no report yet",
+            )
+        findings = await state.evaluation_store.fetch_findings(run_id)
+        finding_inputs = [
+            {
+                "pattern": finding.pattern,
+                "suggestion": finding.suggestion,
+                "affected_count": finding.affected_count,
+                # Stringified for the prompt; the advisor does no money math.
+                "average_r_impact": str(finding.average_r_impact),
+                "confidence": finding.confidence,
+            }
+            for _, finding in findings
+        ]
+        advice = await synthesize_advice(
+            report=summary,
+            findings=finding_inputs,
+            enabled=state.config.ai_advisor_enabled,
+            model=state.config.ai_advisor_model,
+            max_tokens=state.config.ai_advisor_max_tokens,
+            timeout_seconds=state.config.ai_advisor_timeout_seconds,
+        )
+        return ResearchAdviceResponse(available=advice is not None, advice=advice)
 
     @protected.get("/evaluations/{run_id}/scenarios")
     async def list_evaluation_scenarios(run_id: int) -> list[ScenarioSummaryResponse]:
