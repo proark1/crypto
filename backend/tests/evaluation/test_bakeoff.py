@@ -28,7 +28,8 @@ from tradebot.evaluation.runner import EvaluationRunConfig
 class TestExpandCells:
     def test_grid_is_the_full_product_deepest_history_first(self) -> None:
         config = BakeOffConfig(
-            symbols=("BTC/USDT",), timeframes=("1h", "4h"), history_windows=(10, 100, 50)
+            symbols=("BTC/USDT",),
+            grid=(("1h", (10, 100, 50)), ("4h", (10, 100, 50))),
         )
         cells = expand_cells(config)
         assert len(cells) == 6  # 2 timeframes x 3 windows
@@ -191,7 +192,7 @@ class TestBakeOffManager:
         manager = BakeOffManager(evaluations, store, jobs, spawn=_spawn)  # type: ignore[arg-type]
         manager._contestants = manager._contestants[:2]  # shrink roster for the test
 
-        config = BakeOffConfig(symbols=("BTC/USDT",), timeframes=("1h",), history_windows=(100, 10))
+        config = BakeOffConfig(symbols=("BTC/USDT",), grid=(("1h", (100, 10)),))
         job_id = await manager.start(config)
         assert job_id == 1
         assert manager._task is not None

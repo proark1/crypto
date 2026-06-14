@@ -288,7 +288,7 @@ class StubBot:
         return await self.bake_off_store.create_job(
             config=config.model_dump(mode="json"),
             contestants=["production", "trend_calm"],
-            cells_total=len(config.timeframes) * len(config.history_windows),
+            cells_total=sum(len(windows) for _, windows in config.grid),
             created_at=BASE_TIME,
         )
 
@@ -2109,11 +2109,11 @@ class TestBakeOffEndpoints:
         async with make_client(bot) as client:
             started = await client.post(
                 "/research/bakeoff",
-                json={"symbols": ["BTC/USDT"], "timeframes": ["1h", "4h"], "history_windows": [50]},
+                json={"symbols": ["BTC/USDT"], "grid": {"1h": [50], "4h": [50]}},
             )
             assert started.status_code == 200
             body = started.json()
-            assert body["cells_total"] == 2  # 2 timeframes x 1 window
+            assert body["cells_total"] == 2  # 2 timeframes x 1 window each
             job_id = body["job_id"]
 
             fetched = await client.get(f"/research/bakeoff/{job_id}")
@@ -2130,7 +2130,7 @@ class TestBakeOffEndpoints:
     async def test_a_bad_timeframe_is_rejected(self, database: Database) -> None:
         async with make_client(StubBot(database)) as client:
             response = await client.post(
-                "/research/bakeoff", json={"symbols": ["BTC/USDT"], "timeframes": ["7s"]}
+                "/research/bakeoff", json={"symbols": ["BTC/USDT"], "grid": {"7s": [50]}}
             )
         assert response.status_code == 400
 

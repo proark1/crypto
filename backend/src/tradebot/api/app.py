@@ -21,7 +21,7 @@ from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, Field, ValidationError
 
 from tradebot.backtest.parity import DivergenceReport
 from tradebot.competition import ENTRY_MODES, FAMILY_DESCRIPTIONS, LINEUP
@@ -33,8 +33,7 @@ from tradebot.core.models import Candle, CandleInterval, utc_now
 from tradebot.engine import TradingEngine
 from tradebot.evaluation.advisor import ResearchAdvice, synthesize_advice
 from tradebot.evaluation.bakeoff import (
-    DEFAULT_HISTORY_WINDOWS,
-    DEFAULT_TIMEFRAMES,
+    DEFAULT_GRID,
     BakeOffConfig,
 )
 from tradebot.evaluation.bakeoff import DEFAULT_SCENARIO_COUNT as BAKE_OFF_SCENARIO_COUNT
@@ -761,12 +760,15 @@ class BakeOffStartRequest(BaseModel):
 
     Symbols default to the live coins; the grid and scenario shape default
     to the module's recommended values, so a one-click bake-off needs no
-    configuration at all.
+    configuration at all. ``grid`` maps each timeframe to the history depths
+    (in days) it is swept over — the depths are timeframe-relative because
+    feasibility is a candle count, not a day count (see ``DEFAULT_GRID``).
     """
 
     symbols: list[str] | None = None
-    timeframes: list[str] = list(DEFAULT_TIMEFRAMES)
-    history_windows: list[int] = list(DEFAULT_HISTORY_WINDOWS)
+    grid: dict[str, list[int]] = Field(
+        default_factory=lambda: {timeframe: list(windows) for timeframe, windows in DEFAULT_GRID}
+    )
     scenario_count: int = BAKE_OFF_SCENARIO_COUNT
     seed: int = 7
 
@@ -1923,8 +1925,9 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
             # constraints, and that is a 400 to report, not a 500 to leak.
             config = BakeOffConfig(
                 symbols=tuple(request.symbols) if request.symbols else tuple(active_symbols()),
-                timeframes=tuple(request.timeframes),
-                history_windows=tuple(request.history_windows),
+                grid=tuple(
+                    (timeframe, tuple(windows)) for timeframe, windows in request.grid.items()
+                ),
                 scenario_count=request.scenario_count,
                 seed=request.seed,
             )
@@ -1935,7 +1938,7 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)
             ) from error
-        cells_total = len(config.timeframes) * len(config.history_windows)
+        cells_total = sum(len(windows) for _, windows in config.grid)
         return BakeOffStartResponse(
             job_id=job_id,
             cells_total=cells_total,

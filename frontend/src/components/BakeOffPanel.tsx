@@ -219,7 +219,10 @@ export function BakeOffPanel(props: {
                 </li>
               ))}
             </ul>
-            <div>
+            {/* min-w-0: let this 1fr track shrink below the wide per-cell
+                table's intrinsic width so the table scrolls inside its own
+                overflow-x-auto instead of pushing past the card. */}
+            <div className="min-w-0">
               <div className="text-xs text-zinc-500">{statusLine(selected)}</div>
               <Leaderboard job={selected} />
               <CellGrid job={selected} />
