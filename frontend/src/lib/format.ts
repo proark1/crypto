@@ -81,15 +81,16 @@ export function formatFractionPercent(fraction: string | null): string {
 export function compareDecimalStrings(a: string, b: string): number {
   const left = a.trim();
   const right = b.trim();
-  const signA = left.startsWith("-") ? -1 : 1;
-  const signB = right.startsWith("-") ? -1 : 1;
+  const unsignedA = left.startsWith("-") ? left.slice(1) : left;
+  const unsignedB = right.startsWith("-") ? right.slice(1) : right;
+  // Negative zero ("-0", "-0.00") is mathematically zero: a zero magnitude
+  // takes a positive sign so it never sorts below a plain "0".
+  const signA = left.startsWith("-") && compareUnsignedDecimal(unsignedA, "0") !== 0 ? -1 : 1;
+  const signB = right.startsWith("-") && compareUnsignedDecimal(unsignedB, "0") !== 0 ? -1 : 1;
   if (signA !== signB) {
     return signA < signB ? -1 : 1;
   }
-  const magnitude = compareUnsignedDecimal(
-    signA === -1 ? left.slice(1) : left,
-    signB === -1 ? right.slice(1) : right,
-  );
+  const magnitude = compareUnsignedDecimal(unsignedA, unsignedB);
   return signA === -1 ? -magnitude : magnitude;
 }
 

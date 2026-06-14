@@ -81,6 +81,14 @@ describe("compareDecimalStrings", () => {
     // Differ only far beyond double precision: float coercion would tie.
     expect(compareDecimalStrings("1.0000000000000001", "1.0000000000000002")).toBe(-1);
   });
+
+  it("treats negative zero as equal to zero", () => {
+    expect(compareDecimalStrings("-0.00", "0.00")).toBe(0);
+    expect(compareDecimalStrings("-0", "0")).toBe(0);
+    expect(compareDecimalStrings("0", "-0.000")).toBe(0);
+    // A real negative still sorts below zero.
+    expect(compareDecimalStrings("-0.01", "0.00")).toBe(-1);
+  });
 });
 
 describe("rankMoneyDescending", () => {
