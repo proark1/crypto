@@ -2,7 +2,30 @@
 
 from datetime import UTC, datetime
 
-from tradebot.signals import FundingMonitor, MarketSentiment, SentimentConfig
+from tradebot.signals import (
+    FundingMonitor,
+    MarketSentiment,
+    SentimentConfig,
+    ccxt_funding_fetcher,
+)
+
+
+class TestCcxtFundingFetcher:
+    async def test_extracts_the_rate_from_a_ccxt_response(self) -> None:
+        class FakeExchange:
+            async def fetch_funding_rate(self, symbol: str) -> dict[str, object]:
+                return {"symbol": symbol, "fundingRate": 0.0012}
+
+        fetch = ccxt_funding_fetcher(FakeExchange())
+        assert await fetch("BTC/USDT:USDT") == 0.0012
+
+    async def test_returns_none_when_the_venue_reports_no_rate(self) -> None:
+        class FakeExchange:
+            async def fetch_funding_rate(self, symbol: str) -> dict[str, object]:
+                return {"symbol": symbol, "fundingRate": None}
+
+        fetch = ccxt_funding_fetcher(FakeExchange())
+        assert await fetch("BTC/USDT") is None
 
 
 class TestFundingMonitor:

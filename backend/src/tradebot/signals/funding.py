@@ -22,6 +22,7 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from datetime import timedelta
+from typing import Any
 
 from tradebot.core.models import utc_now
 from tradebot.signals.sentiment import MarketSentiment
@@ -32,6 +33,23 @@ FundingRateFetcher = Callable[[str], Awaitable[float | None]]
 """Fetch the current funding rate (per-interval fraction) for a perp symbol,
 or ``None`` when the venue exposes no funding for it. Injected so the poller is
 testable without a live exchange and never hard-codes a ccxt call here."""
+
+
+def ccxt_funding_fetcher(exchange: Any) -> FundingRateFetcher:
+    """Adapt a ccxt exchange's ``fetch_funding_rate`` into a ``FundingRateFetcher``.
+
+    Returns ``None`` when the venue reports no ``fundingRate`` for the symbol,
+    so an unsupported market is a no-op rather than an error. The poller wraps
+    the call in its own try/except, so a venue that lacks the method at all
+    still degrades to "no reading".
+    """
+
+    async def fetch(symbol: str) -> float | None:
+        result = await exchange.fetch_funding_rate(symbol)
+        rate = result.get("fundingRate") if isinstance(result, dict) else None
+        return None if rate is None else float(rate)
+
+    return fetch
 
 
 class FundingMonitor:

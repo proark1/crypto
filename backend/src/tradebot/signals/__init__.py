@@ -8,7 +8,7 @@ this package may know whether it runs in backtest, paper, or live.
 
 from tradebot.signals.base import EntryGate, GateDecision
 from tradebot.signals.data_health import DataHealthGate, FeedHealth
-from tradebot.signals.funding import FundingMonitor, FundingRateFetcher
+from tradebot.signals.funding import FundingMonitor, FundingRateFetcher, ccxt_funding_fetcher
 from tradebot.signals.regime import (
     RANGING,
     RISK_OFF,
@@ -41,4 +41,5 @@ __all__ = [
     "RegimeGate",
     "SentimentConfig",
     "SentimentMonitor",
+    "ccxt_funding_fetcher",
 ]
