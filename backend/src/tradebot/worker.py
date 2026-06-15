@@ -2129,6 +2129,7 @@ class Worker:
         # tears down whatever already runs (no leaked tasks or clients).
         api_task: asyncio.Task[None] | None = None
         improver_task: asyncio.Task[None] | None = None
+        campaign_task: asyncio.Task[None] | None = None
         notifier_client: httpx.AsyncClient | None = None
         heartbeat_task: asyncio.Task[None] | None = None
         heartbeat_client: httpx.AsyncClient | None = None
