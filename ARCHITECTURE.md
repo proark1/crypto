@@ -728,7 +728,12 @@ schedule (`TRADEBOT_AUTO_IMPROVE_*`), the bot derives single-knob variants
 of the parameters it is trading right now, runs them through the blind
 walk-forward sweep, and promotes the winner **only when the verdict is
 validated** — the Bonferroni-corrected, multi-window statistical bar.
-Training wins, near-misses, and findings never promote anything.
+Training wins, near-misses, and findings never promote anything. It runs in
+one of two shapes that share every mechanism below — the candidate
+derivation, the validated gate, the guardrails: the **single-sweep
+auto-improver** (the default, one sweep per scheduled cycle, described next)
+and the opt-in **iterated campaign** (`TRADEBOT_CAMPAIGN_*`, the foot of this
+section), which chains those sweeps into a budgeted search.
 
 Each cycle serves one improvement target on one symbol, rotating
 target-first: `production` (the regime-routed shape, which tunes both of
@@ -811,6 +816,42 @@ schedule and the last cycle's outcome in the loop's own plain words
 "auto-promoted …"), including an in-progress marker while a sweep runs,
 and the research screen's Tune tab renders it as a status card — so "is
 the bot learning?" has an answer on screen instead of in the logs.
+
+**The iterated campaign (`TRADEBOT_CAMPAIGN_*`, opt-in, default off).** The
+single-sweep cycle above tests one neighbourhood of the active config per
+scheduled turn; most turns clear nothing, so the bot inches. The *campaign*
+closes the gap between that and "keep adapting until it is good": it runs
+sweeps **back to back**, promoting every challenger that clears the same
+validated gate and **climbing from it**, and a round that finds no validated
+gain **refines** — a finer step around the same incumbent (coarse to fine,
+`build_candidates_for(..., scale)`), so the budget buys new information
+rather than re-running the identical sweep — until a **fixed budget**
+(`campaign_max_rounds` or `campaign_max_hours`) is spent or the step
+converges below `campaign_min_scale`. Promote-each-step means the paper bot
+always trades the best proven config and the next round climbs from there.
+
+Iterating a search over backtests is how you overfit, so the guard is
+structural. Every round is graded strictly *before* a **reserved holdout**
+(`SweepConfig.window_end`): the most-recent `campaign_holdout_days` are never
+swept, so the search cannot turn the validation windows into a second
+training set across rounds. At the end the untouched slice grades the
+campaign's net move once — start config versus final — a **non-gating
+honesty read** (the §12.5 cost-sensitivity stance: it informs, and arms the
+human's revert, but never vetoes; every step was already walk-forward
+validated, and the verdict is withheld unless both sides clear the
+minimum-trades bar). The fixed budget bounds how many lucky draws the search
+gets, on top of each round's Bonferroni bar.
+
+A **driver** runs campaigns continuously across the same target rotation
+(production, then each research family), one at a time — the loop is
+sequential, so it never contends with itself for the single research lane,
+and a round whose sweep loses that lane to a human-started sweep refines and
+retries. When enabled the campaign **supersedes** the single-sweep
+auto-improver (they share the one lane); when off — the default — nothing
+changes. Same scope as everything else here: this paper-only worker
+promotes through the journaled, revertible apply path, and the campaign's
+per-round sweeps and promotions surface through the existing sweeps,
+timeline, and journal while it runs.
 
 ### 12.8 Learning memory & the research timeline
 

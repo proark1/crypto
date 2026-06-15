@@ -348,6 +348,65 @@ class AppConfig(BaseSettings):
     auto_improve_timeframe: str = "1h"
     """Candle timeframe the automated sweeps evaluate (validated at boot)."""
 
+    campaign_enabled: bool = False
+    """Run the §12.7 loop as an iterated walk-forward *campaign* rather than
+    the single-sweep auto-improver: sweep, promote every validated challenger,
+    climb from it, and refine, back to back until a budget is spent — the
+    "adapt and re-run until it is good" loop. **Off by default**; when on it
+    supersedes the auto-improver (the two share the one research lane).
+    Identical safety scope: promotions are paper-only, validated, versioned
+    with their sweep, and revertible."""
+
+    campaign_timeframe: str = "1h"
+    """Candle timeframe campaign sweeps evaluate (validated at boot)."""
+
+    campaign_history_days: int = Field(default=365, gt=0)
+    """History each campaign round's walk-forward sweep is graded over, ending
+    at the reserved holdout boundary."""
+
+    campaign_holdout_days: int = Field(default=60, gt=0)
+    """Most-recent days reserved as the untouched holdout — graded once, at
+    the end, for the campaign's non-gating honesty read; never swept."""
+
+    campaign_scenario_count: int = Field(default=1600, gt=0)
+    """Scenarios per candidate per period (matches sweep.DEFAULT_SCENARIO_COUNT
+    — the unstarved default that clears the minimum-trades bar)."""
+
+    campaign_max_rounds: int = Field(default=8, ge=1)
+    """Hard cap on rounds per campaign — the budget that bounds how many
+    chances the iterated search gets at a lucky winner."""
+
+    campaign_max_hours: float = Field(default=6.0, gt=0.0)
+    """Wall-clock budget per campaign; it shares one CPU with live trading."""
+
+    campaign_refine_factor: float = Field(default=0.5, gt=0.0, lt=1.0)
+    """How much the step shrinks after a round finds no validated gain."""
+
+    campaign_min_scale: float = Field(default=0.25, gt=0.0, le=1.0)
+    """Below this step the search has converged; the campaign stops."""
+
+    campaign_cooldown_minutes: float = Field(default=30.0, gt=0.0)
+    """Rest between campaigns, to leave CPU for live trading."""
+
+    @model_validator(mode="after")
+    def _backfill_must_cover_campaign_window(self) -> AppConfig:
+        """Reject a backfill shallower than the campaign's full data span.
+
+        A campaign grades ``campaign_history_days`` ending at the holdout
+        boundary and reserves ``campaign_holdout_days`` after it, so it needs
+        both depths of candles; a backfill that stops short would have it judge
+        on a sliver. ``0`` is exempt (deep backfill off — the stored history is
+        the operator's choice), and the check only bites when campaigns are on.
+        """
+        needed = self.campaign_history_days + self.campaign_holdout_days
+        if self.campaign_enabled and 0 < self.history_backfill_days < needed:
+            raise ValueError(
+                f"TRADEBOT_HISTORY_BACKFILL_DAYS ({self.history_backfill_days}) must cover "
+                f"TRADEBOT_CAMPAIGN_HISTORY_DAYS + TRADEBOT_CAMPAIGN_HOLDOUT_DAYS ({needed}): "
+                "a campaign would otherwise grade on less history than configured"
+            )
+        return self
+
     accept_sweep_enabled: bool = True
     """Queue a findings-targeted sweep when a finding is accepted, so a
     human verdict has a visible consequence within the hour instead of

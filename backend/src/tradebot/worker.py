@@ -58,6 +58,7 @@ from tradebot.core.models import AutonomyMode, CandleInterval, Fill, SymbolFilte
 from tradebot.engine import TradingEngine
 from tradebot.evaluation import ScenarioEvaluator
 from tradebot.evaluation.bakeoff import BakeOffConfig, BakeOffManager
+from tradebot.evaluation.campaign_driver import CampaignDriver, CampaignDriverConfig
 from tradebot.evaluation.improve import AutoImprover
 from tradebot.evaluation.presets import contestant_for
 from tradebot.evaluation.runner import EvaluationManager, EvaluationRunConfig, EvaluationRunner
@@ -387,9 +388,13 @@ class Worker:
         # until _start_improver_if_enabled builds it (or forever when the
         # loop is disabled — the status endpoint then reports schedule only).
         self._improver: AutoImprover | None = None
+        # The §12.7 campaign driver (supersedes the auto-improver when
+        # enabled); ``None`` until _start_campaign_driver_if_enabled builds it.
+        self._campaign_driver: CampaignDriver | None = None
         # Validated at boot, not first cycle: a bad timeframe must fail the
         # deploy, not the first improvement attempt half a day later.
         CandleInterval(config.auto_improve_timeframe)
+        CandleInterval(config.campaign_timeframe)
 
     def _new_runtime(
         self, spec: CompetitorSpec, rules: dict[str, Any] | None = None
@@ -2124,6 +2129,7 @@ class Worker:
         # tears down whatever already runs (no leaked tasks or clients).
         api_task: asyncio.Task[None] | None = None
         improver_task: asyncio.Task[None] | None = None
+        campaign_task: asyncio.Task[None] | None = None
         notifier_client: httpx.AsyncClient | None = None
         heartbeat_task: asyncio.Task[None] | None = None
         heartbeat_client: httpx.AsyncClient | None = None
@@ -2166,6 +2172,7 @@ class Worker:
             sentiment_task, sentiment_client = self._start_sentiment_if_configured()
             funding_task = self._start_funding_if_configured()
             improver_task = self._start_improver_if_enabled()
+            campaign_task = self._start_campaign_driver_if_enabled()
             # TaskGroup, not gather: if one feed crashes, the others must be
             # cancelled with it — a bot trading some symbols while blind on
             # another would be worse than one that stops and restarts.
@@ -2185,6 +2192,7 @@ class Worker:
             for task in (
                 api_task,
                 improver_task,
+                campaign_task,
                 heartbeat_task,
                 news_task,
                 backup_task,
@@ -2465,6 +2473,11 @@ class Worker:
         other mode, and promotions only rewrite the paper strategy's
         parameters — never the mode, never the risk limits.
         """
+        if self.config.campaign_enabled:
+            # The campaign driver is the §12.7 loop when enabled; the two share
+            # the single research lane, so only one of them runs.
+            log_event(logger, logging.INFO, "automated_improvement_superseded_by_campaign")
+            return None
         if not self.config.auto_improve_enabled:
             log_event(logger, logging.INFO, "automated_improvement_disabled")
             return None
@@ -2504,6 +2517,64 @@ class Worker:
             interval_hours=self.config.auto_improve_interval_hours,
             history_days=self.config.auto_improve_history_days,
             timeframe=self.config.auto_improve_timeframe,
+        )
+        return task
+
+    def _start_campaign_driver_if_enabled(self) -> asyncio.Task[None] | None:
+        """Start the §12.7 campaign loop (iterated walk-forward) unless disabled.
+
+        Off by default; when on it supersedes the single-sweep auto-improver
+        (`_start_improver_if_enabled` stands down — they share the one research
+        lane). Same paper scope as the auto-improver: it runs in this paper-only
+        worker and promotes only through the journaled, revertible apply path —
+        never the mode, never the risk limits.
+        """
+        if not self.config.campaign_enabled:
+            log_event(logger, logging.INFO, "campaign_driver_disabled")
+            return None
+        driver = CampaignDriver(
+            sweeps=self.sweeps,
+            store=self.evaluation_store,
+            candle_store=self.candle_store,
+            active_params=lambda: self.strategy_params,
+            symbols=lambda: self.symbols,
+            promote=self.apply_strategy_params,
+            confirm=self._confirm_promotion,
+            config=CampaignDriverConfig(
+                timeframe=self.config.campaign_timeframe,
+                history_days=self.config.campaign_history_days,
+                holdout_days=self.config.campaign_holdout_days,
+                scenario_count=self.config.campaign_scenario_count,
+                max_rounds=self.config.campaign_max_rounds,
+                max_hours=self.config.campaign_max_hours,
+                refine_factor=self.config.campaign_refine_factor,
+                min_scale=self.config.campaign_min_scale,
+                cooldown_minutes=self.config.campaign_cooldown_minutes,
+                regime_routed=self.regime_detector is not None,
+            ),
+            notify=self._notify,
+        )
+        self._campaign_driver = driver
+        task = asyncio.create_task(driver.run())
+
+        def log_campaign_outcome(finished: asyncio.Task[None]) -> None:
+            # The loop catches its own per-campaign errors; reaching here other
+            # than by cancellation means the driver died — say so.
+            try:
+                finished.result()
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                log_event(logger, logging.ERROR, "campaign_driver_crashed", exc_info=True)
+
+        task.add_done_callback(log_campaign_outcome)
+        log_event(
+            logger,
+            logging.INFO,
+            "campaign_driver_enabled",
+            max_rounds=self.config.campaign_max_rounds,
+            max_hours=self.config.campaign_max_hours,
+            timeframe=self.config.campaign_timeframe,
         )
         return task
 
