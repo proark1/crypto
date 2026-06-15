@@ -146,9 +146,26 @@ def select_targeting_findings(
     ]
 
 
+def _step(multiplier: float, scale: float) -> float:
+    """Interpolate a base-grid step multiplier toward 1.0 as the search refines.
+
+    ``scale`` 1.0 returns the multiplier unchanged — the coarsest
+    neighbourhood, the only grid the §12.7 auto-improver ever asks for — so
+    automated improvement and the golden backtest are byte-identical. A
+    smaller ``scale`` moves the multiplier toward 1.0 (no change), so an
+    iterated campaign (§12.7) probes finer neighbourhoods of the incumbent on
+    successive rounds; as ``scale`` → 0 a variant rounds back into the
+    baseline and ``_dedupe`` drops it, so the search converges by
+    construction. Only the always-present magnitude steps scale — the
+    finding-targeted toggles are discrete hypotheses, not a step size.
+    """
+    return 1.0 + scale * (multiplier - 1.0)
+
+
 def build_improvement_candidates(
     active: Mapping[str, Mapping[str, Any]],
     findings: Sequence[tuple[int, str]] = (),
+    scale: float = 1.0,
 ) -> tuple[tuple[SweepCandidate, ...], tuple[int, ...]]:
     """Derive one challenger grid from the active parameters and findings.
 
@@ -175,8 +192,8 @@ def build_improvement_candidates(
     reversion = MeanReversionConfig(**active.get("mean_reversion", {}))
 
     fast, slow = trend.fast_ema_period, trend.slow_ema_period
-    faster_fast = max(3, round(fast * 0.6))
-    slower_fast = round(fast * 1.5)
+    faster_fast = max(3, round(fast * _step(0.6, scale)))
+    slower_fast = round(fast * _step(1.5, scale))
     raw: list[SweepCandidate] = [
         SweepCandidate(name=f"active_trend_{fast}_{slow}", params=trend.model_dump()),
         SweepCandidate(
@@ -184,7 +201,7 @@ def build_improvement_candidates(
             params=trend.model_copy(
                 update={
                     "fast_ema_period": faster_fast,
-                    "slow_ema_period": max(faster_fast + 2, round(slow * 0.6)),
+                    "slow_ema_period": max(faster_fast + 2, round(slow * _step(0.6, scale))),
                 }
             ).model_dump(),
         ),
@@ -193,20 +210,24 @@ def build_improvement_candidates(
             params=trend.model_copy(
                 update={
                     "fast_ema_period": slower_fast,
-                    "slow_ema_period": max(slower_fast + 2, round(slow * 1.5)),
+                    "slow_ema_period": max(slower_fast + 2, round(slow * _step(1.5, scale))),
                 }
             ).model_dump(),
         ),
         SweepCandidate(
             name="wider_stop",
             params=trend.model_copy(
-                update={"atr_stop_multiple": round(trend.atr_stop_multiple * 1.5, 2)}
+                update={"atr_stop_multiple": round(trend.atr_stop_multiple * _step(1.5, scale), 2)}
             ).model_dump(),
         ),
         SweepCandidate(
             name="tighter_stop",
             params=trend.model_copy(
-                update={"atr_stop_multiple": max(0.5, round(trend.atr_stop_multiple * 0.75, 2))}
+                update={
+                    "atr_stop_multiple": max(
+                        0.5, round(trend.atr_stop_multiple * _step(0.75, scale), 2)
+                    )
+                }
             ).model_dump(),
         ),
         SweepCandidate(
@@ -335,6 +356,7 @@ def _dedupe(
 def _breakout_candidates(
     active: Mapping[str, Mapping[str, Any]],
     findings: Sequence[tuple[int, str]],
+    scale: float = 1.0,
 ) -> tuple[tuple[SweepCandidate, ...], tuple[int, ...]]:
     """Build the breakout family's grid: channel variants plus targeted knobs.
 
@@ -357,28 +379,34 @@ def _breakout_candidates(
             name="wider_channel",
             family="breakout",
             params=breakout.model_copy(
-                update={"channel_period": round(channel * 1.5)}
+                update={"channel_period": round(channel * _step(1.5, scale))}
             ).model_dump(),
         ),
         SweepCandidate(
             name="tighter_channel",
             family="breakout",
             params=breakout.model_copy(
-                update={"channel_period": max(5, round(channel * 0.6))}
+                update={"channel_period": max(5, round(channel * _step(0.6, scale)))}
             ).model_dump(),
         ),
         SweepCandidate(
             name="wider_stop",
             family="breakout",
             params=breakout.model_copy(
-                update={"atr_stop_multiple": round(breakout.atr_stop_multiple * 1.5, 2)}
+                update={
+                    "atr_stop_multiple": round(breakout.atr_stop_multiple * _step(1.5, scale), 2)
+                }
             ).model_dump(),
         ),
         SweepCandidate(
             name="tighter_stop",
             family="breakout",
             params=breakout.model_copy(
-                update={"atr_stop_multiple": max(0.5, round(breakout.atr_stop_multiple * 0.75, 2))}
+                update={
+                    "atr_stop_multiple": max(
+                        0.5, round(breakout.atr_stop_multiple * _step(0.75, scale), 2)
+                    )
+                }
             ).model_dump(),
         ),
     ]
@@ -454,6 +482,7 @@ def _breakout_candidates(
 def _momentum_candidates(
     active: Mapping[str, Mapping[str, Any]],
     findings: Sequence[tuple[int, str]],
+    scale: float = 1.0,
 ) -> tuple[tuple[SweepCandidate, ...], tuple[int, ...]]:
     """Build the momentum family's grid: MACD-speed variants plus targeted knobs.
 
@@ -466,8 +495,8 @@ def _momentum_candidates(
     """
     momentum = MomentumConfig(**active.get("momentum", {}))
     fast, slow = momentum.fast_ema_period, momentum.slow_ema_period
-    faster_fast = max(3, round(fast * 0.6))
-    slower_fast = round(fast * 1.5)
+    faster_fast = max(3, round(fast * _step(0.6, scale)))
+    slower_fast = round(fast * _step(1.5, scale))
     raw: list[SweepCandidate] = [
         SweepCandidate(
             name=f"active_momentum_{fast}_{slow}",
@@ -480,7 +509,7 @@ def _momentum_candidates(
             params=momentum.model_copy(
                 update={
                     "fast_ema_period": faster_fast,
-                    "slow_ema_period": max(faster_fast + 2, round(slow * 0.6)),
+                    "slow_ema_period": max(faster_fast + 2, round(slow * _step(0.6, scale))),
                 }
             ).model_dump(),
         ),
@@ -490,7 +519,7 @@ def _momentum_candidates(
             params=momentum.model_copy(
                 update={
                     "fast_ema_period": slower_fast,
-                    "slow_ema_period": max(slower_fast + 2, round(slow * 1.5)),
+                    "slow_ema_period": max(slower_fast + 2, round(slow * _step(1.5, scale))),
                 }
             ).model_dump(),
         ),
@@ -498,14 +527,20 @@ def _momentum_candidates(
             name="wider_stop",
             family="momentum",
             params=momentum.model_copy(
-                update={"atr_stop_multiple": round(momentum.atr_stop_multiple * 1.5, 2)}
+                update={
+                    "atr_stop_multiple": round(momentum.atr_stop_multiple * _step(1.5, scale), 2)
+                }
             ).model_dump(),
         ),
         SweepCandidate(
             name="tighter_stop",
             family="momentum",
             params=momentum.model_copy(
-                update={"atr_stop_multiple": max(0.5, round(momentum.atr_stop_multiple * 0.75, 2))}
+                update={
+                    "atr_stop_multiple": max(
+                        0.5, round(momentum.atr_stop_multiple * _step(0.75, scale), 2)
+                    )
+                }
             ).model_dump(),
         ),
     ]
@@ -587,6 +622,7 @@ def _momentum_candidates(
 def _squeeze_candidates(
     active: Mapping[str, Mapping[str, Any]],
     findings: Sequence[tuple[int, str]],
+    scale: float = 1.0,
 ) -> tuple[tuple[SweepCandidate, ...], tuple[int, ...]]:
     """Build the squeeze family's grid: band/channel variants plus targeted knobs.
 
@@ -611,7 +647,11 @@ def _squeeze_candidates(
             name="looser_squeeze",
             family="squeeze",
             params=squeeze.model_copy(
-                update={"keltner_atr_multiple": round(squeeze.keltner_atr_multiple * 1.5, 2)}
+                update={
+                    "keltner_atr_multiple": round(
+                        squeeze.keltner_atr_multiple * _step(1.5, scale), 2
+                    )
+                }
             ).model_dump(),
         ),
         SweepCandidate(
@@ -619,7 +659,9 @@ def _squeeze_candidates(
             family="squeeze",
             params=squeeze.model_copy(
                 update={
-                    "keltner_atr_multiple": max(0.5, round(squeeze.keltner_atr_multiple * 0.75, 2))
+                    "keltner_atr_multiple": max(
+                        0.5, round(squeeze.keltner_atr_multiple * _step(0.75, scale), 2)
+                    )
                 }
             ).model_dump(),
         ),
@@ -627,14 +669,20 @@ def _squeeze_candidates(
             name="wider_stop",
             family="squeeze",
             params=squeeze.model_copy(
-                update={"atr_stop_multiple": round(squeeze.atr_stop_multiple * 1.5, 2)}
+                update={
+                    "atr_stop_multiple": round(squeeze.atr_stop_multiple * _step(1.5, scale), 2)
+                }
             ).model_dump(),
         ),
         SweepCandidate(
             name="tighter_stop",
             family="squeeze",
             params=squeeze.model_copy(
-                update={"atr_stop_multiple": max(0.5, round(squeeze.atr_stop_multiple * 0.75, 2))}
+                update={
+                    "atr_stop_multiple": max(
+                        0.5, round(squeeze.atr_stop_multiple * _step(0.75, scale), 2)
+                    )
+                }
             ).model_dump(),
         ),
     ]
@@ -708,6 +756,7 @@ def build_candidates_for(
     target: str,
     active: Mapping[str, Mapping[str, Any]],
     findings: Sequence[tuple[int, str]] = (),
+    scale: float = 1.0,
 ) -> tuple[tuple[SweepCandidate, ...], tuple[int, ...]]:
     """Derive the challenger grid for one improvement target.
 
@@ -720,13 +769,13 @@ def build_candidates_for(
     here with a custom-bot id is a wrong call, not a silent wrong sweep.
     """
     if target in ("production", "trend_following", "mean_reversion"):
-        return build_improvement_candidates(active, findings)
+        return build_improvement_candidates(active, findings, scale)
     if target == "breakout":
-        return _breakout_candidates(active, findings)
+        return _breakout_candidates(active, findings, scale)
     if target == "momentum":
-        return _momentum_candidates(active, findings)
+        return _momentum_candidates(active, findings, scale)
     if target == "squeeze":
-        return _squeeze_candidates(active, findings)
+        return _squeeze_candidates(active, findings, scale)
     raise ValueError(f"no improvement grid for {target!r}; known: {IMPROVEMENT_TARGETS}")
 
 
@@ -734,6 +783,7 @@ def _single_family_grid(
     family: str,
     params: Mapping[str, Any],
     findings: Sequence[tuple[int, str]],
+    scale: float = 1.0,
 ) -> tuple[tuple[SweepCandidate, ...], tuple[int, ...]]:
     """One family's single-knob candidates (its baseline first, then variants).
 
@@ -744,18 +794,19 @@ def _single_family_grid(
     """
     active = {family: dict(params)}
     if family == "breakout":
-        return _breakout_candidates(active, findings)
+        return _breakout_candidates(active, findings, scale)
     if family == "momentum":
-        return _momentum_candidates(active, findings)
+        return _momentum_candidates(active, findings, scale)
     if family == "squeeze":
-        return _squeeze_candidates(active, findings)
-    candidates, motivating = build_improvement_candidates(active, findings)
+        return _squeeze_candidates(active, findings, scale)
+    candidates, motivating = build_improvement_candidates(active, findings, scale)
     return tuple(c for c in candidates if c.family == family), motivating
 
 
 def build_recipe_candidates(
     recipe: Mapping[str, Any],
     findings: Sequence[tuple[int, str]] = (),
+    scale: float = 1.0,
 ) -> tuple[tuple[SweepCandidate, ...], tuple[int, ...]]:
     """Derive a custom bot's challenger grid: vary one knob at a time, in place.
 
@@ -776,7 +827,7 @@ def build_recipe_candidates(
     raw: list[SweepCandidate] = [baseline]
     motivating: list[int] = []
     for family, params in recipe["families"].items():
-        family_candidates, family_motivating = _single_family_grid(family, params, findings)
+        family_candidates, family_motivating = _single_family_grid(family, params, findings, scale)
         motivating += family_motivating
         for candidate in family_candidates:
             if candidate.name.startswith("active"):

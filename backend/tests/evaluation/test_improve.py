@@ -737,6 +737,54 @@ class TestFindingsDrivenCandidates:
         assert motivating == ()
 
 
+class TestScale:
+    """Coarse-to-fine refine: ``scale`` shrinks the base grid toward the baseline."""
+
+    def test_scale_one_reproduces_the_default_grid(self) -> None:
+        active = {"trend_following": {"fast_ema_period": 20, "slow_ema_period": 50}}
+        default, _ = build_improvement_candidates(active)
+        explicit, _ = build_improvement_candidates(active, scale=1.0)
+        assert [c.name for c in default] == [c.name for c in explicit]
+        assert [c.params for c in default] == [c.params for c in explicit]
+
+    def test_a_finer_scale_steps_closer_to_the_baseline(self) -> None:
+        active = {
+            "trend_following": {
+                "fast_ema_period": 20,
+                "slow_ema_period": 50,
+                "atr_stop_multiple": 2.0,
+            }
+        }
+        coarse = {c.name: c for c in build_improvement_candidates(active, scale=1.0)[0]}
+        fine = {c.name: c for c in build_improvement_candidates(active, scale=0.5)[0]}
+        # faster_cross drops the fast EMA from 20; the finer step stays closer.
+        assert coarse["faster_cross"].params["fast_ema_period"] == 12  # round(20 * 0.6)
+        assert fine["faster_cross"].params["fast_ema_period"] == 16  # round(20 * 0.8)
+        # wider_stop widens the 2.0 ATR stop; the finer step widens it less.
+        assert coarse["wider_stop"].params["atr_stop_multiple"] == 3.0
+        assert fine["wider_stop"].params["atr_stop_multiple"] == 2.5
+
+    def test_scale_zero_collapses_every_base_variant_into_the_baseline(self) -> None:
+        active = {
+            "trend_following": {"fast_ema_period": 20, "slow_ema_period": 50},
+            "mean_reversion": {},
+        }
+        candidates, _ = build_improvement_candidates(active, scale=0.0)
+        # Every magnitude step is scaled by 1.0 now, so the base variants equal the
+        # baseline and dedup leaves only the two family baselines.
+        assert [c.name for c in candidates] == [candidates[0].name, "active_reversion"]
+        assert {c.family for c in candidates} == {"trend_following", "mean_reversion"}
+
+    def test_scale_threads_through_to_a_research_family(self) -> None:
+        from tradebot.evaluation.improve import build_candidates_for
+
+        coarse, _ = build_candidates_for("breakout", {}, scale=1.0)
+        collapsed, _ = build_candidates_for("breakout", {}, scale=0.0)
+        assert len(coarse) > 1  # the usual channel/stop neighbourhood
+        assert len(collapsed) == 1  # all base variants collapse into the baseline
+        assert collapsed[0].name.startswith("active_breakout")
+
+
 class TestEvaluateBeforeSweeping:
     async def test_no_completed_run_starts_an_evaluation_instead_of_sweeping(self) -> None:
         sweeps = ScriptedSweeps()
