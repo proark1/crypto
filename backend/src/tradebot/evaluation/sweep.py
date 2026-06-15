@@ -21,14 +21,20 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable, Coroutine, Mapping, Sequence
-from datetime import datetime, timedelta
+from datetime import timedelta
 from decimal import ROUND_HALF_EVEN, Decimal
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from tradebot.backtest import split_rolling_by_fraction
-from tradebot.core.models import ACCOUNTING_RESOLUTION, Candle, CandleInterval, utc_now
+from tradebot.core.models import (
+    ACCOUNTING_RESOLUTION,
+    Candle,
+    CandleInterval,
+    UtcDatetime,
+    utc_now,
+)
 from tradebot.evaluation.engine import ScenarioEvaluator
 from tradebot.evaluation.generator import GeneratorConfig, generate_specs
 from tradebot.evaluation.models import RunStatus
@@ -194,14 +200,15 @@ class SweepConfig(BaseModel):
     lookback_candles: int = Field(default=200, ge=60)
     horizon_candles: int = Field(default=60, gt=0)
     seed: int = 7
-    window_end: datetime | None = None
+    window_end: UtcDatetime | None = None
     """Freeze the history window's end instead of using "now" (mirrors
     ``EvaluationRunConfig.window_end``). With it set, the whole sweep —
     training selection and every walk-forward validation slice — is drawn
     strictly *before* this instant, so a caller can reserve a more-recent
     holdout the sweep never peeks into. ``None`` (the default) keeps the
-    historical behavior of ending at the current time. Pass a
-    timezone-aware UTC datetime (CLAUDE.md invariant 2)."""
+    historical behavior of ending at the current time. The ``UtcDatetime``
+    type rejects naive inputs and normalizes any offset to UTC, so the
+    holdout boundary can never be a naive datetime (CLAUDE.md invariant 2)."""
 
     training_fraction: float = Field(default=0.7, gt=0.0, lt=1.0)
     """Share of the series each rolling window trains on; the rest splits

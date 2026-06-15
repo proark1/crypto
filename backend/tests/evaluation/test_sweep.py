@@ -219,6 +219,9 @@ class TestSweepConfig:
         frozen = SweepConfig(symbol="BTC/USDT", candidates=candidates, window_end=boundary)
         assert frozen.window_end == boundary
         assert frozen.model_dump()["window_end"] == boundary
+        # UtcDatetime enforces CLAUDE.md invariant 2: a naive end is rejected.
+        with pytest.raises(ValueError, match="naive datetime is not allowed"):
+            SweepConfig(symbol="BTC/USDT", candidates=candidates, window_end=datetime.now())
 
 
 async def seed_candles(database: Database, count: int = 800) -> None:
