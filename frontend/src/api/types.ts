@@ -485,6 +485,16 @@ export interface TradingFeesResponse {
   sell_fee_bps: string;
 }
 
+/** The §12.7 campaign loop's on/off and budget, for the Settings tab. `enabled`
+ * is the live runtime toggle (persisted, no redeploy); the budget fields are
+ * read-only context for the switch. */
+export interface CampaignSettingsResponse {
+  enabled: boolean;
+  max_rounds: number;
+  max_hours: number;
+  timeframe: string;
+}
+
 /** One ready-to-run evaluation shape, fitted server-side to the coin's
  * stored history — submitted verbatim to startEvaluation on click. */
 export interface SuggestedEvaluationResponse {

@@ -1,7 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
 
-import { ApiError, fetchTradingFees, updateTradingFees } from "../api/client";
-import type { TradingFeesResponse } from "../api/types";
+import {
+  ApiError,
+  fetchCampaignSettings,
+  fetchTradingFees,
+  updateCampaignSettings,
+  updateTradingFees,
+} from "../api/client";
+import type { CampaignSettingsResponse, TradingFeesResponse } from "../api/types";
 import { Alert, Button, Card, SectionHeader } from "../ui";
 
 /** A fee draft is valid when it is a non-negative number no larger than 10%
@@ -153,7 +159,109 @@ export function SettingsScreen() {
           </div>
         </form>
       </Card>
+      <CampaignSettingsCard />
     </div>
+  );
+}
+
+/**
+ * A live on/off switch for the §12.7 research-campaign loop. Self-contained: it
+ * loads its own state and flips it through the API, mirroring the trading-fees
+ * control above. The switch is honored within a cycle — no redeploy.
+ */
+function CampaignSettingsCard() {
+  const [campaign, setCampaign] = useState<CampaignSettingsResponse | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoadError(null);
+    try {
+      setCampaign(await fetchCampaignSettings());
+    } catch (caught) {
+      setLoadError(
+        caught instanceof ApiError ? caught.message : "could not load campaign settings",
+      );
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const toggle = useCallback(async () => {
+    if (campaign === null) {
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      setCampaign(await updateCampaignSettings(!campaign.enabled));
+    } catch (caught) {
+      setError(
+        caught instanceof ApiError ? caught.message : "could not update campaign settings",
+      );
+    } finally {
+      setSaving(false);
+    }
+  }, [campaign]);
+
+  return (
+    <Card padding="lg">
+      <SectionHeader
+        title="Research campaigns"
+        description="sweep, promote what beats the live settings out of sample, refine, repeat"
+      />
+      <Alert tone="info">
+        When on, the bot runs research campaigns continuously — promoting only changes that
+        clear the walk-forward bar against an untouched holdout, paper-only and reversible. It
+        supersedes the single-sweep self-improver while it runs, and the switch takes effect
+        within a cycle — no redeploy.
+      </Alert>
+      {loadError !== null && (
+        <div className="mt-3">
+          <Alert tone="error">{loadError}</Alert>
+        </div>
+      )}
+      {campaign !== null && (
+        <div className="mt-4 flex items-center justify-between gap-4">
+          <div>
+            <p className="text-sm font-medium text-zinc-800 dark:text-zinc-200">
+              {campaign.enabled ? "Running campaigns" : "Off"}
+            </p>
+            <p className="mt-0.5 text-[12px] text-zinc-500 dark:text-zinc-400">
+              up to {campaign.max_rounds} rounds or {campaign.max_hours}h per campaign, on{" "}
+              {campaign.timeframe}
+            </p>
+          </div>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={campaign.enabled}
+            aria-label="Research campaigns"
+            disabled={saving}
+            onClick={() => {
+              void toggle();
+            }}
+            className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors disabled:opacity-50 ${
+              campaign.enabled ? "bg-emerald-500" : "bg-zinc-300 dark:bg-zinc-700"
+            }`}
+          >
+            <span
+              className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform ${
+                campaign.enabled ? "translate-x-5" : "translate-x-0.5"
+              }`}
+            />
+          </button>
+        </div>
+      )}
+      {error !== null && (
+        <div className="mt-3">
+          <Alert tone="error">{error}</Alert>
+        </div>
+      )}
+    </Card>
   );
 }
 
