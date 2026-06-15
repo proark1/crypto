@@ -906,6 +906,7 @@ class AutoImprover:
         history_days: int,
         timeframe: str,
         notify: Callable[[str], Awaitable[None]] | None = None,
+        campaign_active: Callable[[], bool] | None = None,
     ) -> None:
         """Bind the loop to the worker's live state.
 
@@ -928,6 +929,7 @@ class AutoImprover:
         self._history_days = history_days
         self._timeframe = timeframe
         self._notify = notify
+        self._campaign_active = campaign_active
         self._rotation = 0
         self.status = ImprovementStatus()
 
@@ -966,6 +968,10 @@ class AutoImprover:
         them.
         """
         self.status.last_cycle_started_at = datetime.now(UTC)
+        if self._campaign_active is not None and self._campaign_active():
+            # The §12.7 campaign loop holds the single research lane; stand down.
+            self._finish_cycle("stood down: the research campaign is running")
+            return None
         symbols = self._symbols()
         if not symbols:
             self._finish_cycle("skipped: no active coins to research")

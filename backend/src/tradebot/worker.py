@@ -80,6 +80,7 @@ from tradebot.news import CryptoPanicSource, EventCalendar, NewsFlags, NewsGate,
 from tradebot.persistence import (
     BakeOffStore,
     BotCapitalStore,
+    CampaignSettingsStore,
     CandleStore,
     CoinStore,
     CustomBotStore,
@@ -289,6 +290,11 @@ class Worker:
         # rebuilding engines. Seeded from config; the persisted value (if an
         # operator has saved one) overrides it in initialize().
         self.trading_fees_store = TradingFeesStore(database)
+        # The §12.7 campaign loop's runtime on/off. Seeded from config; the
+        # persisted value (if an operator has toggled it) overrides it in
+        # initialize(), and the Settings PUT flips it live.
+        self.campaign_settings_store = CampaignSettingsStore(database)
+        self._campaign_enabled = config.campaign_enabled
         self.fee_schedule = FeeSchedule(
             buy_fee_bps=config.buy_fee_bps, sell_fee_bps=config.sell_fee_bps
         )
@@ -539,7 +545,7 @@ class Worker:
         """
         current = self._campaign_driver.current if self._campaign_driver is not None else None
         return {
-            "enabled": self.config.campaign_enabled,
+            "enabled": self._campaign_enabled,
             "max_rounds": self.config.campaign_max_rounds,
             "max_hours": self.config.campaign_max_hours,
             "timeframe": self.config.campaign_timeframe,
@@ -639,6 +645,24 @@ class Worker:
             buy_fee_bps=str(buy_fee_bps),
             sell_fee_bps=str(sell_fee_bps),
         )
+
+    async def update_campaign_enabled(self, *, enabled: bool) -> None:
+        """Toggle the §12.7 campaign loop and persist it; takes effect live.
+
+        The running driver reads ``self._campaign_enabled`` each turn, so
+        flipping this starts or stops campaigns within one cooldown — no
+        restart — and the auto-improver stands down whenever it is on. If
+        persistence fails the in-memory flag is rolled back, so the running
+        loop never diverges from what a restart would reload.
+        """
+        previous = self._campaign_enabled
+        self._campaign_enabled = enabled
+        try:
+            await self.campaign_settings_store.save(enabled, datetime.now(UTC))
+        except Exception:
+            self._campaign_enabled = previous
+            raise
+        log_event(logger, logging.INFO, "campaign_enabled_updated", enabled=enabled)
 
     def _portfolios_by_bot(self) -> Iterator[tuple[str, Portfolio]]:
         """Yield ``(bot_id, portfolio)`` for the production bot and every challenger."""
@@ -1489,6 +1513,11 @@ class Worker:
         because the coin set lives in the database.
         """
         await self._database.create_schema()
+        # The operator's persisted campaign on/off overrides the config boot
+        # default before the driver starts reading it.
+        stored_campaign = await self.campaign_settings_store.load()
+        if stored_campaign is not None:
+            self._campaign_enabled = stored_campaign
         # Operator-set trading fees override the config boot defaults before
         # any engine's simulator captures the shared schedule.
         stored_fees = await self.trading_fees_store.load()
@@ -2222,7 +2251,7 @@ class Worker:
             sentiment_task, sentiment_client = self._start_sentiment_if_configured()
             funding_task = self._start_funding_if_configured()
             improver_task = self._start_improver_if_enabled()
-            campaign_task = self._start_campaign_driver_if_enabled()
+            campaign_task = self._start_campaign_driver()
             # TaskGroup, not gather: if one feed crashes, the others must be
             # cancelled with it — a bot trading some symbols while blind on
             # another would be worse than one that stops and restarts.
@@ -2523,11 +2552,6 @@ class Worker:
         other mode, and promotions only rewrite the paper strategy's
         parameters — never the mode, never the risk limits.
         """
-        if self.config.campaign_enabled:
-            # The campaign driver is the §12.7 loop when enabled; the two share
-            # the single research lane, so only one of them runs.
-            log_event(logger, logging.INFO, "automated_improvement_superseded_by_campaign")
-            return None
         if not self.config.auto_improve_enabled:
             log_event(logger, logging.INFO, "automated_improvement_disabled")
             return None
@@ -2543,6 +2567,7 @@ class Worker:
             history_days=self.config.auto_improve_history_days,
             timeframe=self.config.auto_improve_timeframe,
             notify=self._notify,
+            campaign_active=lambda: self._campaign_enabled,
         )
         self._improver = improver
         task = asyncio.create_task(improver.run())
@@ -2570,18 +2595,17 @@ class Worker:
         )
         return task
 
-    def _start_campaign_driver_if_enabled(self) -> asyncio.Task[None] | None:
-        """Start the §12.7 campaign loop (iterated walk-forward) unless disabled.
+    def _start_campaign_driver(self) -> asyncio.Task[None]:
+        """Start the §12.7 campaign loop (iterated walk-forward), gated live.
 
-        Off by default; when on it supersedes the single-sweep auto-improver
-        (`_start_improver_if_enabled` stands down — they share the one research
-        lane). Same paper scope as the auto-improver: it runs in this paper-only
-        worker and promotes only through the journaled, revertible apply path —
-        never the mode, never the risk limits.
+        Always runs, but each turn it idles unless the runtime toggle
+        (``self._campaign_enabled``, settable from the Settings tab) is on — so
+        an operator switches the loop on and off without a restart, and when it
+        is on the auto-improver stands down (they share the one research lane).
+        Same paper scope as the auto-improver: this paper-only worker promotes
+        only through the journaled, revertible apply path — never the mode,
+        never the risk limits.
         """
-        if not self.config.campaign_enabled:
-            log_event(logger, logging.INFO, "campaign_driver_disabled")
-            return None
         driver = CampaignDriver(
             sweeps=self.sweeps,
             store=self.evaluation_store,
@@ -2603,6 +2627,7 @@ class Worker:
                 regime_routed=self.regime_detector is not None,
             ),
             notify=self._notify,
+            enabled=lambda: self._campaign_enabled,
         )
         self._campaign_driver = driver
         task = asyncio.create_task(driver.run())
@@ -2621,7 +2646,8 @@ class Worker:
         log_event(
             logger,
             logging.INFO,
-            "campaign_driver_enabled",
+            "campaign_driver_started",
+            enabled=self._campaign_enabled,
             max_rounds=self.config.campaign_max_rounds,
             max_hours=self.config.campaign_max_hours,
             timeframe=self.config.campaign_timeframe,

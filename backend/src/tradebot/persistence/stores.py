@@ -29,6 +29,7 @@ from tradebot.core.models import (
 from tradebot.persistence.database import (
     Database,
     bot_capital_table,
+    campaign_settings_table,
     candles_table,
     coins_table,
     custom_bots_table,
@@ -717,6 +718,42 @@ class TradingFeesStore:
         if row is None:
             return None
         return Decimal(row[0]), Decimal(row[1])
+
+
+class CampaignSettingsStore:
+    """The single-row operator on/off for the §12.7 campaign loop.
+
+    Absent until first toggled: until then the worker uses the boot default
+    from config. One boolean, persisted so a restart reloads the operator's
+    last choice rather than the env default.
+    """
+
+    ROW_ID = 1
+
+    def __init__(self, database: Database) -> None:
+        """Bind the store to ``database``."""
+        self._database = database
+
+    async def save(self, enabled: bool, at: datetime) -> None:
+        """Upsert the one campaign-settings row."""
+        _require_aware(at)
+        row = {"id": self.ROW_ID, "enabled": enabled, "updated_at": at}
+        statement = pg_insert(campaign_settings_table)
+        statement = statement.on_conflict_do_update(
+            index_elements=["id"],
+            set_={name: statement.excluded[name] for name in row if name != "id"},
+        )
+        async with self._database.engine.begin() as connection:
+            await connection.execute(statement, [row])
+
+    async def load(self) -> bool | None:
+        """Return the persisted on/off, or ``None`` if never toggled."""
+        statement = select(campaign_settings_table.c.enabled).where(
+            campaign_settings_table.c.id == self.ROW_ID
+        )
+        async with self._database.engine.connect() as connection:
+            row = (await connection.execute(statement)).first()
+        return None if row is None else bool(row[0])
 
 
 class BotCapitalStore:

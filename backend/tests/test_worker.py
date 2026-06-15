@@ -293,6 +293,23 @@ class TestWorker:
         assert restarted.fee_schedule.buy_fee_bps == Decimal("20")
         assert restarted.fee_schedule.sell_fee_bps == Decimal("30")
 
+    async def test_campaign_toggle_persists_and_reloads_across_restart(
+        self, database: Database
+    ) -> None:
+        await database.create_schema()
+        worker = Worker(make_config(), database, ScriptedExchange([]))
+        assert worker.campaign_status()["enabled"] is False  # boot default: off
+
+        await worker.update_campaign_enabled(enabled=True)
+        assert worker.campaign_status()["enabled"] is True
+
+        # A fresh process starts from the config default, then initialize()
+        # loads the operator's persisted toggle over it.
+        restarted = Worker(make_config(), database, ScriptedExchange([]))
+        assert restarted.campaign_status()["enabled"] is False
+        await restarted.initialize()
+        assert restarted.campaign_status()["enabled"] is True
+
     async def test_reset_bot_capital_purges_journal_and_reloads_balance(
         self, database: Database
     ) -> None:

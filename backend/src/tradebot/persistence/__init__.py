@@ -12,6 +12,7 @@ from tradebot.persistence.evaluation_store import EvaluationStore
 from tradebot.persistence.stores import (
     CHART_BUCKET_UNITS,
     BotCapitalStore,
+    CampaignSettingsStore,
     CandleStore,
     ChartCandle,
     CoinStore,
@@ -29,6 +30,7 @@ __all__ = [
     "CHART_BUCKET_UNITS",
     "BakeOffStore",
     "BotCapitalStore",
+    "CampaignSettingsStore",
     "CandleStore",
     "ChartCandle",
     "CoinStore",

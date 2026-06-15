@@ -108,6 +108,7 @@ class StubBot:
         self._sweep_running = False
         # Runs whose acceptance triggered the (stubbed) coalescing sweep.
         self.acceptance_notes: list[int] = []
+        self._campaign_enabled = True
         # Custom bots, in-memory: bot_id -> {label, description, rules};
         # paused state per bot id. Enough behavior for the endpoints'
         # contract tests — worker tests cover the real lifecycle.
@@ -363,7 +364,7 @@ class StubBot:
         # Scripted mid-campaign snapshot in the worker's shape (datetimes, not
         # strings — the route serializes them).
         return {
-            "enabled": True,
+            "enabled": self._campaign_enabled,
             "max_rounds": 8,
             "max_hours": 6.0,
             "timeframe": "1h",
@@ -390,6 +391,9 @@ class StubBot:
                 ],
             },
         }
+
+    async def update_campaign_enabled(self, *, enabled: bool) -> None:
+        self._campaign_enabled = enabled
 
     async def start_evaluation(self, config: EvaluationRunConfig) -> int:
         # Same validation order as the worker: the graded bot first (before
@@ -1482,6 +1486,22 @@ class TestCampaignStatus:
         # Datetimes cross the boundary as ISO-8601 strings; nulls stay null.
         assert campaign["started_at"] == BASE_TIME.isoformat()
         assert campaign["finished_at"] is None
+
+
+class TestCampaignSettings:
+    async def test_put_toggles_the_loop_and_get_reflects_it(self, database: Database) -> None:
+        bot = StubBot(database)
+        async with make_client(bot) as client:
+            initial = await client.get("/settings/campaign")
+            assert initial.status_code == 200
+            assert initial.json()["enabled"] is True
+            assert initial.json()["max_rounds"] == 8
+
+            put = await client.put("/settings/campaign", json={"enabled": False})
+            assert put.status_code == 200 and put.json()["enabled"] is False
+
+            after = await client.get("/settings/campaign")
+            assert after.json()["enabled"] is False
 
 
 class TestScenarioReplay:
