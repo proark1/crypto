@@ -97,6 +97,33 @@ def test_disabled_auto_improve_skips_research_window_check(
     assert AppConfig().history_backfill_days == 180
 
 
+def test_campaign_is_off_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Campaigns are opt-in; merging the wiring changes nothing until enabled."""
+    monkeypatch.delenv("TRADEBOT_CAMPAIGN_ENABLED", raising=False)
+    assert AppConfig().campaign_enabled is False
+
+
+def test_campaign_backfill_must_cover_history_plus_holdout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An enabled campaign needs both its history and its holdout depth of candles."""
+    monkeypatch.setenv("TRADEBOT_CAMPAIGN_ENABLED", "true")
+    monkeypatch.setenv("TRADEBOT_HISTORY_BACKFILL_DAYS", "400")  # short of 365 + 60
+    with pytest.raises(ValidationError, match="must cover"):
+        AppConfig()
+
+
+def test_disabled_campaign_skips_the_backfill_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The campaign window check only bites when campaigns are enabled."""
+    monkeypatch.setenv("TRADEBOT_CAMPAIGN_ENABLED", "false")
+    # 400 covers the auto-improve window (365) but is short of the campaign's
+    # 425, so a fired campaign check would reject it — disabled, it does not.
+    monkeypatch.setenv("TRADEBOT_HISTORY_BACKFILL_DAYS", "400")
+    assert AppConfig().history_backfill_days == 400
+
+
 def test_sentiment_thresholds_load_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("TRADEBOT_SENTIMENT_EXTREME_FEAR_AT_OR_BELOW", "10")
     monkeypatch.setenv("TRADEBOT_SENTIMENT_EXTREME_GREED_AT_OR_ABOVE", "85")
