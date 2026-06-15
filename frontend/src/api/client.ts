@@ -14,6 +14,7 @@ import type {
   CandleResponse,
   ChartInterval,
   CustomBotRules,
+  CampaignSettingsResponse,
   ComparisonGroupResponse,
   ComparisonStartRequest,
   ComparisonStartResponse,
@@ -299,6 +300,16 @@ export function updateTradingFees(
     buy_fee_percent: buyFeePercent,
     sell_fee_percent: sellFeePercent,
   });
+}
+
+/** The §12.7 campaign loop's on/off and budget. */
+export function fetchCampaignSettings(): Promise<CampaignSettingsResponse> {
+  return request<CampaignSettingsResponse>("/settings/campaign", "GET");
+}
+
+/** Turn the campaign loop on or off; effective within one cooldown, no restart. */
+export function updateCampaignSettings(enabled: boolean): Promise<CampaignSettingsResponse> {
+  return request<CampaignSettingsResponse>("/settings/campaign", "PUT", { enabled });
 }
 
 /** Start one evaluation run per strategy over identical scenario sets.

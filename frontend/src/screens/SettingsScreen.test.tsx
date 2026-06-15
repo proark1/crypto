@@ -1,8 +1,13 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { fetchTradingFees, updateTradingFees } from "../api/client";
-import type { TradingFeesResponse } from "../api/types";
+import {
+  fetchCampaignSettings,
+  fetchTradingFees,
+  updateCampaignSettings,
+  updateTradingFees,
+} from "../api/client";
+import type { CampaignSettingsResponse, TradingFeesResponse } from "../api/types";
 import { SettingsScreen } from "./SettingsScreen";
 
 vi.mock("../api/client", () => ({
@@ -15,6 +20,8 @@ vi.mock("../api/client", () => ({
   },
   fetchTradingFees: vi.fn(),
   updateTradingFees: vi.fn(),
+  fetchCampaignSettings: vi.fn(),
+  updateCampaignSettings: vi.fn(),
 }));
 
 const FEES: TradingFeesResponse = {
@@ -24,9 +31,17 @@ const FEES: TradingFeesResponse = {
   sell_fee_bps: "10",
 };
 
+const CAMPAIGN: CampaignSettingsResponse = {
+  enabled: false,
+  max_rounds: 8,
+  max_hours: 6,
+  timeframe: "1h",
+};
+
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(fetchTradingFees).mockResolvedValue(FEES);
+  vi.mocked(fetchCampaignSettings).mockResolvedValue(CAMPAIGN);
 });
 
 describe("SettingsScreen", () => {
@@ -65,5 +80,19 @@ describe("SettingsScreen", () => {
     expect(screen.getByText("10% is the maximum")).toBeTruthy();
     expect(screen.getByRole("button", { name: "save fees" })).toHaveProperty("disabled", true);
     expect(updateTradingFees).not.toHaveBeenCalled();
+  });
+
+  it("toggles the research-campaign loop on", async () => {
+    vi.mocked(updateCampaignSettings).mockResolvedValue({ ...CAMPAIGN, enabled: true });
+    render(<SettingsScreen />);
+    const toggle = await screen.findByRole("switch", { name: "Research campaigns" });
+    expect(toggle.getAttribute("aria-checked")).toBe("false");
+
+    fireEvent.click(toggle);
+
+    await waitFor(() => {
+      expect(updateCampaignSettings).toHaveBeenCalledWith(true);
+    });
+    expect(await screen.findByText("Running campaigns")).toBeTruthy();
   });
 });
