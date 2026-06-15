@@ -5,7 +5,7 @@ from decimal import Decimal
 from typing import Any
 
 from tradebot.evaluation.models import LearningFinding
-from tradebot.evaluation.timeline import TimelineEvent, build_timeline
+from tradebot.evaluation.timeline import SettingChange, TimelineEvent, build_timeline
 
 BASE_TIME = datetime(2026, 6, 1, 0, 0, tzinfo=UTC)
 
@@ -195,9 +195,50 @@ async def test_sweep_and_promotion_events_tell_their_story() -> None:
     assert promotion.headline == "settings v7 activated for trend_following (from sweep #4)"
     assert promotion.detail == "auto-promoted: tighter_stop beat the baseline"
     assert promotion.version_id == 7 and promotion.sweep_id == 4
+    # First in-view version of the family: no truthful predecessor to diff.
+    assert promotion.changes == ()
     assert sweep.verdict == "validated"
     assert "tighter_stop beat the baseline out of sample" in sweep.headline
     assert sweep.detail is not None and "motivated by 2 finding(s)" in sweep.detail
+
+
+async def test_promotion_event_shows_what_changed() -> None:
+    # Two versions of one family, newest first like the store. The newer one
+    # is the record of "what changed after this round" — only the fields that
+    # actually moved, before -> after, as display strings.
+    journal = ScriptedJournal(
+        versions=[
+            {
+                "id": 8,
+                "family": "mean_reversion",
+                "params": {"fast": 8, "slow": 21, "stop_atr": "2.0"},
+                "source_sweep_id": 9,
+                "note": "auto-promoted (campaign): faster_macd beat the baseline",
+                "activated_at": BASE_TIME + timedelta(minutes=30),
+            },
+            {
+                "id": 7,
+                "family": "mean_reversion",
+                "params": {"fast": 12, "slow": 21, "stop_atr": "2.5"},
+                "source_sweep_id": 4,
+                "note": "auto-promoted: tighter_stop beat the baseline",
+                "activated_at": BASE_TIME + timedelta(minutes=20),
+            },
+        ]
+    )
+
+    events = await build_timeline(ScriptedRecord(), journal)
+
+    newest = events[0]
+    assert newest.version_id == 8
+    # ``slow`` held at 21, so it never appears; only the two moved fields do.
+    assert newest.changes == (
+        SettingChange(field="fast", before="12", after="8"),
+        SettingChange(field="stop_atr", before="2.5", after="2.0"),
+    )
+    # The family's first in-view version has no predecessor to diff against.
+    assert events[1].version_id == 7
+    assert events[1].changes == ()
 
 
 async def test_in_flight_work_is_excluded_and_failures_are_not() -> None:
