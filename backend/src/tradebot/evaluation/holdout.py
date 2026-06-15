@@ -134,6 +134,18 @@ def _expectancy(r_values: Sequence[Decimal]) -> Decimal | None:
     )
 
 
+def _prose_r(value: Decimal | None) -> str:
+    """Round R to four decimals for the prose, matching ``sweep._prose_r``.
+
+    The raw dict fields keep full ``ACCOUNTING_RESOLUTION`` precision; only the
+    human-facing explanation rounds, so a 0.05R move reads as ``0.0500R``, not
+    ``0.050000000000R``.
+    """
+    if value is None:
+        return "—"
+    return str(value.quantize(Decimal("0.0001"), rounding=ROUND_HALF_EVEN))
+
+
 def _read(
     holdout_start: datetime,
     holdout_end: datetime,
@@ -165,7 +177,7 @@ def _read(
     if judged:
         explanation = (
             f"on {holdout_candles} untouched holdout candles the campaign moved expectancy "
-            f"from {start_expectancy}R to {final_expectancy}R "
+            f"from {_prose_r(start_expectancy)}R to {_prose_r(final_expectancy)}R "
             f"({'an improvement' if improved else 'no improvement'} out of sample)"
         )
     else:

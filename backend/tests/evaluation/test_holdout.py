@@ -40,6 +40,14 @@ class TestRead:
         assert read["final_expectancy_r"] is None
         assert "too thin" in read["explanation"]
 
+    def test_the_explanation_rounds_r_but_the_fields_keep_full_precision(self) -> None:
+        read = _read(_T0, _T1, 1500, Decimal("0.050000000000"), 30, Decimal("0.200000000000"), 28)
+        assert "from 0.0500R to 0.2000R" in read["explanation"]
+        assert "0.050000000000" not in read["explanation"]
+        # raw fields keep full ACCOUNTING_RESOLUTION precision for the API
+        assert read["start_expectancy_r"] == "0.050000000000"
+        assert read["final_expectancy_r"] == "0.200000000000"
+
 
 class FakeCandles:
     """An in-memory ``fetch_range`` that records the span it was asked for."""
