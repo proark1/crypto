@@ -794,6 +794,65 @@ class TestScale:
                 build_candidates_for("production", {}, scale=bad)
 
 
+class TestCandidateProvider:
+    async def test_builds_the_target_grid_from_the_active_params(self) -> None:
+        from tradebot.evaluation.improve import make_candidate_provider
+
+        store = ScriptedStore(
+            "completed", None, runs=[fresh_completed_run(strategy="momentum")], findings=[]
+        )
+        provider = make_candidate_provider("momentum", store)
+
+        candidates, motivating = await provider(
+            {"momentum": {"fast_ema_period": 12, "slow_ema_period": 26}}, 1.0
+        )
+
+        assert candidates[0].name.startswith("active_momentum")
+        assert candidates[0].family == "momentum"
+        assert motivating == ()
+
+    async def test_threads_scale_into_the_grid(self) -> None:
+        from tradebot.evaluation.improve import make_candidate_provider
+
+        store = ScriptedStore(
+            "completed", None, runs=[fresh_completed_run(strategy="momentum")], findings=[]
+        )
+        provider = make_candidate_provider("momentum", store)
+
+        coarse, _ = await provider({}, 1.0)
+        collapsed, _ = await provider({}, 0.0)
+
+        assert len(coarse) > 1
+        assert len(collapsed) == 1  # scale 0 collapses every variant into the baseline
+
+    async def test_findings_steer_the_grid_and_ride_as_motivation(self) -> None:
+        from tradebot.evaluation.improve import make_candidate_provider
+
+        store = ScriptedStore(
+            "completed",
+            None,
+            runs=[fresh_completed_run(strategy="momentum")],
+            findings=[make_finding(7, "entries chase moves already over")],
+        )
+        provider = make_candidate_provider("momentum", store)
+
+        candidates, motivating = await provider({}, 1.0)
+
+        assert 7 in motivating
+        assert any("volume_confirm" in candidate.name for candidate in candidates)
+
+    async def test_no_completed_run_means_no_findings_just_the_base_grid(self) -> None:
+        from tradebot.evaluation.improve import make_candidate_provider
+
+        store = ScriptedStore("completed", None, runs=[])
+        provider = make_candidate_provider("momentum", store)
+
+        candidates, motivating = await provider({}, 1.0)
+
+        assert motivating == ()
+        assert candidates[0].name.startswith("active_momentum")
+
+
 class TestEvaluateBeforeSweeping:
     async def test_no_completed_run_starts_an_evaluation_instead_of_sweeping(self) -> None:
         sweeps = ScriptedSweeps()

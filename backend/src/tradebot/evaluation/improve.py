@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 
+from tradebot.evaluation.campaign import CandidateProvider
 from tradebot.evaluation.models import LearningFinding, RunStatus
 from tradebot.evaluation.runner import EvaluationRunConfig
 from tradebot.evaluation.sweep import DEFAULT_SCENARIO_COUNT, SweepCandidate, SweepConfig
@@ -843,6 +844,45 @@ def build_recipe_candidates(
             variant = {**recipe, "families": {**recipe["families"], family: candidate.params}}
             raw.append(SweepCandidate(name=f"{family}:{candidate.name}", recipe=variant))
     return _dedupe(raw, motivating)
+
+
+async def _newest_completed_run(store: ResearchReader, target: str) -> dict[str, Any] | None:
+    """Return the target's newest completed evaluation run, or ``None``.
+
+    The campaign provider targets its grid at the findings of the most recent
+    completed run for the bot it tunes. Unlike the auto-improver's own lookup
+    it applies no staleness clock — a campaign is a short burst, not a slow
+    rotation — so the freshest graded record always steers.
+    """
+    for run in await store.list_runs(limit=50):
+        if run.get("status") == RunStatus.COMPLETED.value and run.get("strategy") == target:
+            return run
+    return None
+
+
+def make_candidate_provider(target: str, store: ResearchReader) -> CandidateProvider:
+    """Build the campaign's ``CandidateProvider`` for one improvement target.
+
+    The returned callable is what the campaign loop calls each round: given
+    the parameters trading *now* and the round's step ``scale``, it targets
+    the grid at the latest completed run's findings (the same curation the
+    auto-improver uses, ``select_targeting_findings``) and derives the
+    challenger grid through ``build_candidates_for``. So the campaign and the
+    auto-improver build identical grids for the same target, scale, and
+    findings — one derivation, two drivers. Bound to a single target; the
+    worker makes one per campaign.
+    """
+
+    async def provide(
+        active_params: Mapping[str, Mapping[str, Any]], scale: float
+    ) -> tuple[tuple[SweepCandidate, ...], tuple[int, ...]]:
+        run = await _newest_completed_run(store, target)
+        findings: list[tuple[int, str]] = []
+        if run is not None:
+            findings = select_targeting_findings(await store.fetch_findings(run["id"]))
+        return build_candidates_for(target, active_params, findings, scale)
+
+    return provide
 
 
 class AutoImprover:
