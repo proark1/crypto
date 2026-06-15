@@ -138,7 +138,18 @@ class CampaignDriver:
         self._clock = clock
         self._notify = notify
         self._rotation = 0
-        self.current: CampaignStatus | None = None
+        self._campaign: ResearchCampaign | None = None
+
+    @property
+    def current(self) -> CampaignStatus | None:
+        """The live status of the running (or last-run) campaign, or ``None``.
+
+        Published the moment a campaign starts — ``ResearchCampaign.run`` sets
+        its status synchronously before its first ``await`` — so the control
+        surface can watch an in-flight campaign, not only finished ones (a
+        campaign can run for hours).
+        """
+        return self._campaign.status if self._campaign is not None else None
 
     async def run(self) -> None:
         """Run campaigns forever; one failed campaign never stops the loop.
@@ -172,8 +183,11 @@ class CampaignDriver:
         symbol = symbols[(self._rotation // len(IMPROVEMENT_TARGETS)) % len(symbols)]
         self._rotation += 1
         campaign = self._assemble(target, symbol)
+        # Publish the campaign before running it: run() populates its status
+        # synchronously before its first await, so the live surface sees the
+        # in-flight campaign rather than waiting hours for it to finish.
+        self._campaign = campaign
         await campaign.run(self._campaign_config(target, symbol))
-        self.current = campaign.status
         return campaign.status
 
     def _assemble(self, target: str, symbol: str) -> ResearchCampaign:

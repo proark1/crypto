@@ -7,6 +7,7 @@ thin and nothing heavy runs). That keeps the focus on the driver's own job —
 build the right strategy per target, rotate, and run a campaign end to end.
 """
 
+import asyncio
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any
@@ -128,3 +129,27 @@ class TestCampaignDriver:
         driver = _driver(DriverResearch(), symbols=())
 
         assert await driver.run_one() is None
+
+    async def test_current_is_published_while_a_campaign_runs(self) -> None:
+        gate = asyncio.Event()
+
+        class GatedResearch(DriverResearch):
+            async def list_runs(self, limit: int = 50) -> list[dict[str, Any]]:
+                await gate.wait()  # hold the campaign open mid-run
+                return []
+
+        driver = _driver(GatedResearch("baseline_best"))
+        task = asyncio.create_task(driver.run_one())
+        for _ in range(10):  # let run() start and reach the gated lookup
+            if driver.current is not None:
+                break
+            await asyncio.sleep(0)
+
+        # The campaign is in flight, not finished — current already shows it.
+        assert driver.current is not None
+        assert driver.current.status == "running"
+        assert driver.current.config.target == "production"
+
+        gate.set()
+        status = await task
+        assert status is not None and status.status == "completed"
