@@ -495,6 +495,50 @@ export interface CampaignSettingsResponse {
   timeframe: string;
 }
 
+/** One round of a campaign: its step, sweep, verdict, and any promotion. */
+export interface CampaignRoundResponse {
+  index: number;
+  scale: number;
+  sweep_id: number | null;
+  verdict: string | null;
+  winner: string | null;
+  promoted_version: number | null;
+  note: string;
+}
+
+/** The non-gating holdout read: the campaign's net move on the reserved slice. */
+export interface CampaignHoldoutReadResponse {
+  judged: boolean;
+  improved: boolean;
+  explanation: string;
+  start_expectancy_r: string | null;
+  final_expectancy_r: string | null;
+}
+
+/** A running (or last-run) campaign: target, progress, the round trail, and the
+ * holdout read. `status` is "running" while in flight. */
+export interface CampaignSnapshotResponse {
+  target: string;
+  symbol: string;
+  status: string;
+  promotions: number;
+  stop_reason: string | null;
+  holdout_start: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+  holdout_read: CampaignHoldoutReadResponse | null;
+  rounds: CampaignRoundResponse[];
+}
+
+/** The §12.7 campaign loop: on/off, budget, and the current or last campaign. */
+export interface CampaignStatusResponse {
+  enabled: boolean;
+  max_rounds: number;
+  max_hours: number;
+  timeframe: string;
+  campaign: CampaignSnapshotResponse | null;
+}
+
 /** One ready-to-run evaluation shape, fitted server-side to the coin's
  * stored history — submitted verbatim to startEvaluation on click. */
 export interface SuggestedEvaluationResponse {

@@ -15,6 +15,7 @@ import type {
   ChartInterval,
   CustomBotRules,
   CampaignSettingsResponse,
+  CampaignStatusResponse,
   ComparisonGroupResponse,
   ComparisonStartRequest,
   ComparisonStartResponse,
@@ -223,6 +224,11 @@ export function fetchEvaluationStrategies(): Promise<EvaluationStrategyResponse[
  * answers, with enabled=false when the loop is off. */
 export function fetchImprovementStatus(): Promise<ImprovementStatusResponse> {
   return request<ImprovementStatusResponse>("/improvement", "GET");
+}
+
+/** The §12.7 campaign loop's live status: budget and the current/last campaign. */
+export function fetchCampaignStatus(): Promise<CampaignStatusResponse> {
+  return request<CampaignStatusResponse>("/campaign", "GET");
 }
 
 /** The strategy-competition leaderboard. Competitors arrive already ranked
