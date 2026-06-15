@@ -130,6 +130,44 @@ class TestCampaignDriver:
 
         assert await driver.run_one() is None
 
+    async def test_run_one_idles_when_the_toggle_is_off(self) -> None:
+        research = DriverResearch("baseline_best")
+        driver = CampaignDriver(
+            sweeps=research,
+            store=research,
+            candle_store=NoCandles(),
+            active_params=_no_active_params,
+            symbols=lambda: ("BTC/USDT",),
+            promote=_promote,
+            confirm=None,
+            config=CampaignDriverConfig(max_rounds=1, cooldown_minutes=0.001, scenario_count=10),
+            clock=lambda: _NOW,
+            enabled=lambda: False,
+        )
+
+        assert await driver.run_one() is None
+        assert research.started == []  # gated off: never started a sweep
+        assert driver.current is None
+
+    async def test_run_one_runs_when_the_toggle_is_on(self) -> None:
+        research = DriverResearch("baseline_best")
+        driver = CampaignDriver(
+            sweeps=research,
+            store=research,
+            candle_store=NoCandles(),
+            active_params=_no_active_params,
+            symbols=lambda: ("BTC/USDT",),
+            promote=_promote,
+            confirm=None,
+            config=CampaignDriverConfig(max_rounds=1, cooldown_minutes=0.001, scenario_count=10),
+            clock=lambda: _NOW,
+            enabled=lambda: True,
+        )
+
+        status = await driver.run_one()
+        assert status is not None and status.status == "completed"
+        assert research.started  # gated on: ran a campaign
+
     async def test_current_is_published_while_a_campaign_runs(self) -> None:
         gate = asyncio.Event()
 

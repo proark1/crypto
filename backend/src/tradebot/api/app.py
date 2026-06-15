@@ -253,6 +253,10 @@ class BotState(Protocol):
         """Report the §12.7 campaign loop: budget and the current/last campaign."""
         ...
 
+    async def update_campaign_enabled(self, *, enabled: bool) -> None:
+        """Toggle the §12.7 campaign loop on/off and persist it; effective live."""
+        ...
+
     def note_finding_acceptance(self, run_id: int) -> None:
         """Arm (or ride) the accept-triggered coalescing sweep for the run."""
         ...
@@ -770,6 +774,25 @@ class UpdateTradingFeesRequest(BaseModel):
 
     buy_fee_percent: Decimal
     sell_fee_percent: Decimal
+
+
+class CampaignSettingsResponse(BaseModel):
+    """The §12.7 campaign loop's on/off and budget, for the Settings tab.
+
+    ``enabled`` is the live runtime toggle (persisted, no redeploy); the budget
+    fields are read-only context for the switch.
+    """
+
+    enabled: bool
+    max_rounds: int
+    max_hours: float
+    timeframe: str
+
+
+class UpdateCampaignSettingsRequest(BaseModel):
+    """Flip the §12.7 campaign loop on or off."""
+
+    enabled: bool
 
 
 class RuleOptionResponse(BaseModel):
@@ -1611,6 +1634,31 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
                 status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)
             ) from error
         return _fees_response(buy_fee_bps, sell_fee_bps)
+
+    @protected.get("/settings/campaign")
+    async def get_campaign_settings() -> CampaignSettingsResponse:
+        """Return the §12.7 campaign loop's on/off and budget for the Settings tab."""
+        raw = state.campaign_status()
+        return CampaignSettingsResponse(
+            enabled=raw["enabled"],
+            max_rounds=raw["max_rounds"],
+            max_hours=raw["max_hours"],
+            timeframe=raw["timeframe"],
+        )
+
+    @protected.put("/settings/campaign")
+    async def update_campaign_settings(
+        request: UpdateCampaignSettingsRequest,
+    ) -> CampaignSettingsResponse:
+        """Turn the campaign loop on or off; effective within one cooldown, no restart."""
+        await state.update_campaign_enabled(enabled=request.enabled)
+        raw = state.campaign_status()
+        return CampaignSettingsResponse(
+            enabled=raw["enabled"],
+            max_rounds=raw["max_rounds"],
+            max_hours=raw["max_hours"],
+            timeframe=raw["timeframe"],
+        )
 
     @protected.get("/coins/{symbol:path}/divergence")
     async def get_divergence(

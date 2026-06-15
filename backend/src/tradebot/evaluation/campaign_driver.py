@@ -118,6 +118,7 @@ class CampaignDriver:
         config: CampaignDriverConfig,
         clock: Callable[[], datetime] = utc_now,
         notify: Callable[[str], Awaitable[None]] | None = None,
+        enabled: Callable[[], bool] | None = None,
     ) -> None:
         """Bind the driver to the worker's live state and apply paths.
 
@@ -137,6 +138,7 @@ class CampaignDriver:
         self._config = config
         self._clock = clock
         self._notify = notify
+        self._enabled = enabled
         self._rotation = 0
         self._campaign: ResearchCampaign | None = None
 
@@ -156,7 +158,9 @@ class CampaignDriver:
 
         A cooldown opens each turn: boot is busy with backfills, and a
         campaign that swept data still arriving would judge on a moving
-        target.
+        target. When an ``enabled`` predicate is bound (the worker's live
+        Settings toggle), a turn where it reads false is skipped, so the loop
+        is switched on and off at runtime without a restart.
         """
         while True:
             await asyncio.sleep(self._config.cooldown_minutes * 60.0)
@@ -175,6 +179,8 @@ class CampaignDriver:
         research family), symbols second, so every family is revisited before
         any symbol repeats — the same rotation the auto-improver uses.
         """
+        if self._enabled is not None and not self._enabled():
+            return None  # toggled off in Settings — idle, no campaign
         symbols = self._symbols()
         if not symbols:
             logger.info("campaign driver idle: no active coins to research")

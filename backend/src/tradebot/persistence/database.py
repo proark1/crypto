@@ -196,6 +196,19 @@ points, applied to every live paper fill. Absent until the operator saves
 fees in the UI; until then the boot defaults (``AppConfig.buy/sell_fee_bps``)
 apply. NUMERIC keeps the rate exact, matching the Decimal money invariant."""
 
+campaign_settings_table = Table(
+    "campaign_settings",
+    metadata,
+    Column("id", Integer, primary_key=True),
+    Column("enabled", Boolean, nullable=False),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
+)
+"""Operator's runtime on/off for the §12.7 research-campaign loop, one row
+(id=1). Absent until first toggled in the UI; until then the boot default
+(``AppConfig.campaign_enabled``) applies. Flipping it takes effect live — the
+driver reads it each turn — so no redeploy, like the trading-fees setting."""
+
+
 strategy_settings_table = Table(
     "strategy_settings",
     metadata,

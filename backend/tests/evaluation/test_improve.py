@@ -111,6 +111,7 @@ def make_improver(
     notify: Callable[[str], Awaitable[None]] | None = None,
     evaluations: ScriptedEvaluations | None = None,
     confirm: Callable[[str, Mapping[str, Any], str], Awaitable[str | None]] | None = None,
+    campaign_active: Callable[[], bool] | None = None,
 ) -> AutoImprover:
     async def promote(
         family: str, params: Mapping[str, Any], sweep_id: int | None, note: str | None
@@ -130,6 +131,7 @@ def make_improver(
         history_days=180,
         timeframe="1h",
         notify=notify,
+        campaign_active=campaign_active,
     )
 
 
@@ -851,6 +853,25 @@ class TestCandidateProvider:
 
         assert motivating == ()
         assert candidates[0].name.startswith("active_momentum")
+
+
+class TestCampaignStandDown:
+    async def test_stands_down_while_a_campaign_runs(self) -> None:
+        sweeps = ScriptedSweeps()
+        store = ScriptedStore("completed", None, runs=runs_for_every_target())
+        improver = make_improver(sweeps, store, [], campaign_active=lambda: True)
+
+        assert await improver.run_cycle() is None
+        assert sweeps.configs == []  # stood down: never started a sweep
+        assert "stood down" in (improver.status.last_outcome or "")
+
+    async def test_runs_normally_when_no_campaign_is_active(self) -> None:
+        sweeps = ScriptedSweeps()
+        store = ScriptedStore("completed", None, runs=runs_for_every_target())
+        improver = make_improver(sweeps, store, [], campaign_active=lambda: False)
+
+        await improver.run_cycle()
+        assert sweeps.configs  # not stood down: a sweep ran
 
 
 class TestEvaluateBeforeSweeping:
