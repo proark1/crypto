@@ -359,6 +359,38 @@ class StubBot:
             "next_cycle_at": BASE_TIME + timedelta(hours=12),
         }
 
+    def campaign_status(self) -> dict[str, Any]:
+        # Scripted mid-campaign snapshot in the worker's shape (datetimes, not
+        # strings — the route serializes them).
+        return {
+            "enabled": True,
+            "max_rounds": 8,
+            "max_hours": 6.0,
+            "timeframe": "1h",
+            "campaign": {
+                "target": "momentum",
+                "symbol": "BTC/USDT",
+                "status": "running",
+                "promotions": 1,
+                "stop_reason": None,
+                "holdout_start": BASE_TIME,
+                "started_at": BASE_TIME,
+                "finished_at": None,
+                "holdout_read": None,
+                "rounds": [
+                    {
+                        "index": 0,
+                        "scale": 1.0,
+                        "sweep_id": 1,
+                        "verdict": "validated",
+                        "winner": "faster_macd",
+                        "promoted_version": 3,
+                        "note": "promoted momentum settings v3 (faster_macd)",
+                    }
+                ],
+            },
+        }
+
     async def start_evaluation(self, config: EvaluationRunConfig) -> int:
         # Same validation order as the worker: the graded bot first (before
         # any row exists), then the manager's timeframe check.
@@ -1431,6 +1463,25 @@ class TestImprovementStatus:
         # Datetimes cross the boundary as ISO-8601 strings.
         assert body["last_cycle_started_at"] == BASE_TIME.isoformat()
         assert body["next_cycle_at"] == (BASE_TIME + timedelta(hours=12)).isoformat()
+
+
+class TestCampaignStatus:
+    async def test_status_serializes_the_campaign_snapshot(self, database: Database) -> None:
+        bot = StubBot(database)
+        async with make_client(bot) as client:
+            response = await client.get("/campaign")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["enabled"] is True
+        assert body["max_rounds"] == 8
+        campaign = body["campaign"]
+        assert campaign["target"] == "momentum" and campaign["status"] == "running"
+        assert campaign["promotions"] == 1
+        assert campaign["rounds"][0]["winner"] == "faster_macd"
+        # Datetimes cross the boundary as ISO-8601 strings; nulls stay null.
+        assert campaign["started_at"] == BASE_TIME.isoformat()
+        assert campaign["finished_at"] is None
 
 
 class TestScenarioReplay:

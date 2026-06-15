@@ -249,6 +249,10 @@ class BotState(Protocol):
         """Report the §12.7 automated-improvement loop's schedule and last outcome."""
         ...
 
+    def campaign_status(self) -> dict[str, Any]:
+        """Report the §12.7 campaign loop: budget and the current/last campaign."""
+        ...
+
     def note_finding_acceptance(self, run_id: int) -> None:
         """Arm (or ride) the accept-triggered coalescing sweep for the run."""
         ...
@@ -508,6 +512,52 @@ class ImprovementStatusResponse(BaseModel):
     last_cycle_finished_at: str | None
     last_outcome: str | None
     next_cycle_at: str | None
+
+
+class CampaignRoundResponse(BaseModel):
+    """One round of a campaign: its step, sweep, verdict, and any promotion."""
+
+    index: int
+    scale: float
+    sweep_id: int | None
+    verdict: str | None
+    winner: str | None
+    promoted_version: int | None
+    note: str
+
+
+class CampaignSnapshotResponse(BaseModel):
+    """A running (or last-run) campaign: target, progress, and the holdout read.
+
+    ``status`` is "running" while in flight; ``holdout_read`` is the
+    non-gating start-vs-final read on the reserved slice, null until the
+    campaign ends. All times are ISO-8601 UTC.
+    """
+
+    target: str
+    symbol: str
+    status: str
+    promotions: int
+    stop_reason: str | None
+    holdout_start: str | None
+    started_at: str | None
+    finished_at: str | None
+    holdout_read: dict[str, Any] | None
+    rounds: list[CampaignRoundResponse]
+
+
+class CampaignStatusResponse(BaseModel):
+    """Whether the §12.7 campaign loop is on, its budget, and the current run.
+
+    ``campaign`` is the current or last campaign's snapshot, or ``None`` when
+    campaigns are off or none has run yet.
+    """
+
+    enabled: bool
+    max_rounds: int
+    max_hours: float
+    timeframe: str
+    campaign: CampaignSnapshotResponse | None
 
 
 class EvaluationRunResponse(BaseModel):
@@ -1837,6 +1887,41 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
             last_cycle_finished_at=_optional_iso(raw["last_cycle_finished_at"]),
             last_outcome=raw["last_outcome"],
             next_cycle_at=_optional_iso(raw["next_cycle_at"]),
+        )
+
+    @protected.get("/campaign")
+    async def get_campaign_status() -> CampaignStatusResponse:
+        """Report the §12.7 campaign loop: budget and the current/last campaign.
+
+        Always answers — disabled or idle reports with ``campaign`` null, so
+        the dashboard says "off" instead of guessing.
+        """
+        raw = state.campaign_status()
+        snapshot = raw["campaign"]
+        campaign = (
+            CampaignSnapshotResponse(
+                target=snapshot["target"],
+                symbol=snapshot["symbol"],
+                status=snapshot["status"],
+                promotions=snapshot["promotions"],
+                stop_reason=snapshot["stop_reason"],
+                holdout_start=_optional_iso(snapshot["holdout_start"]),
+                started_at=_optional_iso(snapshot["started_at"]),
+                finished_at=_optional_iso(snapshot["finished_at"]),
+                holdout_read=snapshot["holdout_read"],
+                rounds=[
+                    CampaignRoundResponse(**round_record) for round_record in snapshot["rounds"]
+                ],
+            )
+            if snapshot is not None
+            else None
+        )
+        return CampaignStatusResponse(
+            enabled=raw["enabled"],
+            max_rounds=raw["max_rounds"],
+            max_hours=raw["max_hours"],
+            timeframe=raw["timeframe"],
+            campaign=campaign,
         )
 
     @protected.get("/evaluations/suggestions")
