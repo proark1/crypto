@@ -18,6 +18,7 @@ different history windows are the same experiment.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any, Protocol
 
 from pydantic import BaseModel, ConfigDict
@@ -32,6 +33,11 @@ the timeline is a story of recent progress, not an archive query."""
 MAX_PATTERN_LIST = 5
 """Cap the per-event new/resolved pattern lists; past a handful the counts
 say more than the prose."""
+
+MAX_CHANGES = 8
+"""Cap the per-promotion settings-change list. A strategy family carries a
+handful of parameters; past a handful the note and version link carry the
+rest."""
 
 
 class ResearchRecord(Protocol):
@@ -58,6 +64,22 @@ class SettingsJournal(Protocol):
     async def history(self, limit: int = 50) -> list[dict[str, Any]]:
         """Return settings versions, newest first."""
         ...
+
+
+class SettingChange(BaseModel):
+    """One parameter a promotion changed, for the "what changed" line.
+
+    ``before`` is ``None`` when the field is new in this version (no in-view
+    predecessor set it); ``after`` is ``None`` when the field was dropped.
+    Both are pre-stringified — a strategy parameter is never money and the
+    timeline only displays the move, so this never does arithmetic on it.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    field: str
+    before: str | None
+    after: str | None
 
 
 class TimelineEvent(BaseModel):
@@ -91,6 +113,12 @@ class TimelineEvent(BaseModel):
     resolved_patterns: tuple[str, ...] = ()
     """Patterns the previous run mined that this run no longer does."""
 
+    changes: tuple[SettingChange, ...] = ()
+    """For a promotion: the field-level diff against the same family's
+    previous in-view version — what this version actually changed. Empty for
+    runs, sweeps, and a family's first in-view version (no truthful
+    predecessor to diff against)."""
+
 
 _TERMINAL_RUN = {
     RunStatus.COMPLETED.value,
@@ -116,7 +144,8 @@ async def build_timeline(
         for sweep in await record.list_sweeps(WINDOW)
         if sweep["status"] in _TERMINAL_RUN
     ]
-    events += [_promotion_event(version) for version in await settings.history(WINDOW)]
+    versions = await settings.history(WINDOW)
+    events += [_promotion_event(version, versions) for version in versions]
     events.sort(key=lambda event: event.at, reverse=True)
     return events[:limit]
 
@@ -230,12 +259,50 @@ def _sweep_event(sweep: dict[str, Any]) -> TimelineEvent:
     )
 
 
-def _promotion_event(version: dict[str, Any]) -> TimelineEvent:
+def _previous_version(
+    version: dict[str, Any], versions: list[dict[str, Any]]
+) -> dict[str, Any] | None:
+    """Return the same family's newest version before ``version``, if in view."""
+    candidates = [
+        other
+        for other in versions
+        if other["family"] == version["family"] and other["id"] < version["id"]
+    ]
+    return max(candidates, key=lambda other: other["id"], default=None)
+
+
+def _settings_changes(
+    params: Mapping[str, Any], previous: Mapping[str, Any] | None
+) -> tuple[SettingChange, ...]:
+    """Diff a version's params against its predecessor's, field by field.
+
+    Values are compared and rendered as strings: a strategy parameter is
+    never money, and the timeline only shows the move, so this never does
+    arithmetic. With no in-view predecessor the diff is honestly empty rather
+    than claiming every field is new against unknown family defaults.
+    """
+    if previous is None:
+        return ()
+    changes: list[SettingChange] = []
+    for name in sorted(set(params) | set(previous)):
+        before = str(previous[name]) if name in previous else None
+        after = str(params[name]) if name in params else None
+        if before != after:
+            changes.append(SettingChange(field=name, before=before, after=after))
+    return tuple(changes[:MAX_CHANGES])
+
+
+def _promotion_event(version: dict[str, Any], versions: list[dict[str, Any]]) -> TimelineEvent:
     version_id = version["id"]
     source_sweep_id = version["source_sweep_id"]
     headline = f"settings v{version_id} activated for {version['family']}"
     if source_sweep_id is not None:
         headline += f" (from sweep #{source_sweep_id})"
+    previous = _previous_version(version, versions)
+    changes = _settings_changes(
+        version.get("params") or {},
+        previous["params"] if previous is not None else None,
+    )
     return TimelineEvent(
         at=version["activated_at"],
         kind="promotion",
@@ -244,4 +311,5 @@ def _promotion_event(version: dict[str, Any]) -> TimelineEvent:
         sweep_id=source_sweep_id,
         headline=headline,
         detail=version.get("note"),
+        changes=changes,
     )

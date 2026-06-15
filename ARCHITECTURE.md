@@ -869,7 +869,10 @@ disagree with the journals:
   screen's Progress tab): terminal evaluation runs (with expectancy and
   which patterns appeared or stopped firing versus the same bot's
   previous completed run), sweep verdicts with their motivating-finding
-  lineage, and settings promotions — merged newest-first into one
+  lineage, and settings promotions — each carrying the field-level diff
+  against the family's previous version, so a promotion shows *what* it
+  changed (`atr_stop_multiple 2.5 → 1.5`), not just that it happened —
+  merged newest-first into one
   plain-words feed whose headlines are composed server-side, so the
   feed, the logs, and Telegram tell the same sentence. In-flight work is
   deliberately absent (the §12.7 status card carries it); the timeline

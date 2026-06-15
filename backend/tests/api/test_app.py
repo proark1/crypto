@@ -1451,6 +1451,35 @@ class TestResearchTimeline:
         assert len(events) == 2
         assert bad.status_code == 422  # validated query bound, not a silent clamp
 
+    async def test_promotion_carries_the_settings_diff(self, database: Database) -> None:
+        # Two versions of one family: the newest promotion reads out what
+        # changed — only the moved field, before -> after, as display strings.
+        bot = StubBot(database)
+        await bot.strategy_settings_store.record(
+            "trend_following",
+            {"atr_stop_multiple": 2.5, "lookback": 20},
+            BASE_TIME,
+            None,
+            "seeded the family",
+        )
+        await bot.strategy_settings_store.record(
+            "trend_following",
+            {"atr_stop_multiple": 1.5, "lookback": 20},
+            BASE_TIME + timedelta(hours=1),
+            None,
+            "auto-promoted: tighter_stop beat the baseline",
+        )
+
+        async with make_client(bot) as client:
+            events = (await client.get("/research/timeline")).json()
+
+        newest = events[0]
+        assert newest["kind"] == "promotion"
+        # ``lookback`` held at 20, so only the stop multiple shows.
+        assert newest["changes"] == [
+            {"field": "atr_stop_multiple", "before": "2.5", "after": "1.5"},
+        ]
+
 
 class TestImprovementStatus:
     async def test_status_serializes_the_loop_snapshot(self, database: Database) -> None:

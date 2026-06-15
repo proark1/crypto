@@ -70,6 +70,19 @@ export function ResearchTimeline(props: {
                   )}
                 </div>
                 {event.detail && <p className="mt-0.5 text-xs text-zinc-500">{event.detail}</p>}
+                {event.changes.length > 0 && (
+                  <ul className="mt-1.5 space-y-0.5">
+                    {event.changes.map((change) => (
+                      <li
+                        key={change.field}
+                        className="font-mono text-[11px] text-zinc-600 dark:text-zinc-400"
+                      >
+                        <span className="text-zinc-500">{change.field}</span>{" "}
+                        <SettingMove before={change.before} after={change.after} />
+                      </li>
+                    ))}
+                  </ul>
+                )}
                 {(event.new_patterns.length > 0 || event.resolved_patterns.length > 0) && (
                   <div className="mt-1.5 flex flex-wrap gap-1.5">
                     {event.new_patterns.map((pattern) => (
@@ -96,6 +109,31 @@ export function ResearchTimeline(props: {
         </ul>
       )}
     </Card>
+  );
+}
+
+/** One parameter's move, rendered before → after (or set/removed at the ends). */
+function SettingMove(props: { before: string | null; after: string | null }) {
+  if (props.before === null) {
+    return (
+      <>
+        set <span className="text-emerald-600 dark:text-emerald-400">{props.after}</span>
+      </>
+    );
+  }
+  if (props.after === null) {
+    return (
+      <>
+        <span className="text-zinc-400 line-through">{props.before}</span> removed
+      </>
+    );
+  }
+  return (
+    <>
+      <span className="text-zinc-400 line-through">{props.before}</span>
+      {" → "}
+      <span className="text-emerald-600 dark:text-emerald-400">{props.after}</span>
+    </>
   );
 }
 

@@ -1090,6 +1090,18 @@ def _finding_response(
     )
 
 
+class SettingChangeResponse(BaseModel):
+    """One parameter a promotion changed, as display strings.
+
+    ``before`` is null when the field is new in this version; ``after`` is
+    null when the field was dropped.
+    """
+
+    field: str
+    before: str | None
+    after: str | None
+
+
 class TimelineEventResponse(BaseModel):
     """One research-timeline entry (§12.8): server-composed prose + linkage."""
 
@@ -1108,6 +1120,9 @@ class TimelineEventResponse(BaseModel):
     verdict: str | None
     new_patterns: list[str]
     resolved_patterns: list[str]
+    changes: list[SettingChangeResponse]
+    """For a promotion: the field-level settings diff (what changed). Empty
+    for runs and sweeps."""
 
 
 def _candle_response(candle: Candle | ChartCandle) -> CandleResponse:
@@ -2328,6 +2343,12 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
                 verdict=event.verdict,
                 new_patterns=list(event.new_patterns),
                 resolved_patterns=list(event.resolved_patterns),
+                changes=[
+                    SettingChangeResponse(
+                        field=change.field, before=change.before, after=change.after
+                    )
+                    for change in event.changes
+                ],
             )
             for event in events
         ]

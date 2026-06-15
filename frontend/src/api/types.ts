@@ -184,6 +184,15 @@ export interface FindingResponse {
   latest_sweep_verdict: string | null;
 }
 
+/** One parameter a promotion changed, pre-stringified for display. `before`
+ * is null when the field is new in this version; `after` is null when the
+ * field was dropped. */
+export interface SettingChangeResponse {
+  field: string;
+  before: string | null;
+  after: string | null;
+}
+
 /** One research-timeline entry: server-composed prose plus the linkage and
  * tones the feed renders ("evaluation" | "sweep" | "promotion"). */
 export interface TimelineEventResponse {
@@ -203,6 +212,9 @@ export interface TimelineEventResponse {
   new_patterns: string[];
   /** Patterns the previous run mined that this run no longer does. */
   resolved_patterns: string[];
+  /** For a promotion: the field-level settings diff (what this version
+   * changed vs the family's previous version). Empty for other kinds. */
+  changes: SettingChangeResponse[];
 }
 
 export interface HoldingResponse {

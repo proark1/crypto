@@ -19,6 +19,7 @@ const RUN_EVENT: TimelineEventResponse = {
   verdict: null,
   new_patterns: ["entries chase moves that are already over"],
   resolved_patterns: ["entries lose money when trend is down"],
+  changes: [],
 };
 
 const SWEEP_EVENT: TimelineEventResponse = {
@@ -36,6 +37,7 @@ const SWEEP_EVENT: TimelineEventResponse = {
   verdict: "validated",
   new_patterns: [],
   resolved_patterns: [],
+  changes: [],
 };
 
 const PROMOTION_EVENT: TimelineEventResponse = {
@@ -52,6 +54,7 @@ const PROMOTION_EVENT: TimelineEventResponse = {
   verdict: null,
   new_patterns: [],
   resolved_patterns: [],
+  changes: [],
 };
 
 describe("ResearchTimeline", () => {
@@ -69,6 +72,28 @@ describe("ResearchTimeline", () => {
     ).toBeDefined();
     expect(screen.getByText("validated")).toBeDefined();
     expect(screen.getByText(/settings v7 activated for mean_reversion/)).toBeDefined();
+  });
+
+  it("shows what each promotion changed, field by field", () => {
+    render(
+      <ResearchTimeline
+        events={[
+          {
+            ...PROMOTION_EVENT,
+            changes: [
+              { field: "fast", before: "12", after: "8" },
+              { field: "stop_atr", before: "2.5", after: "2.0" },
+            ],
+          },
+        ]}
+        onSelectRun={() => undefined}
+      />,
+    );
+    // The moved field, its old value, and its new value all read out.
+    expect(screen.getByText("fast")).toBeDefined();
+    expect(screen.getByText("12")).toBeDefined();
+    expect(screen.getByText("8")).toBeDefined();
+    expect(screen.getByText("stop_atr")).toBeDefined();
   });
 
   it("links a run event to its report", () => {
