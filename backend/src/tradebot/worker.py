@@ -58,6 +58,7 @@ from tradebot.core.models import AutonomyMode, CandleInterval, Fill, SymbolFilte
 from tradebot.engine import TradingEngine
 from tradebot.evaluation import ScenarioEvaluator
 from tradebot.evaluation.bakeoff import BakeOffConfig, BakeOffManager
+from tradebot.evaluation.campaign import CampaignStatus
 from tradebot.evaluation.campaign_driver import CampaignDriver, CampaignDriverConfig
 from tradebot.evaluation.improve import AutoImprover
 from tradebot.evaluation.presets import contestant_for
@@ -178,6 +179,39 @@ def filters_from_market(market: Mapping[str, Any]) -> SymbolFilters:
         min_quantity_base=as_minimum(amount_limits.get("min")),
         min_notional_quote=as_minimum(cost_limits.get("min")),
     )
+
+
+def _campaign_snapshot(status: CampaignStatus | None) -> dict[str, Any] | None:
+    """Serialize a campaign's live status for the control API (JSON-able).
+
+    Datetimes stay ``datetime`` here; the route serializes them to ISO-8601,
+    matching how the improvement-status route handles its timestamps.
+    """
+    if status is None:
+        return None
+    return {
+        "target": status.config.target,
+        "symbol": status.config.symbol,
+        "status": status.status,
+        "promotions": status.promotions,
+        "stop_reason": status.stop_reason,
+        "holdout_start": status.holdout_start,
+        "started_at": status.started_at,
+        "finished_at": status.finished_at,
+        "holdout_read": status.holdout_read,
+        "rounds": [
+            {
+                "index": round_record.index,
+                "scale": round_record.scale,
+                "sweep_id": round_record.sweep_id,
+                "verdict": round_record.verdict,
+                "winner": round_record.winner,
+                "promoted_version": round_record.promoted_version,
+                "note": round_record.note,
+            }
+            for round_record in status.rounds
+        ],
+    }
 
 
 class TradingVenue(OhlcvExchange, Protocol):
@@ -494,6 +528,22 @@ class Worker:
             ),
             "last_outcome": status.last_outcome if status is not None else None,
             "next_cycle_at": status.next_cycle_at if status is not None else None,
+        }
+
+    def campaign_status(self) -> dict[str, Any]:
+        """Report the §12.7 campaign loop for the dashboard.
+
+        Always answers: when campaigns are disabled or none has run yet, the
+        enabled flag still reports with ``campaign`` ``None`` — the card says
+        "off"/"idle" rather than 404.
+        """
+        current = self._campaign_driver.current if self._campaign_driver is not None else None
+        return {
+            "enabled": self.config.campaign_enabled,
+            "max_rounds": self.config.campaign_max_rounds,
+            "max_hours": self.config.campaign_max_hours,
+            "timeframe": self.config.campaign_timeframe,
+            "campaign": _campaign_snapshot(current),
         }
 
     async def start_comparison(self, config: EvaluationRunConfig) -> list[int]:

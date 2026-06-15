@@ -26,7 +26,7 @@ from tradebot.evaluation.runner import EvaluationRunConfig
 from tradebot.marketdata.live_feed import OhlcvRow
 from tradebot.persistence import Database, FillStore, OrderStore
 from tradebot.persistence.database import metadata
-from tradebot.worker import PRODUCTION_FAMILIES, Worker
+from tradebot.worker import PRODUCTION_FAMILIES, Worker, _campaign_snapshot
 
 BASE_TIME = datetime(2026, 1, 2, 0, 0, tzinfo=UTC)
 BASE_MS = int(BASE_TIME.timestamp() * 1000)
@@ -40,6 +40,33 @@ CLOSES = (
     + [88.0 + 2.0 * i for i in range(1, 31)]
     + [148.0 - 3.0 * i for i in range(1, 31)]
 )
+
+
+def test_campaign_snapshot_serializes_a_status() -> None:
+    """The control-API serializer: None passes through, a status flattens."""
+    from tradebot.evaluation.campaign import CampaignConfig, CampaignRound, CampaignStatus
+
+    assert _campaign_snapshot(None) is None
+
+    status = CampaignStatus(
+        config=CampaignConfig(target="momentum", symbol="BTC/USDT", max_rounds=1),
+        status="completed",
+        promotions=1,
+        stop_reason="budget spent: reached the 1-round limit",
+        holdout_read={"improved": True},
+    )
+    status.rounds.append(
+        CampaignRound(0, 1.0, 7, "validated", "faster_macd", 3, "promoted momentum settings v3")
+    )
+
+    snapshot = _campaign_snapshot(status)
+    assert snapshot is not None
+    assert snapshot["target"] == "momentum"
+    assert snapshot["status"] == "completed"
+    assert snapshot["promotions"] == 1
+    assert snapshot["holdout_read"] == {"improved": True}
+    assert snapshot["rounds"][0]["winner"] == "faster_macd"
+    assert snapshot["rounds"][0]["promoted_version"] == 3
 
 
 @pytest.fixture
