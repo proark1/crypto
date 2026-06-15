@@ -518,6 +518,19 @@ class ImprovementStatusResponse(BaseModel):
     next_cycle_at: str | None
 
 
+class SettingChangeResponse(BaseModel):
+    """One parameter a promotion changed, as display strings.
+
+    ``before`` is null when the field is new in this version; ``after`` is
+    null when the field was dropped. Shared by the campaign round trail and
+    the research timeline (both report "what this promotion changed").
+    """
+
+    field: str
+    before: str | None
+    after: str | None
+
+
 class CampaignRoundResponse(BaseModel):
     """One round of a campaign: its step, sweep, verdict, and any promotion."""
 
@@ -528,6 +541,8 @@ class CampaignRoundResponse(BaseModel):
     winner: str | None
     promoted_version: int | None
     note: str
+    changes: list[SettingChangeResponse] = []
+    """For a promoted round: the field-level settings diff (what changed)."""
 
 
 class CampaignSnapshotResponse(BaseModel):
@@ -1088,18 +1103,6 @@ def _finding_response(
         latest_sweep_status=None if latest_sweep is None else latest_sweep["status"],
         latest_sweep_verdict=report.get("verdict"),
     )
-
-
-class SettingChangeResponse(BaseModel):
-    """One parameter a promotion changed, as display strings.
-
-    ``before`` is null when the field is new in this version; ``after`` is
-    null when the field was dropped.
-    """
-
-    field: str
-    before: str | None
-    after: str | None
 
 
 class TimelineEventResponse(BaseModel):

@@ -1,5 +1,6 @@
 import type { CampaignStatusResponse } from "../api/types";
 import { Badge, Card } from "../ui";
+import { SettingMove } from "./SettingMove";
 
 /**
  * What the §12.7 research-campaign loop is doing right now, in plain words. The
@@ -60,11 +61,23 @@ export function CampaignStatusCard(props: { status: CampaignStatusResponse | nul
             </div>
           </dl>
           {campaign.rounds.length > 0 && (
-            <ol className="mt-3 space-y-1 text-xs text-zinc-600 dark:text-zinc-400">
+            <ol className="mt-3 space-y-1.5 text-xs text-zinc-600 dark:text-zinc-400">
               {campaign.rounds.map((round) => (
-                <li key={round.index} className="flex gap-2">
-                  <span className="shrink-0 text-zinc-400">round {round.index + 1}</span>
-                  <span>{round.note}</span>
+                <li key={round.index} className="flex flex-col gap-0.5">
+                  <div className="flex gap-2">
+                    <span className="shrink-0 text-zinc-400">round {round.index + 1}</span>
+                    <span>{round.note}</span>
+                  </div>
+                  {round.changes.length > 0 && (
+                    <ul className="ml-[4.5rem] space-y-0.5">
+                      {round.changes.map((change) => (
+                        <li key={change.field} className="font-mono text-[11px] text-zinc-500">
+                          <span className="text-zinc-400">{change.field}</span>{" "}
+                          <SettingMove before={change.before} after={change.after} />
+                        </li>
+                      ))}
+                    </ul>
+                  )}
                 </li>
               ))}
             </ol>

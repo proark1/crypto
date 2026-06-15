@@ -209,6 +209,10 @@ def _campaign_snapshot(status: CampaignStatus | None) -> dict[str, Any] | None:
                 "winner": round_record.winner,
                 "promoted_version": round_record.promoted_version,
                 "note": round_record.note,
+                "changes": [
+                    {"field": change.field, "before": change.before, "after": change.after}
+                    for change in round_record.changes
+                ],
             }
             for round_record in status.rounds
         ],

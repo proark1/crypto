@@ -1,6 +1,7 @@
 import type { TimelineEventResponse } from "../api/types";
 import { formatTime } from "../lib/format";
 import { Badge, Card, type BadgeTone } from "../ui";
+import { SettingMove } from "./SettingMove";
 
 /**
  * The research story, newest first: every completed evaluation run (with
@@ -109,31 +110,6 @@ export function ResearchTimeline(props: {
         </ul>
       )}
     </Card>
-  );
-}
-
-/** One parameter's move, rendered before → after (or set/removed at the ends). */
-function SettingMove(props: { before: string | null; after: string | null }) {
-  if (props.before === null) {
-    return (
-      <>
-        set <span className="text-emerald-600 dark:text-emerald-400">{props.after}</span>
-      </>
-    );
-  }
-  if (props.after === null) {
-    return (
-      <>
-        <span className="text-zinc-400 line-through">{props.before}</span> removed
-      </>
-    );
-  }
-  return (
-    <>
-      <span className="text-zinc-400 line-through">{props.before}</span>
-      {" → "}
-      <span className="text-emerald-600 dark:text-emerald-400">{props.after}</span>
-    </>
   );
 }
 
