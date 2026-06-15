@@ -23,6 +23,7 @@ from tradebot.evaluation.campaign import (
     HoldoutGrader,
     ResearchCampaign,
 )
+from tradebot.evaluation.settings_diff import SettingChange
 from tradebot.evaluation.sweep import SweepCandidate, SweepConfig
 
 _T0 = datetime(2026, 6, 15, tzinfo=UTC)
@@ -235,6 +236,11 @@ class TestResearchCampaign:
         first = status.rounds[0]
         assert first.verdict == "validated" and first.promoted_version == 1
         assert "promoted momentum settings v1" in first.note
+        # The round records exactly what the promotion changed, before -> after.
+        assert first.changes == (
+            SettingChange(field="fast_ema_period", before="12", after="8"),
+            SettingChange(field="slow_ema_period", before="26", after="21"),
+        )
         assert status.holdout_read is not None and status.holdout_read["moved"] is True
         assert recorder.messages and "campaign promoted momentum" in recorder.messages[0]
         assert status.stop_reason is not None and "1-round limit" in status.stop_reason
@@ -265,6 +271,7 @@ class TestResearchCampaign:
         for round_record in status.rounds:
             assert round_record.promoted_version is None
             assert "kept the active configuration" in round_record.note
+            assert round_record.changes == ()  # nothing promoted, nothing changed
 
     async def test_converges_when_the_step_shrinks_below_min_scale(self) -> None:
         # Ten rounds allowed, but every round misses, so the step shrinks below

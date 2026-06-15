@@ -15,6 +15,7 @@ import type {
   ChartInterval,
   CustomBotRules,
   CampaignSettingsResponse,
+  CampaignSnapshotResponse,
   CampaignStatusResponse,
   ComparisonGroupResponse,
   ComparisonStartRequest,
@@ -229,6 +230,11 @@ export function fetchImprovementStatus(): Promise<ImprovementStatusResponse> {
 /** The §12.7 campaign loop's live status: budget and the current/last campaign. */
 export function fetchCampaignStatus(): Promise<CampaignStatusResponse> {
   return request<CampaignStatusResponse>("/campaign", "GET");
+}
+
+/** Past finished campaigns, newest first — the durable §12.7 record. */
+export function fetchCampaignHistory(): Promise<CampaignSnapshotResponse[]> {
+  return request<CampaignSnapshotResponse[]>("/campaign/history", "GET");
 }
 
 /** The strategy-competition leaderboard. Competitors arrive already ranked

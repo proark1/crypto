@@ -516,6 +516,9 @@ export interface CampaignRoundResponse {
   winner: string | null;
   promoted_version: number | null;
   note: string;
+  /** For a promoted round: the field-level settings diff this promotion
+   * applied (what changed). Empty for rounds that kept the configuration. */
+  changes: SettingChangeResponse[];
 }
 
 /** The non-gating holdout read: the campaign's net move on the reserved slice. */

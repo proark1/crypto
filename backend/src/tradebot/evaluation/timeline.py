@@ -18,13 +18,13 @@ different history windows are the same experiment.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from typing import Any, Protocol
 
 from pydantic import BaseModel, ConfigDict
 
 from tradebot.core.models import UtcDatetime
 from tradebot.evaluation.models import LearningFinding, RunStatus
+from tradebot.evaluation.settings_diff import SettingChange, settings_changes
 
 WINDOW = 100
 """How many recent rows of each source feed the merge. Bounded on purpose:
@@ -33,11 +33,6 @@ the timeline is a story of recent progress, not an archive query."""
 MAX_PATTERN_LIST = 5
 """Cap the per-event new/resolved pattern lists; past a handful the counts
 say more than the prose."""
-
-MAX_CHANGES = 8
-"""Cap the per-promotion settings-change list. A strategy family carries a
-handful of parameters; past a handful the note and version link carry the
-rest."""
 
 
 class ResearchRecord(Protocol):
@@ -64,22 +59,6 @@ class SettingsJournal(Protocol):
     async def history(self, limit: int = 50) -> list[dict[str, Any]]:
         """Return settings versions, newest first."""
         ...
-
-
-class SettingChange(BaseModel):
-    """One parameter a promotion changed, for the "what changed" line.
-
-    ``before`` is ``None`` when the field is new in this version (no in-view
-    predecessor set it); ``after`` is ``None`` when the field was dropped.
-    Both are pre-stringified — a strategy parameter is never money and the
-    timeline only displays the move, so this never does arithmetic on it.
-    """
-
-    model_config = ConfigDict(frozen=True)
-
-    field: str
-    before: str | None
-    after: str | None
 
 
 class TimelineEvent(BaseModel):
@@ -271,27 +250,6 @@ def _previous_version(
     return max(candidates, key=lambda other: other["id"], default=None)
 
 
-def _settings_changes(
-    params: Mapping[str, Any], previous: Mapping[str, Any] | None
-) -> tuple[SettingChange, ...]:
-    """Diff a version's params against its predecessor's, field by field.
-
-    Values are compared and rendered as strings: a strategy parameter is
-    never money, and the timeline only shows the move, so this never does
-    arithmetic. With no in-view predecessor the diff is honestly empty rather
-    than claiming every field is new against unknown family defaults.
-    """
-    if previous is None:
-        return ()
-    changes: list[SettingChange] = []
-    for name in sorted(set(params) | set(previous)):
-        before = str(previous[name]) if name in previous else None
-        after = str(params[name]) if name in params else None
-        if before != after:
-            changes.append(SettingChange(field=name, before=before, after=after))
-    return tuple(changes[:MAX_CHANGES])
-
-
 def _promotion_event(version: dict[str, Any], versions: list[dict[str, Any]]) -> TimelineEvent:
     version_id = version["id"]
     source_sweep_id = version["source_sweep_id"]
@@ -299,7 +257,7 @@ def _promotion_event(version: dict[str, Any], versions: list[dict[str, Any]]) ->
     if source_sweep_id is not None:
         headline += f" (from sweep #{source_sweep_id})"
     previous = _previous_version(version, versions)
-    changes = _settings_changes(
+    changes = settings_changes(
         version.get("params") or {},
         previous["params"] if previous is not None else None,
     )

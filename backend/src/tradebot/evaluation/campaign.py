@@ -39,6 +39,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from tradebot.core.models import CandleInterval, utc_now
 from tradebot.evaluation.models import RunStatus
+from tradebot.evaluation.settings_diff import SettingChange, settings_changes
 from tradebot.evaluation.sweep import DEFAULT_SCENARIO_COUNT, SweepCandidate, SweepConfig
 
 logger = logging.getLogger(__name__)
@@ -177,6 +178,10 @@ class CampaignRound:
     winner: str | None
     promoted_version: int | None
     note: str
+    changes: tuple[SettingChange, ...] = ()
+    """For a promoted round: the field-level diff this promotion applied to
+    the family's live settings (what changed), before -> after. Empty for any
+    round that kept the active configuration."""
 
 
 @dataclass
@@ -407,6 +412,9 @@ class ResearchCampaign:
                 )
                 return False
         explanation = str(report.get("explanation", ""))
+        # Capture the family's live settings before the promote moves them, so
+        # the round records exactly what this promotion changed (before -> after).
+        before_params = dict(self._active_params().get(winner.family, {}))
         version = await self._promote(
             winner.family, winner.params, sweep_id, f"auto-promoted (campaign): {explanation}"
         )
@@ -420,6 +428,7 @@ class ResearchCampaign:
                 winner.name,
                 version,
                 f"promoted {winner.family} settings v{version} ({winner.name})",
+                changes=settings_changes(winner.params, before_params),
             )
         )
         if self._notify is not None:

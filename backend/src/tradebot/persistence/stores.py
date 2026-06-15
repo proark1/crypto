@@ -29,6 +29,7 @@ from tradebot.core.models import (
 from tradebot.persistence.database import (
     Database,
     bot_capital_table,
+    campaign_history_table,
     campaign_settings_table,
     candles_table,
     coins_table,
@@ -754,6 +755,52 @@ class CampaignSettingsStore:
         async with self._database.engine.connect() as connection:
             row = (await connection.execute(statement)).first()
         return None if row is None else bool(row[0])
+
+
+class CampaignHistoryStore:
+    """Append-only history of finished §12.7 research campaigns.
+
+    Each row is one finished campaign's JSON-able snapshot — the same shape
+    the live ``GET /campaign`` returns (target, symbol, status, the round
+    trail with per-promotion diffs, the holdout read). The driver only holds
+    the current campaign in memory, so this is the durable record the
+    dashboard scrolls back through; it survives restarts. Recorded once, when
+    a campaign reaches a terminal status; never rewritten.
+    """
+
+    def __init__(self, database: Database) -> None:
+        """Bind the store to ``database``."""
+        self._database = database
+
+    async def record(self, snapshot: Mapping[str, Any], finished_at: datetime) -> int:
+        """Append one finished campaign's snapshot; returns its row id.
+
+        ``snapshot`` must be JSON-able (timestamps already ISO strings), so it
+        round-trips through JSONB unchanged. ``finished_at`` is the indexed
+        ordering key (timezone-aware UTC, like every persisted timestamp).
+        """
+        _require_aware(finished_at)
+        statement = (
+            pg_insert(campaign_history_table)
+            .values(finished_at=finished_at, snapshot=dict(snapshot))
+            .returning(campaign_history_table.c.id)
+        )
+        async with self._database.engine.begin() as connection:
+            return int((await connection.execute(statement)).scalar_one())
+
+    async def list(self, limit: int = 20) -> list[dict[str, Any]]:
+        """Return finished campaigns' snapshots, newest first."""
+        statement = (
+            select(campaign_history_table.c.snapshot)
+            .order_by(
+                campaign_history_table.c.finished_at.desc(),
+                campaign_history_table.c.id.desc(),
+            )
+            .limit(limit)
+        )
+        async with self._database.engine.connect() as connection:
+            rows = (await connection.execute(statement)).all()
+        return [dict(row[0]) for row in rows]
 
 
 class BotCapitalStore:

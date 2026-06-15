@@ -80,6 +80,7 @@ from tradebot.news import CryptoPanicSource, EventCalendar, NewsFlags, NewsGate,
 from tradebot.persistence import (
     BakeOffStore,
     BotCapitalStore,
+    CampaignHistoryStore,
     CampaignSettingsStore,
     CandleStore,
     CoinStore,
@@ -209,6 +210,10 @@ def _campaign_snapshot(status: CampaignStatus | None) -> dict[str, Any] | None:
                 "winner": round_record.winner,
                 "promoted_version": round_record.promoted_version,
                 "note": round_record.note,
+                "changes": [
+                    {"field": change.field, "before": change.before, "after": change.after}
+                    for change in round_record.changes
+                ],
             }
             for round_record in status.rounds
         ],
@@ -294,6 +299,9 @@ class Worker:
         # persisted value (if an operator has toggled it) overrides it in
         # initialize(), and the Settings PUT flips it live.
         self.campaign_settings_store = CampaignSettingsStore(database)
+        # Durable history of finished campaigns (the driver only holds the
+        # current one in memory); the driver appends to it on each finish.
+        self.campaign_history_store = CampaignHistoryStore(database)
         self._campaign_enabled = config.campaign_enabled
         self.fee_schedule = FeeSchedule(
             buy_fee_bps=config.buy_fee_bps, sell_fee_bps=config.sell_fee_bps
@@ -551,6 +559,30 @@ class Worker:
             "timeframe": self.config.campaign_timeframe,
             "campaign": _campaign_snapshot(current),
         }
+
+    async def campaign_history(self, limit: int = 20) -> list[dict[str, Any]]:
+        """Past finished campaigns, newest first — the durable §12.7 record.
+
+        Each entry is the same snapshot shape ``campaign_status`` reports for
+        the live one (target, round trail with per-promotion diffs, holdout
+        read), so the dashboard renders history and current the same way.
+        """
+        return await self.campaign_history_store.list(limit)
+
+    async def _record_campaign(self, status: CampaignStatus) -> None:
+        """Persist a finished campaign to the durable history (driver callback).
+
+        Serializes the live snapshot to a JSON-able form (ISO timestamps) and
+        appends it. A campaign without a finish time never ran to a terminal
+        state, so there is nothing to record.
+        """
+        snapshot = _campaign_snapshot(status)
+        if snapshot is None or status.finished_at is None:
+            return
+        for key in ("holdout_start", "started_at", "finished_at"):
+            moment = snapshot[key]
+            snapshot[key] = moment.isoformat() if moment is not None else None
+        await self.campaign_history_store.record(snapshot, status.finished_at)
 
     async def start_comparison(self, config: EvaluationRunConfig) -> list[int]:
         """Grade the whole competition lineup on identical scenarios.
@@ -2628,6 +2660,7 @@ class Worker:
             ),
             notify=self._notify,
             enabled=lambda: self._campaign_enabled,
+            record=self._record_campaign,
         )
         self._campaign_driver = driver
         task = asyncio.create_task(driver.run())

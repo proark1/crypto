@@ -119,14 +119,17 @@ class CampaignDriver:
         clock: Callable[[], datetime] = utc_now,
         notify: Callable[[str], Awaitable[None]] | None = None,
         enabled: Callable[[], bool] | None = None,
+        record: Callable[[CampaignStatus], Awaitable[None]] | None = None,
     ) -> None:
         """Bind the driver to the worker's live state and apply paths.
 
         ``store`` is the same ``ResearchReader`` the auto-improver uses (it
         also satisfies the campaign's sweep-row reader); ``promote`` is the
         worker's journaled, paper-only apply path; ``confirm`` is the
-        engine-backed veto. Everything stateful arrives as a callable so each
-        campaign sees the world as it is when it runs.
+        engine-backed veto. ``record`` persists each finished campaign to the
+        durable history (the driver itself only holds the current one in
+        memory). Everything stateful arrives as a callable so each campaign
+        sees the world as it is when it runs.
         """
         self._sweeps = sweeps
         self._store = store
@@ -139,6 +142,7 @@ class CampaignDriver:
         self._clock = clock
         self._notify = notify
         self._enabled = enabled
+        self._record = record
         self._rotation = 0
         self._campaign: ResearchCampaign | None = None
 
@@ -194,7 +198,19 @@ class CampaignDriver:
         # in-flight campaign rather than waiting hours for it to finish.
         self._campaign = campaign
         await campaign.run(self._campaign_config(target, symbol))
-        return campaign.status
+        status = campaign.status
+        # Persist the finished campaign to the durable history. Best-effort:
+        # the campaign already ran, so a history-write failure is logged and
+        # the loop carries on rather than losing the next turn over it. (Only
+        # reached on a normal finish — a cancelled campaign re-raises above.)
+        if self._record is not None and status is not None:
+            try:
+                await self._record(status)
+            except Exception:
+                logger.exception(
+                    "failed to record finished campaign on %s/%s to history", target, symbol
+                )
+        return status
 
     def _assemble(self, target: str, symbol: str) -> ResearchCampaign:
         """Build the campaign for one target from the injected worker state."""

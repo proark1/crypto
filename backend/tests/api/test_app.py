@@ -387,10 +387,45 @@ class StubBot:
                         "winner": "faster_macd",
                         "promoted_version": 3,
                         "note": "promoted momentum settings v3 (faster_macd)",
+                        "changes": [{"field": "macd_fast", "before": "12", "after": "8"}],
                     }
                 ],
             },
         }
+
+    async def campaign_history(self, limit: int = 20) -> list[dict[str, Any]]:
+        # One finished campaign in the persisted shape (ISO strings, like JSONB).
+        return [
+            {
+                "target": "momentum",
+                "symbol": "ETH/USDT",
+                "status": "completed",
+                "promotions": 2,
+                "stop_reason": "budget spent: reached the 8-round limit",
+                "holdout_start": BASE_TIME.isoformat(),
+                "started_at": BASE_TIME.isoformat(),
+                "finished_at": BASE_TIME.isoformat(),
+                "holdout_read": {
+                    "judged": True,
+                    "improved": True,
+                    "explanation": "improved out of sample",
+                    "start_expectancy_r": "0.05",
+                    "final_expectancy_r": "0.20",
+                },
+                "rounds": [
+                    {
+                        "index": 0,
+                        "scale": 1.0,
+                        "sweep_id": 7,
+                        "verdict": "validated",
+                        "winner": "faster_macd",
+                        "promoted_version": 5,
+                        "note": "promoted momentum settings v5 (faster_macd)",
+                        "changes": [{"field": "macd_fast", "before": "12", "after": "8"}],
+                    }
+                ],
+            }
+        ][:limit]
 
     async def update_campaign_enabled(self, *, enabled: bool) -> None:
         self._campaign_enabled = enabled
@@ -1512,9 +1547,31 @@ class TestCampaignStatus:
         assert campaign["target"] == "momentum" and campaign["status"] == "running"
         assert campaign["promotions"] == 1
         assert campaign["rounds"][0]["winner"] == "faster_macd"
+        # The promoted round carries the field-level diff (what it changed).
+        assert campaign["rounds"][0]["changes"] == [
+            {"field": "macd_fast", "before": "12", "after": "8"}
+        ]
         # Datetimes cross the boundary as ISO-8601 strings; nulls stay null.
         assert campaign["started_at"] == BASE_TIME.isoformat()
         assert campaign["finished_at"] is None
+
+    async def test_history_lists_past_finished_campaigns(self, database: Database) -> None:
+        bot = StubBot(database)
+        async with make_client(bot) as client:
+            response = await client.get("/campaign/history")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert len(body) == 1
+        past = body[0]
+        assert past["target"] == "momentum" and past["symbol"] == "ETH/USDT"
+        assert past["status"] == "completed" and past["promotions"] == 2
+        # ISO strings from the persisted snapshot pass straight through.
+        assert past["finished_at"] == BASE_TIME.isoformat()
+        # The per-promotion diff survives the round trip into the history feed.
+        assert past["rounds"][0]["changes"] == [
+            {"field": "macd_fast", "before": "12", "after": "8"}
+        ]
 
 
 class TestCampaignSettings:

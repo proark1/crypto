@@ -31,6 +31,7 @@ vi.mock("../api/client", () => {
     fetchEvaluationSuggestions: rejecting(),
     fetchImprovementStatus: rejecting(),
     fetchCampaignStatus: rejecting(),
+    fetchCampaignHistory: rejecting(),
     fetchResearchTimeline: rejecting(),
     fetchScenarios: rejecting(),
     fetchFindings: rejecting(),

@@ -209,6 +209,20 @@ campaign_settings_table = Table(
 driver reads it each turn — so no redeploy, like the trading-fees setting."""
 
 
+campaign_history_table = Table(
+    "campaign_history",
+    metadata,
+    Column("id", BigInteger, primary_key=True, autoincrement=True),
+    Column("finished_at", DateTime(timezone=True), nullable=False, index=True),
+    Column("snapshot", JSONB, nullable=False),
+)
+"""Append-only record of finished §12.7 campaigns, one row each. ``snapshot``
+is the JSON-able campaign summary the live ``GET /campaign`` also returns
+(target, symbol, status, round trail with per-promotion diffs, holdout read)
+so history reads back without recomputation. The in-memory driver only ever
+holds the current campaign; this is how past campaigns survive a restart."""
+
+
 strategy_settings_table = Table(
     "strategy_settings",
     metadata,

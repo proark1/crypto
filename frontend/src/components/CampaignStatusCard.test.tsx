@@ -35,6 +35,7 @@ const RUNNING: CampaignStatusResponse = {
         winner: "faster_macd",
         promoted_version: 3,
         note: "promoted momentum settings v3 (faster_macd)",
+        changes: [{ field: "macd_fast", before: "12", after: "8" }],
       },
       {
         index: 1,
@@ -44,6 +45,7 @@ const RUNNING: CampaignStatusResponse = {
         winner: "challenger",
         promoted_version: null,
         note: "kept the active configuration (verdict: overfit)",
+        changes: [],
       },
     ],
   },
@@ -57,6 +59,9 @@ describe("CampaignStatusCard", () => {
     expect(screen.getByText(/promoted momentum settings v3/)).toBeTruthy();
     expect(screen.getByText(/kept the active configuration/)).toBeTruthy();
     expect(screen.getByText(/an improvement out of sample/)).toBeTruthy();
+    // The promoted round reads out what it changed: macd_fast 12 -> 8.
+    expect(screen.getByText("macd_fast")).toBeTruthy();
+    expect(screen.getByText("8")).toBeTruthy();
   });
 
   it("says off when the loop is disabled", () => {

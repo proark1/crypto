@@ -5,7 +5,8 @@ from decimal import Decimal
 from typing import Any
 
 from tradebot.evaluation.models import LearningFinding
-from tradebot.evaluation.timeline import SettingChange, TimelineEvent, build_timeline
+from tradebot.evaluation.settings_diff import SettingChange
+from tradebot.evaluation.timeline import TimelineEvent, build_timeline
 
 BASE_TIME = datetime(2026, 6, 1, 0, 0, tzinfo=UTC)
 
