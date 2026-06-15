@@ -459,7 +459,15 @@ class ResearchCampaign:
         deadline = loop.time() + SWEEP_TIMEOUT.total_seconds()
         while loop.time() < deadline:
             row = await self._store.fetch_sweep(sweep_id)
-            if row is not None and row.get("status") in _TERMINAL:
+            if row is None:
+                # ``start`` persisted the row before returning this id, so a
+                # missing row means the sweep was cancelled or removed out from
+                # under us — polling to the full timeout would only stall the
+                # single research lane. ``fetch_sweep`` is a deterministic
+                # lookup, so a ``None`` is "gone", never a transient miss.
+                logger.warning("campaign sweep %d not found; no promotion", sweep_id)
+                return None
+            if row.get("status") in _TERMINAL:
                 if row["status"] == RunStatus.COMPLETED.value:
                     report = row.get("report")
                     return dict(report) if report is not None else None

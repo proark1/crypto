@@ -63,6 +63,20 @@ class HangingSweeps:
         return {"status": "running", "report": None}
 
 
+class VanishingSweeps:
+    """A sweep whose row never appears in the store (``fetch_sweep`` is ``None``).
+
+    Without the early abort this would poll to the full 8h timeout — so this
+    test hanging is itself the regression signal.
+    """
+
+    async def start(self, config: SweepConfig) -> int:
+        return 0
+
+    async def fetch_sweep(self, sweep_id: int) -> dict[str, Any] | None:
+        return None
+
+
 class ManualClock:
     """A clock that only moves when told — and when the provider advances it."""
 
@@ -335,6 +349,27 @@ class TestResearchCampaign:
 
     async def test_a_sweep_with_no_verdict_refines_without_promoting(self) -> None:
         campaign, _sweeps, bot, _provider = _campaign([None])  # sweep id 0 reads as failed
+
+        await campaign.run(_config(max_rounds=1))
+
+        assert bot.promotions == []
+        status = campaign.status
+        assert status is not None and status.promotions == 0
+        assert "without a verdict" in status.rounds[0].note
+
+    async def test_a_missing_sweep_row_aborts_the_round_promptly(self) -> None:
+        # A row that never appears must not poll to the 8h timeout — the round
+        # aborts at once, so this test returning at all is the assertion.
+        bot = FakeBot({"momentum": {}})
+        sweeps = VanishingSweeps()
+        campaign = ResearchCampaign(
+            sweeps=sweeps,
+            store=sweeps,
+            candidates=StaticProvider(),
+            active_params=bot.active,
+            promote=bot.promote,
+            clock=ManualClock(_T0),
+        )
 
         await campaign.run(_config(max_rounds=1))
 
