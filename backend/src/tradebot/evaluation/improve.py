@@ -158,7 +158,15 @@ def _step(multiplier: float, scale: float) -> float:
     baseline and ``_dedupe`` drops it, so the search converges by
     construction. Only the always-present magnitude steps scale — the
     finding-targeted toggles are discrete hypotheses, not a step size.
+
+    Raises ``ValueError`` for a ``scale`` outside ``[0.0, 1.0]`` — a refining
+    search only ever shrinks the step toward the baseline, so a value above 1
+    (extrapolating past the grid) or below 0 (inverting the step's direction)
+    is a caller bug, caught here at the one chokepoint every scaled step
+    passes through.
     """
+    if not (0.0 <= scale <= 1.0):
+        raise ValueError(f"scale must be between 0.0 and 1.0, got {scale}")
     return 1.0 + scale * (multiplier - 1.0)
 
 

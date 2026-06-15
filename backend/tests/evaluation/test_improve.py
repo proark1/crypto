@@ -784,6 +784,15 @@ class TestScale:
         assert len(collapsed) == 1  # all base variants collapse into the baseline
         assert collapsed[0].name.startswith("active_breakout")
 
+    def test_an_out_of_range_scale_is_rejected(self) -> None:
+        import pytest
+
+        from tradebot.evaluation.improve import build_candidates_for
+
+        for bad in (-0.1, 1.5):
+            with pytest.raises(ValueError, match="scale must be between"):
+                build_candidates_for("production", {}, scale=bad)
+
 
 class TestEvaluateBeforeSweeping:
     async def test_no_completed_run_starts_an_evaluation_instead_of_sweeping(self) -> None:
