@@ -3,9 +3,9 @@
 import asyncio
 import os
 from collections.abc import AsyncIterator, Coroutine
-from datetime import timedelta
+from datetime import datetime, timedelta
 from decimal import Decimal
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -212,6 +212,14 @@ class TestSweepConfig:
         # Off by default — the auto-improver's frequent sweeps stay cheap.
         assert SweepConfig(symbol="BTC/USDT", candidates=candidates).cost_multipliers == ()
 
+    def test_window_end_defaults_to_none_and_can_be_frozen(self) -> None:
+        candidates = (SweepCandidate(name="a", params={}), SweepCandidate(name="b", params={}))
+        assert SweepConfig(symbol="BTC/USDT", candidates=candidates).window_end is None
+        boundary = utc_now()
+        frozen = SweepConfig(symbol="BTC/USDT", candidates=candidates, window_end=boundary)
+        assert frozen.window_end == boundary
+        assert frozen.model_dump()["window_end"] == boundary
+
 
 async def seed_candles(database: Database, count: int = 800) -> None:
     """Recent synthetic 1m candles with alternating drift regimes."""
@@ -374,3 +382,110 @@ class TestSweepEndToEnd:
         sweep = await store.fetch_sweep(sweep_id)
         assert sweep is not None and sweep["status"] == "failed"
         assert sweep["report"] is None
+
+
+class _RecordingCandleStore:
+    """A ``fetch_range`` that records its window and honors it like the store.
+
+    Stands in for ``CandleStore`` so the boundary test needs no Postgres:
+    ``SweepRunner._run`` reads only the candle store, so a fake that filters
+    on the requested ``[start, end)`` proves the sweep asked for the right
+    window and never saw a candle at or after it.
+    """
+
+    def __init__(self, candles: list[Candle]) -> None:
+        self._candles = sorted(candles, key=lambda candle: candle.open_time)
+        self.start: datetime | None = None
+        self.end: datetime | None = None
+        self.returned: list[Candle] = []
+
+    async def fetch_range(
+        self, symbol: str, interval: CandleInterval, start: datetime, end: datetime
+    ) -> list[Candle]:
+        self.start, self.end = start, end
+        self.returned = [candle for candle in self._candles if start <= candle.open_time < end]
+        return self.returned
+
+
+def _minute_candles(last_open: datetime, count: int) -> list[Candle]:
+    """``count`` ascending 1m candles, the last opening at ``last_open``."""
+    candles: list[Candle] = []
+    price = 100.0
+    for index in range(count):
+        open_time = last_open - timedelta(minutes=count - 1 - index)
+        drift = 0.003 if (index // 40) % 2 == 0 else -0.002
+        previous = price
+        price = max(1.0, price * (1.0 + drift + (0.0005 if index % 2 == 0 else -0.0005)))
+        candles.append(
+            Candle(
+                symbol="BTC/USDT",
+                interval=CandleInterval.M1,
+                open_time=open_time,
+                close_time=open_time + timedelta(minutes=1),
+                open_quote=Decimal(str(round(previous, 8))),
+                high_quote=Decimal(str(round(max(previous, price) + 0.1, 8))),
+                low_quote=Decimal(str(round(min(previous, price) - 0.1, 8))),
+                close_quote=Decimal(str(round(price, 8))),
+                volume_base=Decimal("1"),
+            )
+        )
+    return candles
+
+
+def _runner_with(candles: list[Candle]) -> tuple[SweepRunner, _RecordingCandleStore]:
+    """A runner over an in-memory candle store; ``_run`` never touches the eval store."""
+    store = _RecordingCandleStore(candles)
+    runner = SweepRunner(
+        cast(CandleStore, store), cast(EvaluationStore, object()), build_candidate_strategy
+    )
+    return runner, store
+
+
+_WINDOW_CONFIG = SweepConfig(
+    symbol="BTC/USDT",
+    timeframe="1m",
+    history_days=5,
+    scenario_count=10,
+    lookback_candles=60,
+    horizon_candles=30,
+    seed=7,
+    training_fraction=0.6,
+    validation_windows=2,
+    candidates=(
+        SweepCandidate(name="baseline", params={"fast_ema_period": 5, "slow_ema_period": 12}),
+        SweepCandidate(name="slower", params={"fast_ema_period": 8, "slow_ema_period": 21}),
+    ),
+)
+
+
+class TestWindowEnd:
+    """``window_end`` reserves a holdout the walk-forward never peeks into."""
+
+    async def test_window_end_bounds_the_fetched_history(self) -> None:
+        now = utc_now().replace(second=0, microsecond=0)
+        boundary = now - timedelta(days=2)
+        # 600 candles strictly before the boundary, plus 200 from the holdout
+        # that a leaking sweep would wrongly pull into the graded series.
+        pre = _minute_candles(boundary - timedelta(minutes=1), 600)
+        post = _minute_candles(now, 200)
+        runner, store = _runner_with(pre + post)
+
+        report = await runner._run(_WINDOW_CONFIG.model_copy(update={"window_end": boundary}))
+
+        assert store.end == boundary
+        assert store.start == boundary - timedelta(days=5)
+        # The holdout candles existed, yet none of them reached the series.
+        assert any(candle.open_time >= boundary for candle in pre + post)
+        assert store.returned
+        assert all(candle.open_time < boundary for candle in store.returned)
+        assert report["baseline"] == "baseline"
+
+    async def test_default_window_end_ends_at_now(self) -> None:
+        now = utc_now().replace(second=0, microsecond=0)
+        runner, store = _runner_with(_minute_candles(now - timedelta(minutes=1), 600))
+
+        before = utc_now()
+        await runner._run(_WINDOW_CONFIG)  # window_end defaults to None
+        after = utc_now()
+
+        assert store.end is not None and before <= store.end <= after
