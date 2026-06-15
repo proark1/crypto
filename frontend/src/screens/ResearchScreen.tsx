@@ -10,6 +10,7 @@ import {
   fetchEvaluationStrategies,
   fetchEvaluationSuggestions,
   fetchFindings,
+  fetchCampaignHistory,
   fetchCampaignStatus,
   fetchImprovementStatus,
   fetchResearchTimeline,
@@ -31,6 +32,7 @@ import type {
   EvaluationRunResponse,
   EvaluationStrategyResponse,
   FindingResponse,
+  CampaignSnapshotResponse,
   CampaignStatusResponse,
   ImprovementStatusResponse,
   ScenarioReplayResponse,
@@ -48,6 +50,7 @@ import { BakeOffPanel } from "../components/BakeOffPanel";
 import { ComparisonPanel } from "../components/ComparisonPanel";
 import { FindingsPanel } from "../components/FindingsPanel";
 import { ImprovementsPanel } from "../components/ImprovementsPanel";
+import { CampaignHistoryCard } from "../components/CampaignHistoryCard";
 import { CampaignStatusCard } from "../components/CampaignStatusCard";
 import { ImproverStatusCard } from "../components/ImproverStatusCard";
 import { ResearchHome } from "../components/ResearchHome";
@@ -373,6 +376,7 @@ export function ResearchScreen() {
   const [strategies, setStrategies] = useState<EvaluationStrategyResponse[]>([]);
   const [improver, setImprover] = useState<ImprovementStatusResponse | null>(null);
   const [campaign, setCampaign] = useState<CampaignStatusResponse | null>(null);
+  const [campaignHistory, setCampaignHistory] = useState<CampaignSnapshotResponse[]>([]);
   const [timeline, setTimeline] = useState<TimelineEventResponse[]>([]);
   const [notice, setNotice] = useState<string | null>(null);
   const [scenarios, setScenarios] = useState<ScenarioSummaryResponse[]>([]);
@@ -432,6 +436,9 @@ export function ResearchScreen() {
       }),
       fetchCampaignStatus().then((value) => {
         setCampaign(value);
+      }),
+      fetchCampaignHistory().then((value) => {
+        setCampaignHistory(value);
       }),
       fetchResearchTimeline().then((value) => {
         setTimeline(value);
@@ -925,6 +932,7 @@ export function ResearchScreen() {
         <>
           <ImproverStatusCard status={improver} />
           <CampaignStatusCard status={campaign} />
+          <CampaignHistoryCard campaigns={campaignHistory} />
           <ImprovementsPanel
             versions={versions}
             onRevert={(versionId) => {

@@ -253,6 +253,10 @@ class BotState(Protocol):
         """Report the §12.7 campaign loop: budget and the current/last campaign."""
         ...
 
+    async def campaign_history(self, limit: int = 20) -> list[dict[str, Any]]:
+        """Past finished campaigns' snapshots, newest first."""
+        ...
+
     async def update_campaign_enabled(self, *, enabled: bool) -> None:
         """Toggle the §12.7 campaign loop on/off and persist it; effective live."""
         ...
@@ -938,6 +942,34 @@ def _optional_str(value: Any) -> str | None:
 def _optional_iso(value: datetime | None) -> str | None:
     """ISO-format a nullable timestamp without inventing an epoch."""
     return None if value is None else value.isoformat()
+
+
+def _as_iso(value: datetime | str | None) -> str | None:
+    """ISO-format a timestamp that may already be a string (from JSONB).
+
+    The live campaign snapshot carries ``datetime``; the persisted history
+    snapshot carries ISO strings. Accepting both lets one response builder
+    serve the current campaign and the stored ones without drifting apart.
+    """
+    if value is None or isinstance(value, str):
+        return value
+    return value.isoformat()
+
+
+def _campaign_snapshot_response(snapshot: Mapping[str, Any]) -> CampaignSnapshotResponse:
+    """Map a campaign snapshot (live or persisted) to its API response."""
+    return CampaignSnapshotResponse(
+        target=snapshot["target"],
+        symbol=snapshot["symbol"],
+        status=snapshot["status"],
+        promotions=snapshot["promotions"],
+        stop_reason=snapshot["stop_reason"],
+        holdout_start=_as_iso(snapshot["holdout_start"]),
+        started_at=_as_iso(snapshot["started_at"]),
+        finished_at=_as_iso(snapshot["finished_at"]),
+        holdout_read=snapshot["holdout_read"],
+        rounds=[CampaignRoundResponse(**round_record) for round_record in snapshot["rounds"]],
+    )
 
 
 def _scenario_summary(row: Mapping[str, Any]) -> ScenarioSummaryResponse:
@@ -1964,24 +1996,7 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
         """
         raw = state.campaign_status()
         snapshot = raw["campaign"]
-        campaign = (
-            CampaignSnapshotResponse(
-                target=snapshot["target"],
-                symbol=snapshot["symbol"],
-                status=snapshot["status"],
-                promotions=snapshot["promotions"],
-                stop_reason=snapshot["stop_reason"],
-                holdout_start=_optional_iso(snapshot["holdout_start"]),
-                started_at=_optional_iso(snapshot["started_at"]),
-                finished_at=_optional_iso(snapshot["finished_at"]),
-                holdout_read=snapshot["holdout_read"],
-                rounds=[
-                    CampaignRoundResponse(**round_record) for round_record in snapshot["rounds"]
-                ],
-            )
-            if snapshot is not None
-            else None
-        )
+        campaign = _campaign_snapshot_response(snapshot) if snapshot is not None else None
         return CampaignStatusResponse(
             enabled=raw["enabled"],
             max_rounds=raw["max_rounds"],
@@ -1989,6 +2004,20 @@ def create_app(state: BotState, api_token: str) -> FastAPI:
             timeframe=raw["timeframe"],
             campaign=campaign,
         )
+
+    @protected.get("/campaign/history")
+    async def get_campaign_history(
+        limit: int = Query(default=20, ge=1, le=100),
+    ) -> list[CampaignSnapshotResponse]:
+        """Past finished campaigns, newest first — the durable §12.7 record.
+
+        Each is the same snapshot shape ``GET /campaign`` reports for the
+        live one (round trail with per-promotion diffs, holdout read), so the
+        dashboard renders history and current alike. The in-memory driver only
+        holds the current campaign; these survive restarts.
+        """
+        snapshots = await state.campaign_history(limit)
+        return [_campaign_snapshot_response(snapshot) for snapshot in snapshots]
 
     @protected.get("/evaluations/suggestions")
     async def list_evaluation_suggestions() -> list[SuggestedEvaluationResponse]:

@@ -555,6 +555,61 @@ class TestStrategySettingsStore:
         assert await store.fetch(9999) is None
 
 
+class TestCampaignHistoryStore:
+    async def test_records_and_lists_newest_first(self, database: Database) -> None:
+        from tradebot.persistence import CampaignHistoryStore
+
+        store = CampaignHistoryStore(database)
+        assert await store.list() == []  # nothing finished yet
+
+        older = {
+            "target": "production",
+            "symbol": "BTC/USDT",
+            "status": "completed",
+            "promotions": 0,
+            "stop_reason": "converged",
+            "holdout_start": BASE_TIME.isoformat(),
+            "started_at": BASE_TIME.isoformat(),
+            "finished_at": BASE_TIME.isoformat(),
+            "holdout_read": None,
+            "rounds": [],
+        }
+        newer = {
+            **older,
+            "target": "momentum",
+            "promotions": 1,
+            "rounds": [
+                {
+                    "index": 0,
+                    "scale": 1.0,
+                    "sweep_id": 7,
+                    "verdict": "validated",
+                    "winner": "faster_macd",
+                    "promoted_version": 5,
+                    "note": "promoted momentum settings v5 (faster_macd)",
+                    "changes": [{"field": "macd_fast", "before": "12", "after": "8"}],
+                }
+            ],
+        }
+        await store.record(older, BASE_TIME)
+        await store.record(newer, BASE_TIME + timedelta(hours=1))
+
+        history = await store.list()
+        assert [entry["target"] for entry in history] == ["momentum", "production"]
+        # The whole snapshot round-trips through JSONB unchanged, diff included.
+        assert history[0]["promotions"] == 1
+        assert history[0]["rounds"][0]["changes"] == [
+            {"field": "macd_fast", "before": "12", "after": "8"}
+        ]
+
+    async def test_naive_finished_at_is_rejected(self, database: Database) -> None:
+        from tradebot.persistence import CampaignHistoryStore
+
+        store = CampaignHistoryStore(database)
+        with pytest.raises(ValueError, match="naive datetime"):
+            await store.record({"target": "x"}, datetime(2026, 1, 1))  # naive boundary
+
+
 class TestRiskStateStore:
     async def test_round_trip_preserves_state_and_paused_symbols(self, database: Database) -> None:
         from tradebot.persistence import RiskStateStore

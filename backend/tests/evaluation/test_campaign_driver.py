@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from tradebot.core.models import Candle, CandleInterval
+from tradebot.evaluation.campaign import CampaignStatus
 from tradebot.evaluation.campaign_driver import (
     CampaignDriver,
     CampaignDriverConfig,
@@ -112,6 +113,32 @@ class TestCampaignDriver:
         assert status.status == "completed"
         assert research.started  # a sweep was actually launched
         assert driver.current is status
+
+    async def test_records_each_finished_campaign(self) -> None:
+        research = DriverResearch("baseline_best")
+        recorded: list[CampaignStatus] = []
+
+        async def record(status: CampaignStatus) -> None:
+            recorded.append(status)
+
+        driver = CampaignDriver(
+            sweeps=research,
+            store=research,
+            candle_store=NoCandles(),
+            active_params=_no_active_params,
+            symbols=lambda: ("BTC/USDT",),
+            promote=_promote,
+            confirm=None,
+            config=CampaignDriverConfig(max_rounds=1, cooldown_minutes=0.001, scenario_count=10),
+            clock=lambda: _NOW,
+            record=record,
+        )
+
+        status = await driver.run_one()
+
+        # The finished campaign is handed to the durable history exactly once.
+        assert status is not None and status.status == "completed"
+        assert recorded == [status]
 
     async def test_rotation_advances_through_every_target_then_wraps(self) -> None:
         driver = _driver(DriverResearch("baseline_best"))

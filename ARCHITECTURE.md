@@ -851,7 +851,12 @@ auto-improver (they share the one lane); when off — the default — nothing
 changes. Same scope as everything else here: this paper-only worker
 promotes through the journaled, revertible apply path, and the campaign's
 per-round sweeps and promotions surface through the existing sweeps,
-timeline, and journal while it runs.
+timeline, and journal while it runs. Each round records the field-level diff
+a promotion applied (before → after), shown on the Tune-tab card. The driver
+holds only the current campaign in memory, so every finished campaign is
+appended to a durable history (`campaign_history`, the JSON-able snapshot the
+live status also returns) and served newest-first at `GET /campaign/history`,
+so past campaigns survive a restart and stay scrollable in the dashboard.
 
 ### 12.8 Learning memory & the research timeline
 
