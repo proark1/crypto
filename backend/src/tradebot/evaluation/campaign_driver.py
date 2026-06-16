@@ -89,7 +89,7 @@ class CampaignDriverConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     timeframe: str = "1h"
-    history_days: int = Field(default=365, gt=0)
+    history_days: int = Field(default=730, gt=0)
     holdout_days: int = Field(default=60, gt=0)
     scenario_count: int = Field(default=DEFAULT_SCENARIO_COUNT, gt=0)
     max_rounds: int = Field(default=8, ge=1)
