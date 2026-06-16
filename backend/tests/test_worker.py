@@ -103,6 +103,13 @@ def make_config(
         api_port=api_port,
         regime_gate_enabled=regime_gate_enabled,
         competition_enabled=competition_enabled,
+        # These flow tests script trading by the minute, so the worker trades
+        # by the minute too: the engine's 1m->trade_timeframe rollup is covered
+        # in the engine suite, not re-proved through every worker scenario.
+        # (Kept equal across live and research to satisfy the coherence check.)
+        trade_timeframe="1m",
+        auto_improve_timeframe="1m",
+        campaign_timeframe="1m",
         # Never poll real sentiment APIs from tests; the gate is exercised
         # through the regime and news paths, which are fully scripted.
         sentiment_enabled=False,

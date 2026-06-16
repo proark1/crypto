@@ -84,6 +84,7 @@ def make_engine(
     entry_gates: tuple[EntryGate, ...] = (),
     order_store: OrderStore | None = None,
     strategy: Strategy | None = None,
+    interval: CandleInterval = CandleInterval.M1,
 ) -> TradingEngine:
     strategy = strategy or TrendFollowingStrategy(
         TrendFollowingConfig(fast_ema_period=3, slow_ema_period=6, atr_period=3)
@@ -94,6 +95,7 @@ def make_engine(
         portfolio,
         SimulatedExecutionAdapter(FillSimulatorConfig()),
         symbol=symbol,
+        interval=interval,
         fill_store=fill_store,
         decision_store=decision_store,
         autonomy_mode=autonomy_mode,
@@ -129,6 +131,116 @@ class SellOnceStrategy:
             confidence=1.0,
             stop_price_quote=Decimal("90"),
         )
+
+
+class RecordingStrategy:
+    """Records every candle it is asked to decide on; never trades."""
+
+    def __init__(self) -> None:
+        self.seen: list[Candle] = []
+
+    @property
+    def name(self) -> str:
+        return "recording"
+
+    def on_candle(self, candle: Candle, position: Position | None) -> Signal | None:
+        self.seen.append(candle)
+        return None
+
+
+class TestTradeTimeframeAggregation:
+    """The engine rolls the 1m feed up to the timeframe it is told to trade.
+
+    This is the research<->live coherence fix: research grades on hourly bars,
+    so the live engine must decide on hourly bars too, assembled from the 1m
+    stream it receives — never on the raw minutes.
+    """
+
+    async def test_engine_decides_on_completed_higher_timeframe_bars(self) -> None:
+        portfolio = Portfolio(INITIAL_BALANCE)
+        strategy = RecordingStrategy()
+        engine = make_engine(portfolio, strategy=strategy, interval=CandleInterval.H1)
+        bus = EventBus()
+        engine.attach_to(bus)
+
+        # Two full hours of minutes plus one minute into the third hour.
+        for index in range(121):
+            await bus.publish(CandleClosed(candle=make_candle(index, 100.0 + index)))
+
+        # The strategy saw exactly the two hourly bars that closed, never a 1m.
+        assert [candle.interval for candle in strategy.seen] == [
+            CandleInterval.H1,
+            CandleInterval.H1,
+        ]
+        first = strategy.seen[0]
+        assert first.open_time == BASE_TIME
+        # The hourly bar rolls up its minutes: high is the max of minutes 0..59.
+        assert first.high_quote == make_candle(59, 159.0).high_quote
+
+    async def test_minute_engine_is_unchanged(self) -> None:
+        # interval=M1 (the default) passes every 1m candle straight through —
+        # the behaviour every existing engine and backtest relies on.
+        portfolio = Portfolio(INITIAL_BALANCE)
+        strategy = RecordingStrategy()
+        engine = make_engine(portfolio, strategy=strategy, interval=CandleInterval.M1)
+        bus = EventBus()
+        engine.attach_to(bus)
+
+        for index in range(5):
+            await bus.publish(CandleClosed(candle=make_candle(index, 100.0)))
+
+        assert [candle.interval for candle in strategy.seen] == [CandleInterval.M1] * 5
+
+    async def test_gap_replay_aggregates_and_never_runs_the_strategy(self) -> None:
+        # A bar that closes during an outage reaches the adapter (resting orders
+        # must meet it) but never the strategy (no signals for a market that
+        # already moved on).
+        portfolio = Portfolio(INITIAL_BALANCE)
+        strategy = RecordingStrategy()
+        engine = make_engine(portfolio, strategy=strategy, interval=CandleInterval.H1)
+
+        for index in range(61):  # one full hour closes at minute 60
+            await engine.replay_gap_candle(make_candle(index, 100.0))
+
+        assert strategy.seen == []  # gap replay is adapter-only
+        assert engine._last_candle is not None
+        assert engine._last_candle.interval == CandleInterval.H1  # the hour reached the adapter
+
+    async def test_partial_bucket_carries_from_gap_replay_into_the_live_stream(self) -> None:
+        # The half-formed hour left by a gap is completed by the first live
+        # minutes after reconnect — one aggregator spans both paths.
+        portfolio = Portfolio(INITIAL_BALANCE)
+        strategy = RecordingStrategy()
+        engine = make_engine(portfolio, strategy=strategy, interval=CandleInterval.H1)
+        bus = EventBus()
+        engine.attach_to(bus)
+
+        for index in range(30):  # first half hour, replayed — no bar closes yet
+            await engine.replay_gap_candle(make_candle(index, 100.0))
+        assert strategy.seen == []
+        for index in range(30, 61):  # live resumes; minute 60 closes the 00:00 bar
+            await bus.publish(CandleClosed(candle=make_candle(index, 100.0)))
+
+        assert [candle.interval for candle in strategy.seen] == [CandleInterval.H1]
+        assert strategy.seen[0].open_time == BASE_TIME
+
+    async def test_replayed_duplicate_minutes_after_reconnect_are_skipped(self) -> None:
+        # The bus re-delivers candles after a reconnect; feeding them again must
+        # not corrupt the aggregator (which rejects out-of-order input).
+        portfolio = Portfolio(INITIAL_BALANCE)
+        strategy = RecordingStrategy()
+        engine = make_engine(portfolio, strategy=strategy, interval=CandleInterval.H1)
+        bus = EventBus()
+        engine.attach_to(bus)
+
+        candles = [make_candle(index, 100.0) for index in range(61)]
+        for candle in candles:
+            await bus.publish(CandleClosed(candle=candle))
+        for candle in candles:  # reconnect replay of the same minutes
+            await bus.publish(CandleClosed(candle=candle))
+
+        # Still exactly one closed hour — the duplicates were dropped, not raised.
+        assert [candle.interval for candle in strategy.seen] == [CandleInterval.H1]
 
 
 class TestPaperFlowOverBus:

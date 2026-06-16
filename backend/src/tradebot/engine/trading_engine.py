@@ -15,6 +15,7 @@ proved out, because it is the same code):
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from decimal import Decimal
 
 from tradebot.authorization import ProposalQueue
@@ -36,6 +37,7 @@ from tradebot.core.models import (
     utc_now,
 )
 from tradebot.execution.simulator import SimulatedExecutionAdapter
+from tradebot.marketdata.aggregation import TimeframeAggregator
 from tradebot.persistence import DecisionStore, FillStore, OpenOrder, OrderStore
 from tradebot.portfolio import Portfolio
 from tradebot.risk import CircuitBreakers, ManagedStop, RiskManager
@@ -91,6 +93,16 @@ class TradingEngine:
         self._adapter = adapter
         self._symbol = symbol
         self._interval = interval
+        # Live candles arrive as closed 1m bars; when trading a coarser
+        # timeframe the engine rolls them up itself (the same pattern the
+        # regime detector uses) so the strategy decides on the very bars its
+        # research grades and its promotions are tuned on. ``None`` when the
+        # engine already trades 1m — then candles pass straight through, the
+        # behaviour every backtest and existing test relies on.
+        self._m1_aggregator = (
+            None if interval == CandleInterval.M1 else TimeframeAggregator(interval)
+        )
+        self._last_m1_open_time: datetime | None = None
         self._fill_store = fill_store
         self._decision_store = decision_store
         self._order_store = order_store
@@ -279,13 +291,33 @@ class TradingEngine:
         bus.unsubscribe(CandleClosed, self._on_candle_event)
         self._bus = None
 
+    def _trade_candles(self, candle: Candle) -> list[Candle]:
+        """Map one incoming candle to the trade-timeframe candle(s) to act on.
+
+        With no aggregator (the engine already trades 1m) this is the identity
+        on a candle of the engine's interval, and drops anything else — the
+        original filter. Otherwise it consumes 1m candles and emits a
+        trade-timeframe candle only when one closes; duplicate or bus-replayed
+        1m candles (delivered again after a reconnect) are skipped so the
+        aggregator never sees disorder, exactly as the regime detector handles
+        them.
+        """
+        if self._m1_aggregator is None:
+            return [candle] if candle.interval == self._interval else []
+        if candle.interval != CandleInterval.M1:
+            return []
+        if self._last_m1_open_time is not None and candle.open_time <= self._last_m1_open_time:
+            return []
+        self._last_m1_open_time = candle.open_time
+        completed = self._m1_aggregator.add(candle)
+        return [] if completed is None else [completed]
+
     async def _on_candle_event(self, event: CandleClosed) -> None:
         candle = event.candle
-        if candle.interval != self._interval:
-            return
         if self._symbol is not None and candle.symbol != self._symbol:
             return
-        await self.process_candle(candle)
+        for bar in self._trade_candles(candle):
+            await self.process_candle(bar)
 
     async def process_candle(self, candle: Candle) -> None:
         """Run one full iteration of the trading loop for ``candle``."""
@@ -485,9 +517,14 @@ class TradingEngine:
         """
         if self._symbol is not None and candle.symbol != self._symbol:
             raise ValueError(f"engine is bound to {self._symbol}, got {candle.symbol}")
-        self._last_candle = candle
-        await self._adapter.process_candle(candle)
-        await self._journal_trigger_transitions()
+        # Roll 1m gap candles up through the same aggregator the live path
+        # uses, so a trade-timeframe bar that closed during the outage meets
+        # resting orders once, and a half-formed bar carries over to the first
+        # live candle after reconnect rather than being lost or double-counted.
+        for bar in self._trade_candles(candle):
+            self._last_candle = bar
+            await self._adapter.process_candle(bar)
+            await self._journal_trigger_transitions()
 
     def restore_order(self, open_order: OpenOrder) -> None:
         """Re-arm one persisted open order after a restart (recovery only).

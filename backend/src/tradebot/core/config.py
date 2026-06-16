@@ -348,6 +348,14 @@ class AppConfig(BaseSettings):
     auto_improve_timeframe: str = "1h"
     """Candle timeframe the automated sweeps evaluate (validated at boot)."""
 
+    trade_timeframe: str = "1h"
+    """Candle timeframe the **live** bot trades on. The 1m feed is rolled up to
+    this interval before it reaches the engines, so the strategy decides on the
+    same bars its research grades and its promotions are tuned on. Must equal
+    the research timeframes (validated below) — a live bot trading a different
+    timeframe than its sweeps grade would apply every promotion at the wrong
+    cadence (a 50-period EMA means 50 hours on 1h, 50 minutes on 1m)."""
+
     campaign_enabled: bool = False
     """Run the §12.7 loop as an iterated walk-forward *campaign* rather than
     the single-sweep auto-improver: sweep, promote every validated challenger,
@@ -404,6 +412,29 @@ class AppConfig(BaseSettings):
                 f"TRADEBOT_HISTORY_BACKFILL_DAYS ({self.history_backfill_days}) must cover "
                 f"TRADEBOT_CAMPAIGN_HISTORY_DAYS + TRADEBOT_CAMPAIGN_HOLDOUT_DAYS ({needed}): "
                 "a campaign would otherwise grade on less history than configured"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _trading_and_research_timeframes_agree(self) -> AppConfig:
+        """Require the live, auto-improve, and campaign timeframes to be equal.
+
+        Promotions flow from research straight onto the live strategies, so a
+        parameter tuned on one timeframe and traded on another means something
+        different live than where it was validated. Locking the three together
+        is the invariant that keeps the research loop's output applicable to the
+        bot that trades it; the individual strings are parsed for validity at
+        boot (see the worker).
+        """
+        timeframes = {
+            "TRADEBOT_TRADE_TIMEFRAME": self.trade_timeframe,
+            "TRADEBOT_AUTO_IMPROVE_TIMEFRAME": self.auto_improve_timeframe,
+            "TRADEBOT_CAMPAIGN_TIMEFRAME": self.campaign_timeframe,
+        }
+        if len(set(timeframes.values())) > 1:
+            raise ValueError(
+                "live and research timeframes must match — a promotion is graded on the "
+                f"research timeframe and traded on the live one: {timeframes}"
             )
         return self
 
