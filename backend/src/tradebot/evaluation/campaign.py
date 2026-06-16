@@ -128,9 +128,11 @@ class CampaignConfig(BaseModel):
 
     symbol: str
     timeframe: str = "1h"
-    history_days: int = Field(default=365, gt=0)
-    """Days of history each round's walk-forward sweep is graded over,
-    ending at the reserved holdout boundary."""
+    history_days: int = Field(default=730, gt=0)
+    """Days of history each round's walk-forward sweep is graded over, ending
+    at the reserved holdout boundary. Defaults in step with
+    ``AppConfig.campaign_history_days`` (the worker always passes that through;
+    the default only applies to a directly-constructed config)."""
 
     holdout_days: int = Field(default=60, gt=0)
     """The most-recent days reserved as the untouched holdout — no round is
