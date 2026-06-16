@@ -54,7 +54,14 @@ from tradebot.core.config import AppConfig, TradingMode, validate_symbol_quote
 from tradebot.core.events import CandleClosed, EventBus
 from tradebot.core.logging import configure_logging, log_event
 from tradebot.core.metrics import MetricsCollector
-from tradebot.core.models import AutonomyMode, CandleInterval, Fill, SymbolFilters, utc_now
+from tradebot.core.models import (
+    AutonomyMode,
+    Candle,
+    CandleInterval,
+    Fill,
+    SymbolFilters,
+    utc_now,
+)
 from tradebot.engine import TradingEngine
 from tradebot.evaluation import ScenarioEvaluator
 from tradebot.evaluation.bakeoff import BakeOffConfig, BakeOffManager
@@ -75,6 +82,7 @@ from tradebot.evaluation.sweep import (
 )
 from tradebot.evaluation.triggered_sweeps import AcceptSweepScheduler
 from tradebot.execution import FeeSchedule, FillSimulatorConfig, SimulatedExecutionAdapter
+from tradebot.marketdata.aggregation import aggregate_candles
 from tradebot.marketdata.live_feed import LiveMarketDataFeed, OhlcvExchange
 from tradebot.news import CryptoPanicSource, EventCalendar, NewsFlags, NewsGate, NewsMonitor
 from tradebot.persistence import (
@@ -443,6 +451,10 @@ class Worker:
         # deploy, not the first improvement attempt half a day later.
         CandleInterval(config.auto_improve_timeframe)
         CandleInterval(config.campaign_timeframe)
+        # The timeframe the live engines trade on (config keeps it equal to the
+        # research timeframes). The 1m feed is rolled up to it inside each
+        # engine, so the bot decides on the same bars its sweeps grade.
+        self._trade_interval = CandleInterval(config.trade_timeframe)
 
     def _new_runtime(
         self, spec: CompetitorSpec, rules: dict[str, Any] | None = None
@@ -1102,9 +1114,7 @@ class Worker:
         self.challengers[bot_id] = runtime
         for symbol in self.symbols:
             strategy = self._challenger_strategy(runtime)
-            stored = await self.candle_store.fetch_recent(
-                symbol, CandleInterval.M1, STRATEGY_PRIME_CANDLES
-            )
+            stored = await self._prime_candles(symbol)
             for candle in stored:
                 strategy.on_candle(candle, None)
             self._activate_challenger_engine(runtime, symbol, strategy=strategy)
@@ -1136,9 +1146,7 @@ class Worker:
         runtime.rules = normalized
         for symbol, engine in runtime.engines.items():
             strategy = self._challenger_strategy(runtime)
-            stored = await self.candle_store.fetch_recent(
-                symbol, CandleInterval.M1, STRATEGY_PRIME_CANDLES
-            )
+            stored = await self._prime_candles(symbol)
             for candle in stored:
                 strategy.on_candle(candle, None)
             engine.replace_strategy(strategy)
@@ -1294,18 +1302,14 @@ class Worker:
         """
         for symbol, engine in self.engines.items():
             strategy = self._build_strategy()
-            stored = await self.candle_store.fetch_recent(
-                symbol, CandleInterval.M1, STRATEGY_PRIME_CANDLES
-            )
+            stored = await self._prime_candles(symbol)
             for candle in stored:
                 strategy.on_candle(candle, None)
             engine.replace_strategy(strategy)
         for runtime in self.challengers.values():
             for symbol, engine in runtime.engines.items():
                 strategy = self._challenger_strategy(runtime)
-                stored = await self.candle_store.fetch_recent(
-                    symbol, CandleInterval.M1, STRATEGY_PRIME_CANDLES
-                )
+                stored = await self._prime_candles(symbol)
                 for candle in stored:
                     strategy.on_candle(candle, None)
                 engine.replace_strategy(strategy)
@@ -1465,6 +1469,7 @@ class Worker:
             self.portfolio,
             SimulatedExecutionAdapter(FillSimulatorConfig(), fees=self.fee_schedule),
             symbol=symbol,
+            interval=self._trade_interval,
             fill_store=self.fill_store,
             decision_store=self.decision_store,
             order_store=self.order_store,
@@ -1480,6 +1485,26 @@ class Worker:
             self._activate_challenger_engine(runtime, symbol)
         self.engines[symbol] = engine
 
+    async def _prime_candles(self, symbol: str) -> list[Candle]:
+        """Recent stored history at the trade timeframe, for warming strategies.
+
+        Strategies trade on ``trade_timeframe`` bars, so they must warm on
+        those: enough 1m history is fetched to roll up to
+        ``STRATEGY_PRIME_CANDLES`` of them (e.g. ~42 days of 1m for 1000 hourly
+        bars). When the bot already trades 1m this is just the recent 1m
+        candles, unchanged. Empty when nothing is stored — the strategy then
+        warms from the live stream, exactly as on a first-ever boot.
+        """
+        if self._trade_interval == CandleInterval.M1:
+            return await self.candle_store.fetch_recent(
+                symbol, CandleInterval.M1, STRATEGY_PRIME_CANDLES
+            )
+        minutes = int(self._trade_interval.duration.total_seconds() // 60)
+        stored = await self.candle_store.fetch_recent(
+            symbol, CandleInterval.M1, STRATEGY_PRIME_CANDLES * minutes
+        )
+        return aggregate_candles(stored, self._trade_interval)
+
     async def _prime_symbol(self, symbol: str) -> None:
         """Warm one coin's production and challenger strategies from stored candles.
 
@@ -1491,9 +1516,7 @@ class Worker:
         state. A no-op when nothing is stored: the strategy then warms from
         the live stream, exactly as on a first-ever boot.
         """
-        stored = await self.candle_store.fetch_recent(
-            symbol, CandleInterval.M1, STRATEGY_PRIME_CANDLES
-        )
+        stored = await self._prime_candles(symbol)
         if not stored:
             return
         production = self._build_strategy()
@@ -1528,6 +1551,7 @@ class Worker:
             runtime.portfolio,
             SimulatedExecutionAdapter(FillSimulatorConfig(), fees=self.fee_schedule),
             symbol=symbol,
+            interval=self._trade_interval,
             fill_store=runtime.fill_store,
             decision_store=runtime.decision_store,
             order_store=runtime.order_store,

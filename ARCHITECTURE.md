@@ -107,6 +107,16 @@ operational pain with zero benefit.
 
 ### 4.2 Strategy Engine
 - One strategy instance per (coin, strategy) pair, each consuming the event stream.
+- **Trades the timeframe it is researched on.** The live feed publishes 1m
+  `CandleClosed`; each engine rolls them up to the configured `trade_timeframe`
+  (default 1h) in-process — the same `TimeframeAggregator` the regime detector
+  and the backtest use — and the strategy decides only on those closed bars.
+  Config locks `trade_timeframe` equal to the research timeframes
+  (`auto_improve_timeframe`/`campaign_timeframe`), so a promotion graded on
+  hourly bars is *applied* to an hourly trader, not a 1m one (a 50-period EMA
+  must mean the same 50 hours live as in the sweep that validated it). Gap
+  catch-up after a reconnect rolls up through the same aggregator, so a bar
+  that closed during an outage meets resting orders exactly once.
 - Strategies are pluggable classes implementing a small interface:
   `on_candle(candle, context) -> Signal | None` where context exposes indicator
   history, current position, and config.

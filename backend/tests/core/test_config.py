@@ -26,6 +26,28 @@ def test_invalid_mode_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
         AppConfig()
 
 
+def test_trade_and_research_timeframes_default_coherent(monkeypatch: pytest.MonkeyPatch) -> None:
+    for var in (
+        "TRADEBOT_TRADE_TIMEFRAME",
+        "TRADEBOT_AUTO_IMPROVE_TIMEFRAME",
+        "TRADEBOT_CAMPAIGN_TIMEFRAME",
+    ):
+        monkeypatch.delenv(var, raising=False)
+    config = AppConfig()
+    # The bot trades the same timeframe it researches — the coherence invariant.
+    assert config.trade_timeframe == config.campaign_timeframe == config.auto_improve_timeframe
+
+
+def test_trading_timeframe_must_match_research(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Researching 4h while trading 1h would apply every promotion at the wrong
+    # cadence; the config refuses to load rather than trade an incoherent setup.
+    monkeypatch.setenv("TRADEBOT_CAMPAIGN_TIMEFRAME", "4h")
+    monkeypatch.delenv("TRADEBOT_TRADE_TIMEFRAME", raising=False)
+    monkeypatch.delenv("TRADEBOT_AUTO_IMPROVE_TIMEFRAME", raising=False)
+    with pytest.raises(ValidationError, match="timeframes must match"):
+        AppConfig()
+
+
 def test_api_port_falls_back_to_platform_port(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("TRADEBOT_API_PORT", raising=False)
     monkeypatch.setenv("PORT", "7777")  # what Railway injects
