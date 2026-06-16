@@ -182,9 +182,7 @@ class TestFundingStore:
         original = _funding(0, rate="-0.00012345678901234567")  # shorts pay longs; exact
         await store.insert_batch([original])
 
-        (loaded,) = await store.fetch_range(
-            "BTC/USDT", BASE_TIME, BASE_TIME + timedelta(hours=1)
-        )
+        (loaded,) = await store.fetch_range("BTC/USDT", BASE_TIME, BASE_TIME + timedelta(hours=1))
         assert loaded == original  # Decimal-exact, signed, timezone-aware
 
     async def test_reinserting_overlap_is_idempotent(self, database: Database) -> None:
@@ -200,7 +198,9 @@ class TestFundingStore:
         await store.insert_batch([_funding(16), _funding(0), _funding(8)])
 
         rows = await store.fetch_range(
-            "BTC/USDT", BASE_TIME, BASE_TIME + timedelta(hours=16)  # excludes hour 16
+            "BTC/USDT",
+            BASE_TIME,
+            BASE_TIME + timedelta(hours=16),  # excludes hour 16
         )
         assert [r.funding_time for r in rows] == [BASE_TIME, BASE_TIME + timedelta(hours=8)]
 

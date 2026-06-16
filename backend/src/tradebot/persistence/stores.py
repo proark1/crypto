@@ -265,9 +265,7 @@ class FundingStore:
         async with self._database.engine.begin() as connection:
             await connection.execute(statement, rows)
 
-    async def fetch_range(
-        self, symbol: str, start: datetime, end: datetime
-    ) -> list[FundingRate]:
+    async def fetch_range(self, symbol: str, start: datetime, end: datetime) -> list[FundingRate]:
         """Return funding with ``start <= funding_time < end``, time-ordered."""
         _require_aware(start)
         _require_aware(end)
