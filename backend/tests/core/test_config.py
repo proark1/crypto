@@ -140,10 +140,11 @@ def test_disabled_campaign_skips_the_backfill_check(
 ) -> None:
     """The campaign window check only bites when campaigns are enabled."""
     monkeypatch.setenv("TRADEBOT_CAMPAIGN_ENABLED", "false")
-    # 400 covers the auto-improve window (365) but is short of the campaign's
-    # 425, so a fired campaign check would reject it — disabled, it does not.
-    monkeypatch.setenv("TRADEBOT_HISTORY_BACKFILL_DAYS", "400")
-    assert AppConfig().history_backfill_days == 400
+    # 750 covers the auto-improve window (730) but is short of the campaign's
+    # 790 (730 history + 60 holdout), so a fired campaign check would reject it
+    # — disabled, it does not.
+    monkeypatch.setenv("TRADEBOT_HISTORY_BACKFILL_DAYS", "750")
+    assert AppConfig().history_backfill_days == 750
 
 
 def test_sentiment_thresholds_load_from_env(monkeypatch: pytest.MonkeyPatch) -> None:

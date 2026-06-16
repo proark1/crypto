@@ -66,12 +66,18 @@ class AppConfig(BaseSettings):
     """CCXT exchange id for market data (and, in Phase 3, execution)."""
 
     symbols: str = Field(
-        default="BTC/USDT",
+        default="BTC/USDT,ETH/USDT,SOL/USDT",
         validation_alias=AliasChoices("TRADEBOT_SYMBOLS", "TRADEBOT_SYMBOL"),
     )
     """Comma-separated pairs the worker trades (e.g. ``BTC/USDT,ETH/USDT``).
     All must be quoted in ``quote_currency``. The singular ``TRADEBOT_SYMBOL``
-    is accepted as an alias so existing deployments keep working."""
+    is accepted as an alias so existing deployments keep working.
+
+    Defaults to a small basket of liquid majors rather than BTC alone: the
+    research campaign auto-rotates across every active coin, so more coins
+    means more independent samples per cycle (more statistical power) and a
+    broader search for where an edge might exist. Only seeds the coin table on
+    first boot — an existing deployment changes its set in the coin manager."""
 
     @model_validator(mode="after")
     def _symbols_must_parse(self) -> AppConfig:
@@ -320,9 +326,10 @@ class AppConfig(BaseSettings):
     coin (rotating), so with two coins every coin is revisited daily at the
     default."""
 
-    auto_improve_history_days: int = Field(default=365, gt=0)
-    """History window automated evaluations and sweeps learn from — a full
-    year of the stored backfill, so the loop never judges on a sliver."""
+    auto_improve_history_days: int = Field(default=730, gt=0)
+    """History window automated evaluations and sweeps learn from — two years
+    of the stored backfill, so a verdict spans more regimes and grades more
+    trades (tighter confidence intervals), not a sliver."""
 
     @model_validator(mode="after")
     def _backfill_must_cover_auto_improve_window(self) -> AppConfig:
@@ -368,9 +375,11 @@ class AppConfig(BaseSettings):
     campaign_timeframe: str = "1h"
     """Candle timeframe campaign sweeps evaluate (validated at boot)."""
 
-    campaign_history_days: int = Field(default=365, gt=0)
+    campaign_history_days: int = Field(default=730, gt=0)
     """History each campaign round's walk-forward sweep is graded over, ending
-    at the reserved holdout boundary."""
+    at the reserved holdout boundary — two years, so each round spans more
+    regimes and grades more trades (more statistical power per verdict). The
+    four-year default backfill covers this with the holdout to spare."""
 
     campaign_holdout_days: int = Field(default=60, gt=0)
     """Most-recent days reserved as the untouched holdout — graded once, at
