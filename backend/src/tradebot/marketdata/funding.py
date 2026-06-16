@@ -185,19 +185,25 @@ class FundingSeries:
         self._rates: dict[str, list[Decimal]] = {}
 
     def load(self, rates: Iterable[FundingRate]) -> None:
-        """Replace the held history for whichever symbols ``rates`` covers.
+        """Merge ``rates`` into the held history for the symbols they cover.
 
-        Sorted and de-duplicated by ``funding_time`` per symbol so the lookup's
-        bisect is valid; a symbol absent from ``rates`` keeps its prior history,
-        so a per-symbol refresh never wipes the others.
+        Merging, not replacing: an incremental top-up of only the newest prints
+        is safe (a full snapshot still works, and a re-loaded print never
+        changes, so it is idempotent). Sorted and de-duplicated by
+        ``funding_time`` per symbol so the lookup's bisect stays valid; a symbol
+        absent from ``rates`` keeps its prior history untouched.
         """
-        by_symbol: dict[str, dict[datetime, Decimal]] = {}
+        incoming: dict[str, dict[datetime, Decimal]] = {}
         for rate in rates:
-            by_symbol.setdefault(rate.symbol, {})[rate.funding_time] = rate.rate
-        for symbol, points in by_symbol.items():
-            ordered = sorted(points)
+            incoming.setdefault(rate.symbol, {})[rate.funding_time] = rate.rate
+        for symbol, points in incoming.items():
+            merged = dict(
+                zip(self._times.get(symbol, []), self._rates.get(symbol, []), strict=True)
+            )
+            merged.update(points)  # a newer load wins on a shared funding_time
+            ordered = sorted(merged)
             self._times[symbol] = ordered
-            self._rates[symbol] = [points[when] for when in ordered]
+            self._rates[symbol] = [merged[when] for when in ordered]
 
     def rate_as_of(self, symbol: str, at: datetime) -> Decimal | None:
         """Most recent funding at or before ``at`` for ``symbol``, or ``None``."""

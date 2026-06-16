@@ -101,6 +101,10 @@ class FundingStrategy:
         self._config = config
         self._funding = funding
         self._atr = Atr(config.atr_period)
+        # Converted once: on_candle compares the Decimal funding rate against
+        # these every candle, so the conversion does not belong in the hot path.
+        self._enter_at = Decimal(str(config.enter_funding_at_or_below))
+        self._exit_at = Decimal(str(config.exit_funding_at_or_above))
         self._last_open_time: datetime | None = None
 
     @property
@@ -134,7 +138,7 @@ class FundingStrategy:
             return None  # no funding known here: no opinion (fail-safe)
 
         signal_id = f"{self.name}:{candle.symbol}:{candle.close_time.isoformat()}"
-        if position is None and rate <= Decimal(str(self._config.enter_funding_at_or_below)):
+        if position is None and rate <= self._enter_at:
             stop = Decimal(str(close - self._config.atr_stop_multiple * atr)).quantize(
                 ACCOUNTING_RESOLUTION, rounding=ROUND_HALF_EVEN
             )
@@ -162,7 +166,7 @@ class FundingStrategy:
                 ),
                 created_at=candle.close_time,
             )
-        if position is not None and rate >= Decimal(str(self._config.exit_funding_at_or_above)):
+        if position is not None and rate >= self._exit_at:
             return Signal(
                 signal_id=signal_id,
                 strategy_name=self.name,

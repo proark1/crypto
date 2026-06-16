@@ -121,3 +121,14 @@ class TestFactoryInjection:
         strategy = build_candidate_strategy(candidate)  # no provider
 
         assert [strategy.on_candle(make_candle(i), None) for i in range(6)] == [None] * 6
+
+    def test_recipe_funding_member_gets_the_provider(self) -> None:
+        # A custom-bot recipe with a funding member must be graded on funding
+        # too, not left silently inert.
+        candidate = SweepCandidate(
+            name="funding-recipe", recipe={"families": {"funding": {"atr_period": 3}}}
+        )
+        strategy = build_candidate_strategy(candidate, _ConstantFunding(Decimal("-0.001")))
+
+        signals = [strategy.on_candle(make_candle(i), None) for i in range(5)]
+        assert any(s is not None and s.side == Side.BUY for s in signals)

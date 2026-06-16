@@ -172,7 +172,7 @@ def build_candidate_strategy(
     has not wired one simply grades it as "no trades".
     """
     if candidate.recipe is not None:
-        return _build_recipe_strategy(candidate.recipe)
+        return _build_recipe_strategy(candidate.recipe, funding_provider)
     validate_family_params(candidate.family, candidate.params)
     if candidate.family == "funding":
         return FundingStrategy(FundingConfig(**candidate.params), funding_provider)
@@ -180,16 +180,22 @@ def build_candidate_strategy(
     return strategy_constructor(config_model(**candidate.params))
 
 
-def _build_recipe_strategy(recipe: Mapping[str, Any]) -> Strategy:
+def _build_recipe_strategy(
+    recipe: Mapping[str, Any], funding_provider: FundingProvider | None = None
+) -> Strategy:
     """Build the composite a recipe candidate grades.
 
     Parallels ``competition.rules.build_rules_strategy`` (single member
     returned bare, multiple combined by entry mode); kept here so the sweep
-    layer needs no import from that module.
+    layer needs no import from that module. A ``funding`` member is handed the
+    provider so a recipe that includes it is graded on funding, not inert.
     """
     validate_recipe_params(recipe)
     members: list[Strategy] = []
     for family, params in recipe["families"].items():
+        if family == "funding":
+            members.append(FundingStrategy(FundingConfig(**params), funding_provider))
+            continue
         config_model, strategy_constructor = STRATEGY_FAMILIES[family]
         members.append(strategy_constructor(config_model(**params)))
     if len(members) == 1:
