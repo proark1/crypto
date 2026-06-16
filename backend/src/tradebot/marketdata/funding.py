@@ -94,14 +94,21 @@ class FundingBackfiller:
         symbol: str,
         history_days: int,
         page_limit: int = 1000,
+        series: FundingSeries | None = None,
     ) -> None:
-        """``symbol`` is the spot pair; ``history_days`` bounds the cold start."""
+        """``symbol`` is the spot pair; ``history_days`` bounds the cold start.
+
+        ``series`` (optional) is the in-memory provider the strategies read: each
+        backfill merges its new prints into it so the live funding strategy sees
+        fresh funding without re-querying the store per candle.
+        """
         self._exchange = exchange
         self._store = store
         self._symbol = symbol
         self._perp = perp_symbol_for(symbol)
         self._history_days = history_days
         self._page_limit = page_limit
+        self._series = series
 
     async def backfill(self) -> int:
         """Fetch new funding prints into the store; return how many were inserted.
@@ -127,6 +134,8 @@ class FundingBackfiller:
             if not fresh:
                 break
             await self._store.insert_batch(fresh)
+            if self._series is not None:
+                self._series.load(fresh)  # keep the live provider current
             inserted += len(fresh)
             # max(), not fresh[-1]: CCXT sorts ascending, but a venue that does
             # not must still advance the cursor past the newest print seen.

@@ -15,7 +15,13 @@ from collections.abc import Mapping
 from typing import Any
 
 from tradebot.evaluation.sweep import STRATEGY_FAMILIES, validate_family_params
-from tradebot.strategies import CompositeStrategy, Strategy
+from tradebot.strategies import (
+    CompositeStrategy,
+    FundingConfig,
+    FundingProvider,
+    FundingStrategy,
+    Strategy,
+)
 
 CUSTOM_BOT_PREFIX = "custom-"
 """Every user bot's id starts with this, so a custom id can never collide
@@ -95,14 +101,20 @@ def describe_rules(rules: Mapping[str, Any]) -> str:
     return sentence[0].upper() + sentence[1:] + "."
 
 
-def build_rules_strategy(rules: Mapping[str, Any]) -> Strategy:
+def build_rules_strategy(
+    rules: Mapping[str, Any], funding_provider: FundingProvider | None = None
+) -> Strategy:
     """One fresh, unscoped strategy instance for a validated recipe.
 
     Callers scope it per bot (see ``ScopedSignalStrategy``); scenarios use
-    it bare, like every other research strategy.
+    it bare, like every other research strategy. A ``funding`` member is handed
+    the provider so a custom bot built on funding trades it, not inert.
     """
     members: list[Strategy] = []
     for family, params in rules["families"].items():
+        if family == "funding":
+            members.append(FundingStrategy(FundingConfig(**params), funding_provider))
+            continue
         config_model, strategy_constructor = STRATEGY_FAMILIES[family]
         members.append(strategy_constructor(config_model(**params)))
     if len(members) == 1:

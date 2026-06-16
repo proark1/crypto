@@ -18,6 +18,16 @@ from tradebot.strategies import MomentumConfig, MomentumStrategy
 BASE_TIME = datetime(2026, 1, 2, 0, 0, tzinfo=UTC)
 
 
+class _ConstantFunding:
+    """A funding provider reporting one rate for every lookup."""
+
+    def __init__(self, rate: Decimal) -> None:
+        self._rate = rate
+
+    def rate_as_of(self, symbol: str, at: datetime) -> Decimal | None:
+        return self._rate
+
+
 def make_candle(index: int, close: float) -> Candle:
     open_time = BASE_TIME + timedelta(minutes=index)
     close_price = Decimal(str(close))
@@ -35,16 +45,25 @@ def make_candle(index: int, close: float) -> Candle:
 
 
 class TestLineup:
-    def test_six_competitors_with_unique_stable_identities(self) -> None:
-        assert len(LINEUP) == 6
+    def test_seven_competitors_with_unique_stable_identities(self) -> None:
+        assert len(LINEUP) == 7
         bot_ids = [spec.bot_id for spec in LINEUP]
-        assert len(set(bot_ids)) == 6
+        assert len(set(bot_ids)) == 7
         assert PRODUCTION_BOT_ID in bot_ids
         # Risk-state rows must never collide: each account's brakes are
         # persisted under its fixed row id.
         row_ids = [spec.risk_state_row_id for spec in LINEUP]
-        assert len(set(row_ids)) == 6
+        assert len(set(row_ids)) == 7
         assert spec_for(PRODUCTION_BOT_ID).risk_state_row_id == 1
+
+    def test_funding_challenger_trades_on_the_injected_series(self) -> None:
+        # The funding bot is inert without a provider; given one, it trades —
+        # the live wiring the worker supplies.
+        strategy = build_challenger_strategy(
+            spec_for("funding"), {"funding": {"atr_period": 3}}, _ConstantFunding(Decimal("-0.001"))
+        )
+        signals = [strategy.on_candle(make_candle(i, 100.0), None) for i in range(5)]
+        assert any(s is not None and s.side == Side.BUY for s in signals)
 
     def test_unknown_bot_id_raises_with_the_known_ones(self) -> None:
         with pytest.raises(ValueError, match="unknown competitor"):

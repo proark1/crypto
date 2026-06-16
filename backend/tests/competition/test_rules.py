@@ -63,3 +63,9 @@ class TestBuild:
         rules = validate_rules({"entry_mode": "all", "families": {"momentum": {}, "breakout": {}}})
         strategy = build_rules_strategy(rules)
         assert strategy.name.startswith("composite[all:")
+
+    def test_funding_is_a_buildable_member(self) -> None:
+        # A custom bot can include funding; the worker hands it the live series
+        # (without one it builds, just inert) — provider threading lives there.
+        rules = validate_rules({"families": {"funding": {}}})
+        assert build_rules_strategy(rules).name == "funding"
