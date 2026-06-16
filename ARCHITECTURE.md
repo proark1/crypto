@@ -983,7 +983,7 @@ model only ever *suggests* the next experiment a human runs.
 
 ---
 
-## 13. Strategy competition (six bots, one winner)
+## 13. Strategy competition (seven bots, one winner)
 
 One question drives this section: **which strategy is actually best?**
 Backtests answer it on history; the competition answers it forward, with
@@ -991,7 +991,7 @@ the same paper money, at the same time, under the same rules.
 
 ### 13.1 The lineup
 
-Six competitors, fixed in code (`competition/lineup.py`) because the
+Seven competitors, fixed in code (`competition/lineup.py`) because the
 roster is an architecture decision — a stable lineup is what makes the
 leaderboard's history meaningful:
 
@@ -1003,6 +1003,7 @@ leaderboard's history meaningful:
 | `breakout` | Donchian-channel entries, turtle-style channel exits, solo |
 | `momentum` | MACD histogram crossovers (zero-line filtered), solo |
 | `squeeze` | Volatility-squeeze breakout: enters the upward release of a Bollinger-inside-Keltner compression, exits at the basis, solo |
+| `funding` | Funding contrarian: longs deeply negative perpetual funding (crowded shorts), exits on recovery, solo — reads the funding series (§4.1) |
 
 Every challenger trades its family's **active** (possibly auto-promoted)
 parameters, so the comparison is always against what the family trades

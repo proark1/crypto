@@ -83,7 +83,7 @@ from tradebot.evaluation.sweep import (
 from tradebot.evaluation.triggered_sweeps import AcceptSweepScheduler
 from tradebot.execution import FeeSchedule, FillSimulatorConfig, SimulatedExecutionAdapter
 from tradebot.marketdata.aggregation import aggregate_candles
-from tradebot.marketdata.funding import FundingBackfiller, FundingHistoryExchange
+from tradebot.marketdata.funding import FundingBackfiller, FundingHistoryExchange, FundingSeries
 from tradebot.marketdata.live_feed import LiveMarketDataFeed, OhlcvExchange
 from tradebot.news import CryptoPanicSource, EventCalendar, NewsFlags, NewsGate, NewsMonitor
 from tradebot.persistence import (
@@ -290,6 +290,9 @@ class Worker:
         self.bus = EventBus()
         self.candle_store = CandleStore(database)
         self.funding_store = FundingStore(database)
+        # The in-memory funding provider the funding strategy reads (live and in
+        # research): primed from the store at boot, kept current by the backfiller.
+        self._funding_series = FundingSeries()
         self.fill_store = FillStore(database)
         self.decision_store = DecisionStore(database)
         self.order_store = OrderStore(database)
@@ -1350,8 +1353,10 @@ class Worker:
     def _challenger_strategy(self, runtime: CompetitorRuntime) -> Strategy:
         """One fresh, bot-scoped strategy for a challenger account."""
         if runtime.rules is not None:
-            return ScopedSignalStrategy(build_rules_strategy(runtime.rules), runtime.spec.bot_id)
-        return build_challenger_strategy(runtime.spec, self.strategy_params)
+            return ScopedSignalStrategy(
+                build_rules_strategy(runtime.rules, self._funding_series), runtime.spec.bot_id
+            )
+        return build_challenger_strategy(runtime.spec, self.strategy_params, self._funding_series)
 
     def recipe_for(self, bot_id: str) -> dict[str, Any] | None:
         """Return ``bot_id``'s custom-bot recipe, or ``None`` for a built-in.
@@ -2287,6 +2292,9 @@ class Worker:
             # the engines exist.
             api_task = self._start_api()
             replayed = await self.initialize()
+            # Before the feeds deliver a candle: warm the funding provider from
+            # stored history so the funding strategy is not blind on a warm start.
+            await self._prime_funding_series()
             positions = (
                 ", ".join(
                     f"{symbol}={position.quantity_base}"
@@ -2546,6 +2554,35 @@ class Worker:
         )
         return task
 
+    async def _prime_funding_series(self) -> None:
+        """Load each coin's stored funding history into the live provider.
+
+        Covers a warm start (the store already holds backfilled history), so the
+        funding strategy sees funding from the first live candle rather than
+        waiting for the backfiller's first top-up. Cheap — funding prints only
+        every few hours — and a coin with none stored simply stays inert.
+
+        Best-effort and per-coin isolated: priming is only a warm start, so a
+        failed read is logged and swallowed (the backfiller still populates the
+        series) rather than crashing the boot, and one coin's failure never
+        blocks the others. The reads run concurrently; the sync ``load`` calls
+        cannot interleave (no ``await`` inside them).
+        """
+
+        async def prime(symbol: str) -> None:
+            try:
+                stored = await self.funding_store.fetch_range(
+                    symbol, datetime(1970, 1, 1, tzinfo=UTC), datetime.now(UTC)
+                )
+            except Exception:
+                log_event(
+                    logger, logging.WARNING, "funding_prime_failed", symbol=symbol, exc_info=True
+                )
+                return
+            self._funding_series.load(stored)
+
+        await asyncio.gather(*(prime(symbol) for symbol in self.symbols))
+
     def _start_funding_history_if_enabled(self) -> asyncio.Task[None] | None:
         """Backfill and top up each coin's perp funding history when enabled.
 
@@ -2581,6 +2618,7 @@ class Worker:
                 self.funding_store,
                 symbol,
                 self.config.history_backfill_days,
+                series=self._funding_series,
             )
             for symbol in self.symbols
         ]
