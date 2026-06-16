@@ -2561,12 +2561,27 @@ class Worker:
         funding strategy sees funding from the first live candle rather than
         waiting for the backfiller's first top-up. Cheap — funding prints only
         every few hours — and a coin with none stored simply stays inert.
+
+        Best-effort and per-coin isolated: priming is only a warm start, so a
+        failed read is logged and swallowed (the backfiller still populates the
+        series) rather than crashing the boot, and one coin's failure never
+        blocks the others. The reads run concurrently; the sync ``load`` calls
+        cannot interleave (no ``await`` inside them).
         """
-        for symbol in self.symbols:
-            stored = await self.funding_store.fetch_range(
-                symbol, datetime(1970, 1, 1, tzinfo=UTC), datetime.now(UTC)
-            )
+
+        async def prime(symbol: str) -> None:
+            try:
+                stored = await self.funding_store.fetch_range(
+                    symbol, datetime(1970, 1, 1, tzinfo=UTC), datetime.now(UTC)
+                )
+            except Exception:
+                log_event(
+                    logger, logging.WARNING, "funding_prime_failed", symbol=symbol, exc_info=True
+                )
+                return
             self._funding_series.load(stored)
+
+        await asyncio.gather(*(prime(symbol) for symbol in self.symbols))
 
     def _start_funding_history_if_enabled(self) -> asyncio.Task[None] | None:
         """Backfill and top up each coin's perp funding history when enabled.

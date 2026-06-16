@@ -1180,6 +1180,7 @@ class TestCompetition:
             "breakout",
             "momentum",
             "squeeze",
+            "funding",
         }
         # The trend challenger saw the same crossover production (bare trend
         # with the gate off) traded — from its own account, in its own journal.
