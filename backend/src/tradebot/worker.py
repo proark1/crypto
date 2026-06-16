@@ -23,6 +23,7 @@ from collections.abc import Coroutine, Iterator, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from functools import partial
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
 import httpx
@@ -293,6 +294,12 @@ class Worker:
         # The in-memory funding provider the funding strategy reads (live and in
         # research): primed from the store at boot, kept current by the backfiller.
         self._funding_series = FundingSeries()
+        # Every research path builds candidate strategies through this so the
+        # funding family is graded on the live series, not inert; the other
+        # families ignore the provider.
+        self._candidate_builder = partial(
+            build_candidate_strategy, funding_provider=self._funding_series
+        )
         self.fill_store = FillStore(database)
         self.decision_store = DecisionStore(database)
         self.order_store = OrderStore(database)
@@ -381,7 +388,7 @@ class Worker:
             spawn=self._spawn_background,
         )
         self.sweeps = SweepManager(
-            SweepRunner(self.candle_store, self.evaluation_store, build_candidate_strategy),
+            SweepRunner(self.candle_store, self.evaluation_store, self._candidate_builder),
             self.evaluation_store,
             spawn=self._spawn_background,
         )
@@ -1409,7 +1416,7 @@ class Worker:
             candidate = SweepCandidate(
                 name=contestant.bot_id, recipe=copy.deepcopy(dict(contestant.recipe))
             )
-            return ScenarioEvaluator(lambda: build_candidate_strategy(candidate))
+            return ScenarioEvaluator(lambda: self._candidate_builder(candidate))
         if contestant is not None and contestant.family is not None:
             # A bake-off energy preset: a single family at fixed parameters,
             # graded bare like any solo-family scenario strategy. The
@@ -1419,7 +1426,7 @@ class Worker:
                 family=contestant.family,
                 params=dict(contestant.params),
             )
-            return ScenarioEvaluator(lambda: build_candidate_strategy(candidate))
+            return ScenarioEvaluator(lambda: self._candidate_builder(candidate))
         spec = spec_for(strategy_id)
         return ScenarioEvaluator(
             lambda: build_scenario_strategy(
@@ -1837,7 +1844,7 @@ class Worker:
         async def final_equity(candidate_params: Mapping[str, Any]) -> Decimal:
             portfolio = Portfolio(self.config.paper_initial_balance_quote)
             runner = BacktestRunner(
-                build_candidate_strategy(
+                self._candidate_builder(
                     SweepCandidate(name="confirm", family=family, params=dict(candidate_params))
                 ),
                 RiskManager(RiskConfig(), portfolio),
@@ -2795,6 +2802,7 @@ class Worker:
             notify=self._notify,
             enabled=lambda: self._campaign_enabled,
             record=self._record_campaign,
+            funding_provider=self._funding_series,
         )
         self._campaign_driver = driver
         task = asyncio.create_task(driver.run())

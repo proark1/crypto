@@ -45,12 +45,14 @@ from tradebot.evaluation.sweep import (
     SweepCandidate,
     build_candidate_strategy,
 )
-from tradebot.strategies import Strategy
+from tradebot.strategies import FundingProvider, Strategy
 
 logger = logging.getLogger(__name__)
 
 
-def strategy_for_target(target: str, regime_routed: bool) -> StrategyForParams:
+def strategy_for_target(
+    target: str, regime_routed: bool, funding_provider: FundingProvider | None = None
+) -> StrategyForParams:
     """Build the ``StrategyForParams`` the holdout grader needs for ``target``.
 
     Target-aware, so the holdout grades what the target actually trades:
@@ -58,7 +60,8 @@ def strategy_for_target(target: str, regime_routed: bool) -> StrategyForParams:
     params (``build_traded_strategy``, exactly as the bot trades and as
     evaluation grades it); a research family builds that family alone (the
     shape its solo competition account trades). ``regime_routed`` mirrors the
-    worker's wiring for the production case.
+    worker's wiring for the production case. ``funding_provider`` is handed to a
+    funding target so the holdout grades it on the live series, not inert.
     """
     if target == "production":
 
@@ -71,7 +74,8 @@ def strategy_for_target(target: str, regime_routed: bool) -> StrategyForParams:
         return build_candidate_strategy(
             SweepCandidate(
                 name=f"holdout-{target}", family=target, params=dict(params.get(target, {}))
-            )
+            ),
+            funding_provider,
         )
 
     return build_family
@@ -120,6 +124,7 @@ class CampaignDriver:
         notify: Callable[[str], Awaitable[None]] | None = None,
         enabled: Callable[[], bool] | None = None,
         record: Callable[[CampaignStatus], Awaitable[None]] | None = None,
+        funding_provider: FundingProvider | None = None,
     ) -> None:
         """Bind the driver to the worker's live state and apply paths.
 
@@ -143,6 +148,7 @@ class CampaignDriver:
         self._notify = notify
         self._enabled = enabled
         self._record = record
+        self._funding_provider = funding_provider
         self._rotation = 0
         self._campaign: ResearchCampaign | None = None
 
@@ -219,7 +225,9 @@ class CampaignDriver:
             symbol=symbol,
             timeframe=self._config.timeframe,
             candles=self._candle_store,
-            strategy_for=strategy_for_target(target, self._config.regime_routed),
+            strategy_for=strategy_for_target(
+                target, self._config.regime_routed, self._funding_provider
+            ),
             scenario_count=self._config.scenario_count,
             clock=self._clock,
         )

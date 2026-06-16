@@ -32,6 +32,7 @@ from tradebot.evaluation.runner import EvaluationRunConfig
 from tradebot.evaluation.sweep import DEFAULT_SCENARIO_COUNT, SweepCandidate, SweepConfig
 from tradebot.strategies import (
     BreakoutConfig,
+    FundingConfig,
     MeanReversionConfig,
     MomentumConfig,
     SqueezeConfig,
@@ -43,11 +44,11 @@ logger = logging.getLogger(__name__)
 PROMOTION_VERDICT = "validated"
 """The only sweep verdict that may change the traded configuration."""
 
-IMPROVEMENT_TARGETS = ("production", "breakout", "momentum", "squeeze")
+IMPROVEMENT_TARGETS = ("production", "breakout", "momentum", "squeeze", "funding")
 """What the loop improves, in rotation. ``production`` covers the regime-
 routed shape and therefore both of its families (trend following and mean
-reversion); ``breakout``, ``momentum``, and ``squeeze`` are the research
-families' solo competition accounts — tuning them sharpens the §13
+reversion); ``breakout``, ``momentum``, ``squeeze``, and ``funding`` are the
+research families' solo competition accounts — tuning them sharpens the §13
 leaderboard evidence the §13.7 routing decision will be made on. Custom
 bots are absent on purpose: auto-tuning a user's recipe needs their opt-in
 (a later change)."""
@@ -761,6 +762,75 @@ def _squeeze_candidates(
     return _dedupe(raw, motivating)
 
 
+def _funding_candidates(
+    active: Mapping[str, Mapping[str, Any]],
+    findings: Sequence[tuple[int, str]] = (),
+    scale: float = 1.0,
+) -> tuple[tuple[SweepCandidate, ...], tuple[int, ...]]:
+    """Build the funding family's grid: entry/exit thresholds plus the ATR stop.
+
+    The two thresholds are the family's edge knobs — how deeply negative funding
+    must be to enter, and how far it must recover to exit — so the grid steps the
+    entry deeper and shallower and pushes the exit later, around the active pair.
+    The ATR-stop variants mirror the other families'. No finding→knob mappings
+    yet: the funding family has no evaluation history to mine, so this is the
+    plain single-knob sweep (``findings`` is accepted for a uniform signature).
+    """
+    funding = FundingConfig(**active.get("funding", {}))
+    enter, exit_at = funding.enter_funding_at_or_below, funding.exit_funding_at_or_above
+    raw: list[SweepCandidate] = [
+        SweepCandidate(
+            name=f"active_funding_{enter:g}_{exit_at:g}",
+            family="funding",
+            params=funding.model_dump(),
+        ),
+        SweepCandidate(
+            name="deeper_entry",
+            family="funding",
+            params=funding.model_copy(
+                update={"enter_funding_at_or_below": round(enter * _step(1.5, scale), 6)}
+            ).model_dump(),
+        ),
+        SweepCandidate(
+            name="shallower_entry",
+            family="funding",
+            params=funding.model_copy(
+                update={"enter_funding_at_or_below": round(enter * _step(0.6, scale), 6)}
+            ).model_dump(),
+        ),
+        SweepCandidate(
+            name="later_exit",
+            family="funding",
+            params=funding.model_copy(
+                update={
+                    "exit_funding_at_or_above": round(exit_at + abs(enter) * _step(0.5, scale), 6)
+                }
+            ).model_dump(),
+        ),
+        SweepCandidate(
+            name="wider_stop",
+            family="funding",
+            params=funding.model_copy(
+                update={
+                    "atr_stop_multiple": round(funding.atr_stop_multiple * _step(1.5, scale), 2)
+                }
+            ).model_dump(),
+        ),
+        SweepCandidate(
+            name="tighter_stop",
+            family="funding",
+            params=funding.model_copy(
+                update={
+                    "atr_stop_multiple": max(
+                        0.5, round(funding.atr_stop_multiple * _step(0.75, scale), 2)
+                    )
+                }
+            ).model_dump(),
+        ),
+    ]
+    return _dedupe(raw, [])
+
+
 def build_candidates_for(
     target: str,
     active: Mapping[str, Mapping[str, Any]],
@@ -785,6 +855,8 @@ def build_candidates_for(
         return _momentum_candidates(active, findings, scale)
     if target == "squeeze":
         return _squeeze_candidates(active, findings, scale)
+    if target == "funding":
+        return _funding_candidates(active, findings, scale)
     raise ValueError(f"no improvement grid for {target!r}; known: {IMPROVEMENT_TARGETS}")
 
 
@@ -808,6 +880,8 @@ def _single_family_grid(
         return _momentum_candidates(active, findings, scale)
     if family == "squeeze":
         return _squeeze_candidates(active, findings, scale)
+    if family == "funding":
+        return _funding_candidates(active, findings, scale)
     candidates, motivating = build_improvement_candidates(active, findings, scale)
     return tuple(c for c in candidates if c.family == family), motivating
 

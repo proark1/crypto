@@ -223,9 +223,9 @@ class TestAutoImprover:
         )
         improver = make_improver(sweeps, store, [])
 
-        # Four targets, two symbols: eight cycles is one full pass over the
+        # Five targets, two symbols: ten cycles is one full pass over the
         # symbols, every target visited before either symbol repeats.
-        for _ in range(8):
+        for _ in range(10):
             await improver.run_cycle()
 
         baseline_families = [config.candidates[0].family for config in sweeps.configs]
@@ -234,16 +234,20 @@ class TestAutoImprover:
             "breakout",
             "momentum",
             "squeeze",
+            "funding",
             "trend_following",
             "breakout",
             "momentum",
             "squeeze",
+            "funding",
         ]
         assert [config.symbol for config in sweeps.configs] == [
             "BTC/USDT",
             "BTC/USDT",
             "BTC/USDT",
             "BTC/USDT",
+            "BTC/USDT",
+            "ETH/USDT",
             "ETH/USDT",
             "ETH/USDT",
             "ETH/USDT",
@@ -470,6 +474,19 @@ class TestPerFamilyGrids:
         assert motivating == ()
         names = {candidate.name for candidate in candidates}
         assert {"looser_squeeze", "tighter_squeeze", "wider_stop", "tighter_stop"} <= names
+        for candidate in candidates:
+            build_candidate_strategy(candidate)
+
+    def test_the_funding_grid_is_single_family_and_buildable(self) -> None:
+        from tradebot.evaluation.improve import build_candidates_for
+
+        candidates, motivating = build_candidates_for("funding", {})
+        assert candidates[0].name.startswith("active_funding")
+        assert {candidate.family for candidate in candidates} == {"funding"}
+        assert motivating == ()
+        names = {candidate.name for candidate in candidates}
+        assert {"deeper_entry", "shallower_entry", "later_exit", "wider_stop"} <= names
+        # Each variant must keep entry below exit, or FundingStrategy rejects it.
         for candidate in candidates:
             build_candidate_strategy(candidate)
 
