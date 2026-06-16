@@ -802,9 +802,10 @@ def _funding_candidates(
             name="later_exit",
             family="funding",
             params=funding.model_copy(
-                update={
-                    "exit_funding_at_or_above": round(exit_at + abs(enter) * _step(0.5, scale), 6)
-                }
+                # Additive offset, so scale linearly (not via _step, which is for
+                # multiplicative steps): the offset must vanish as scale -> 0 so
+                # the variant collapses back into the baseline and _dedupe drops it.
+                update={"exit_funding_at_or_above": round(exit_at + abs(enter) * 0.5 * scale, 6)}
             ).model_dump(),
         ),
         SweepCandidate(
