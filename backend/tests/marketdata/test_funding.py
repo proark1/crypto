@@ -18,6 +18,7 @@ from tradebot.core.models import FundingRate
 from tradebot.marketdata.funding import (
     FundingBackfiller,
     FundingRow,
+    FundingSeries,
     _row_to_funding_rate,
     perp_symbol_for,
 )
@@ -153,3 +154,45 @@ class TestFundingBackfiller:
 
         assert await backfiller.backfill() == 0
         assert store.rows == []
+
+
+def _funding(hours: int, rate: str, symbol: str = "BTC/USDT") -> FundingRate:
+    return FundingRate(
+        symbol=symbol, funding_time=_BASE + timedelta(hours=hours), rate=Decimal(rate)
+    )
+
+
+class TestFundingSeries:
+    def test_returns_the_most_recent_print_at_or_before(self) -> None:
+        series = FundingSeries()
+        series.load([_funding(0, "0.0001"), _funding(8, "-0.0003"), _funding(16, "0.0002")])
+
+        # Between prints: the one in effect is the latest at or before the time.
+        assert series.rate_as_of("BTC/USDT", _BASE + timedelta(hours=10)) == Decimal("-0.0003")
+        assert series.rate_as_of("BTC/USDT", _BASE + timedelta(hours=8)) == Decimal("-0.0003")
+        # After the last print, it persists (funding only changes at the next).
+        assert series.rate_as_of("BTC/USDT", _BASE + timedelta(hours=99)) == Decimal("0.0002")
+
+    def test_before_the_first_print_is_none(self) -> None:
+        series = FundingSeries()
+        series.load([_funding(8, "0.0001")])
+        assert series.rate_as_of("BTC/USDT", _BASE) is None
+
+    def test_unknown_symbol_and_empty_series_are_none(self) -> None:
+        series = FundingSeries()
+        assert series.rate_as_of("BTC/USDT", _BASE) is None  # nothing loaded
+        series.load([_funding(0, "0.0001")])
+        assert series.rate_as_of("ETH/USDT", _BASE + timedelta(hours=1)) is None  # other symbol
+
+    def test_symbols_are_isolated(self) -> None:
+        series = FundingSeries()
+        series.load([_funding(0, "0.0001", "BTC/USDT"), _funding(0, "-0.0009", "ETH/USDT")])
+        at = _BASE + timedelta(hours=1)
+        assert series.rate_as_of("BTC/USDT", at) == Decimal("0.0001")
+        assert series.rate_as_of("ETH/USDT", at) == Decimal("-0.0009")
+
+    def test_reload_replaces_a_symbols_history(self) -> None:
+        series = FundingSeries()
+        series.load([_funding(0, "0.0001")])
+        series.load([_funding(0, "0.0005"), _funding(8, "0.0006")])  # refreshed
+        assert series.rate_as_of("BTC/USDT", _BASE + timedelta(hours=10)) == Decimal("0.0006")

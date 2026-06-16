@@ -17,7 +17,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Mapping
+from bisect import bisect_right
+from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any, Protocol
@@ -167,9 +168,56 @@ def _since_ms(after: datetime | None, history_days: int) -> int:
     return round(start.timestamp() * 1000)
 
 
+class FundingSeries:
+    """In-memory funding history with a most-recent-at-or-before lookup per symbol.
+
+    The concrete ``FundingProvider`` strategies read: built from stored
+    ``FundingRate`` rows (research loads the graded window; live loads and
+    refreshes from the same store) and then answers ``rate_as_of`` in O(log n)
+    per candle. One instance holds many symbols and resolves by the candle's own
+    symbol, so a strategy never needs its symbol at construction — which the
+    sweep factory cannot supply.
+    """
+
+    def __init__(self) -> None:
+        """Start empty; :meth:`load` fills it from stored funding."""
+        self._times: dict[str, list[datetime]] = {}
+        self._rates: dict[str, list[Decimal]] = {}
+
+    def load(self, rates: Iterable[FundingRate]) -> None:
+        """Merge ``rates`` into the held history for the symbols they cover.
+
+        Merging, not replacing: an incremental top-up of only the newest prints
+        is safe (a full snapshot still works, and a re-loaded print never
+        changes, so it is idempotent). Sorted and de-duplicated by
+        ``funding_time`` per symbol so the lookup's bisect stays valid; a symbol
+        absent from ``rates`` keeps its prior history untouched.
+        """
+        incoming: dict[str, dict[datetime, Decimal]] = {}
+        for rate in rates:
+            incoming.setdefault(rate.symbol, {})[rate.funding_time] = rate.rate
+        for symbol, points in incoming.items():
+            merged = dict(
+                zip(self._times.get(symbol, []), self._rates.get(symbol, []), strict=True)
+            )
+            merged.update(points)  # a newer load wins on a shared funding_time
+            ordered = sorted(merged)
+            self._times[symbol] = ordered
+            self._rates[symbol] = [merged[when] for when in ordered]
+
+    def rate_as_of(self, symbol: str, at: datetime) -> Decimal | None:
+        """Most recent funding at or before ``at`` for ``symbol``, or ``None``."""
+        times = self._times.get(symbol)
+        if not times:
+            return None
+        index = bisect_right(times, at) - 1
+        return self._rates[symbol][index] if index >= 0 else None
+
+
 __all__ = [
     "FundingBackfiller",
     "FundingHistoryExchange",
     "FundingRow",
+    "FundingSeries",
     "perp_symbol_for",
 ]

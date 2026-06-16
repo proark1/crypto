@@ -136,6 +136,10 @@ operational pain with zero benefit.
   - **Momentum**: MACD histogram crossovers with a zero-line filter.
   - **Squeeze**: enters the upward release of a Bollinger-inside-Keltner volatility
     compression, exits at the Bollinger basis.
+  - **Funding**: the first non-price family — longs when the perpetual funding rate is
+    deeply negative (over-crowded shorts, squeeze risk up), exits when it recovers. Reads
+    the rate per candle from an injected funding series (§4.1) backed by the same store in
+    backtest and live; an absent series makes it inert, never an error.
   - **Regime filter**: classifies trend vs. range (ADX/volatility based) and routes to
     the appropriate strategy — this matters more than any single indicator.
 - Output is a `Signal` (side, confidence, suggested stop/target), never an order.

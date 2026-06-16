@@ -24,7 +24,7 @@ from tradebot.core.models import Candle, Signal
 from tradebot.evaluation.strategy import build_traded_strategy
 from tradebot.evaluation.sweep import STRATEGY_FAMILIES
 from tradebot.portfolio import Position
-from tradebot.strategies import Strategy
+from tradebot.strategies import FundingConfig, FundingProvider, FundingStrategy, Strategy
 
 PRODUCTION_BOT_ID = "production"
 """The incumbent's journal scope — also the server default for every row
@@ -145,8 +145,21 @@ class ScopedSignalStrategy:
         return signal.model_copy(update={"signal_id": f"{self._bot_id}/{signal.signal_id}"})
 
 
-def _family_strategy(family: str, params_by_family: Mapping[str, Mapping[str, Any]]) -> Strategy:
-    """One fresh instance of ``family`` with its active parameters."""
+def _family_strategy(
+    family: str,
+    params_by_family: Mapping[str, Mapping[str, Any]],
+    funding_provider: FundingProvider | None = None,
+) -> Strategy:
+    """One fresh instance of ``family`` with its active parameters.
+
+    ``funding_provider`` is handed to the funding family only; without one it is
+    inert (no funding, no signal), so a caller that has not wired funding still
+    builds a valid, silent strategy.
+    """
+    if family == "funding":
+        return FundingStrategy(
+            FundingConfig(**params_by_family.get("funding", {})), funding_provider
+        )
     config_model, strategy_constructor = STRATEGY_FAMILIES[family]
     return strategy_constructor(config_model(**params_by_family.get(family, {})))
 
@@ -154,6 +167,7 @@ def _family_strategy(family: str, params_by_family: Mapping[str, Mapping[str, An
 def build_challenger_strategy(
     spec: CompetitorSpec,
     params_by_family: Mapping[str, Mapping[str, Any]],
+    funding_provider: FundingProvider | None = None,
 ) -> Strategy:
     """Build one fresh, bot-scoped live strategy for a challenger.
 
@@ -165,13 +179,16 @@ def build_challenger_strategy(
         raise ValueError(
             f"{spec.bot_id} has no solo family; the worker builds the production strategy"
         )
-    return ScopedSignalStrategy(_family_strategy(spec.family, params_by_family), spec.bot_id)
+    return ScopedSignalStrategy(
+        _family_strategy(spec.family, params_by_family, funding_provider), spec.bot_id
+    )
 
 
 def build_scenario_strategy(
     spec: CompetitorSpec,
     params_by_family: Mapping[str, Mapping[str, Any]],
     regime_routed: bool,
+    funding_provider: FundingProvider | None = None,
 ) -> Strategy:
     """Build one fresh scenario strategy for research runs.
 
@@ -182,4 +199,4 @@ def build_scenario_strategy(
     """
     if spec.family is None:
         return build_traded_strategy(regime_routed=regime_routed, params_by_family=params_by_family)
-    return _family_strategy(spec.family, params_by_family)
+    return _family_strategy(spec.family, params_by_family, funding_provider)

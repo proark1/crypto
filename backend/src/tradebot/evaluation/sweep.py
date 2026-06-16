@@ -52,6 +52,9 @@ from tradebot.strategies import (
     BreakoutConfig,
     BreakoutStrategy,
     CompositeStrategy,
+    FundingConfig,
+    FundingProvider,
+    FundingStrategy,
     MeanReversionConfig,
     MeanReversionStrategy,
     MomentumConfig,
@@ -84,15 +87,17 @@ STRATEGY_FAMILIES: Mapping[str, tuple[type[BaseModel], Callable[..., Strategy]]]
     "breakout": (BreakoutConfig, BreakoutStrategy),
     "momentum": (MomentumConfig, MomentumStrategy),
     "squeeze": (SqueezeConfig, SqueezeStrategy),
+    "funding": (FundingConfig, FundingStrategy),
 }
 """Sweepable families: name -> (config model, strategy constructor). A
 candidate names its family, so one sweep can pit families against each
-other on identical scenarios. ``breakout``, ``momentum``, and ``squeeze``
-are research families: sweeps, evaluation, the §12.7 improvement rotation,
-and the strategy competition all grade and tune them — promotions change
-what their solo competition accounts trade — but production routing (which
-regime activates them, at whose expense) remains the §13.7 human
-decision."""
+other on identical scenarios. ``breakout``, ``momentum``, ``squeeze``, and
+``funding`` are research families: sweeps, evaluation, the §12.7 improvement
+rotation, and the strategy competition all grade and tune them — promotions
+change what their solo competition accounts trade — but production routing
+(which regime activates them, at whose expense) remains the §13.7 human
+decision. ``funding`` reads a per-candle funding rate from an injected
+provider (see ``build_candidate_strategy``); built without one it is inert."""
 
 
 def validate_family_params(family: str, params: Mapping[str, Any]) -> None:
@@ -156,25 +161,41 @@ class SweepCandidate(BaseModel):
         return self
 
 
-def build_candidate_strategy(candidate: SweepCandidate) -> Strategy:
-    """Build one fresh strategy instance for ``candidate``."""
+def build_candidate_strategy(
+    candidate: SweepCandidate, funding_provider: FundingProvider | None = None
+) -> Strategy:
+    """Build one fresh strategy instance for ``candidate``.
+
+    ``funding_provider`` is handed to the funding family so it grades on the
+    stored funding series; the other families ignore it. Funding built without a
+    provider is inert (no funding, no signal), never an error — so a sweep that
+    has not wired one simply grades it as "no trades".
+    """
     if candidate.recipe is not None:
-        return _build_recipe_strategy(candidate.recipe)
+        return _build_recipe_strategy(candidate.recipe, funding_provider)
     validate_family_params(candidate.family, candidate.params)
+    if candidate.family == "funding":
+        return FundingStrategy(FundingConfig(**candidate.params), funding_provider)
     config_model, strategy_constructor = STRATEGY_FAMILIES[candidate.family]
     return strategy_constructor(config_model(**candidate.params))
 
 
-def _build_recipe_strategy(recipe: Mapping[str, Any]) -> Strategy:
+def _build_recipe_strategy(
+    recipe: Mapping[str, Any], funding_provider: FundingProvider | None = None
+) -> Strategy:
     """Build the composite a recipe candidate grades.
 
     Parallels ``competition.rules.build_rules_strategy`` (single member
     returned bare, multiple combined by entry mode); kept here so the sweep
-    layer needs no import from that module.
+    layer needs no import from that module. A ``funding`` member is handed the
+    provider so a recipe that includes it is graded on funding, not inert.
     """
     validate_recipe_params(recipe)
     members: list[Strategy] = []
     for family, params in recipe["families"].items():
+        if family == "funding":
+            members.append(FundingStrategy(FundingConfig(**params), funding_provider))
+            continue
         config_model, strategy_constructor = STRATEGY_FAMILIES[family]
         members.append(strategy_constructor(config_model(**params)))
     if len(members) == 1:
