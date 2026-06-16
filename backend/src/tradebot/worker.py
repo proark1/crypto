@@ -2564,6 +2564,17 @@ class Worker:
         # spot fine without it), so it stays off TradingVenue; the live ccxt
         # client supplies it, an absent feed degrades inside backfill().
         exchange = cast(FundingHistoryExchange, self._exchange)
+        # An exchange missing the method entirely would fail every hourly pass;
+        # skip once here rather than spam the log (a venue that has the method
+        # but lacks the symbol's perp still degrades quietly inside backfill()).
+        if not hasattr(exchange, "fetch_funding_rate_history"):
+            log_event(
+                logger,
+                logging.WARNING,
+                "funding_history_unsupported",
+                exchange_id=self.config.exchange_id,
+            )
+            return None
         backfillers = [
             FundingBackfiller(
                 exchange,

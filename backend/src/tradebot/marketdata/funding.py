@@ -69,7 +69,9 @@ def _row_to_funding_rate(row: FundingRow, symbol: str) -> FundingRate | None:
     if rate is None or timestamp is None:
         return None
     try:
-        funding_time = datetime.fromtimestamp(int(timestamp) / 1000, tz=UTC)
+        # float() first: some venues hand back the ms epoch as a stringified
+        # float ("1712345678123.0"), which int() alone would reject.
+        funding_time = datetime.fromtimestamp(int(float(timestamp)) / 1000, tz=UTC)
         return FundingRate(symbol=symbol, funding_time=funding_time, rate=Decimal(str(rate)))
     except (InvalidOperation, ValueError, TypeError):
         return None
@@ -125,7 +127,9 @@ class FundingBackfiller:
                 break
             await self._store.insert_batch(fresh)
             inserted += len(fresh)
-            latest = fresh[-1].funding_time
+            # max(), not fresh[-1]: CCXT sorts ascending, but a venue that does
+            # not must still advance the cursor past the newest print seen.
+            latest = max(funding.funding_time for funding in fresh)
             since_ms = _since_ms(latest, self._history_days)
             if len(rows) < self._page_limit:
                 break
@@ -158,7 +162,9 @@ def _since_ms(after: datetime | None, history_days: int) -> int:
         if after is not None
         else datetime.now(UTC) - timedelta(days=history_days)
     )
-    return int(start.timestamp() * 1000)
+    # round(), not int(): float seconds * 1000 can land at N-0.0001 and
+    # truncate a millisecond off the resume cursor.
+    return round(start.timestamp() * 1000)
 
 
 __all__ = [
