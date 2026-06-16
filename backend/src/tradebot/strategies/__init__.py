@@ -16,6 +16,7 @@ from tradebot.strategies.controls import (
     build_control_strategy,
     validate_control_params,
 )
+from tradebot.strategies.funding import FundingConfig, FundingProvider, FundingStrategy
 from tradebot.strategies.mean_reversion import MeanReversionConfig, MeanReversionStrategy
 from tradebot.strategies.momentum import MomentumConfig, MomentumStrategy
 from tradebot.strategies.router import RegimeStrategyRouter
@@ -27,6 +28,9 @@ __all__ = [
     "BreakoutConfig",
     "BreakoutStrategy",
     "CompositeStrategy",
+    "FundingConfig",
+    "FundingProvider",
+    "FundingStrategy",
     "MeanReversionConfig",
     "MeanReversionStrategy",
     "MomentumConfig",

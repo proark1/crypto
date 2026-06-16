@@ -17,7 +17,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Mapping
+from bisect import bisect_right
+from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any, Protocol
@@ -167,9 +168,50 @@ def _since_ms(after: datetime | None, history_days: int) -> int:
     return round(start.timestamp() * 1000)
 
 
+class FundingSeries:
+    """In-memory funding history with a most-recent-at-or-before lookup per symbol.
+
+    The concrete ``FundingProvider`` strategies read: built from stored
+    ``FundingRate`` rows (research loads the graded window; live loads and
+    refreshes from the same store) and then answers ``rate_as_of`` in O(log n)
+    per candle. One instance holds many symbols and resolves by the candle's own
+    symbol, so a strategy never needs its symbol at construction — which the
+    sweep factory cannot supply.
+    """
+
+    def __init__(self) -> None:
+        """Start empty; :meth:`load` fills it from stored funding."""
+        self._times: dict[str, list[datetime]] = {}
+        self._rates: dict[str, list[Decimal]] = {}
+
+    def load(self, rates: Iterable[FundingRate]) -> None:
+        """Replace the held history for whichever symbols ``rates`` covers.
+
+        Sorted and de-duplicated by ``funding_time`` per symbol so the lookup's
+        bisect is valid; a symbol absent from ``rates`` keeps its prior history,
+        so a per-symbol refresh never wipes the others.
+        """
+        by_symbol: dict[str, dict[datetime, Decimal]] = {}
+        for rate in rates:
+            by_symbol.setdefault(rate.symbol, {})[rate.funding_time] = rate.rate
+        for symbol, points in by_symbol.items():
+            ordered = sorted(points)
+            self._times[symbol] = ordered
+            self._rates[symbol] = [points[when] for when in ordered]
+
+    def rate_as_of(self, symbol: str, at: datetime) -> Decimal | None:
+        """Most recent funding at or before ``at`` for ``symbol``, or ``None``."""
+        times = self._times.get(symbol)
+        if not times:
+            return None
+        index = bisect_right(times, at) - 1
+        return self._rates[symbol][index] if index >= 0 else None
+
+
 __all__ = [
     "FundingBackfiller",
     "FundingHistoryExchange",
     "FundingRow",
+    "FundingSeries",
     "perp_symbol_for",
 ]
