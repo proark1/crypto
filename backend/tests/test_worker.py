@@ -113,6 +113,9 @@ def make_config(
         # Never poll real sentiment APIs from tests; the gate is exercised
         # through the regime and news paths, which are fully scripted.
         sentiment_enabled=False,
+        # Funding-history backfill has its own tests; the flow doubles don't
+        # serve funding, so keep it off here (production defaults it on).
+        funding_history_enabled=False,
     )
 
 

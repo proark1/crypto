@@ -130,6 +130,28 @@ class Candle(BaseModel):
     volume_base: Amount
 
 
+class FundingRate(BaseModel):
+    """One perpetual funding observation for a symbol at a funding time.
+
+    ``rate`` is the funding paid over the venue's funding interval as a *signed*
+    fraction of position notional — positive when longs pay shorts (crowded,
+    over-leveraged longs; historically a top-risk condition), negative when
+    shorts pay longs. A plain ``Decimal`` because it is signed and feeds signal
+    math, not an order size; stored exactly all the same.
+
+    ``funding_time`` is the instant the rate applied (UTC). A strategy aligns it
+    to a candle by asking for the most recent funding at or before the candle's
+    open — funding prints every few hours, far coarser than the trade timeframe,
+    so the same rate covers many candles.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    symbol: str
+    funding_time: UtcDatetime
+    rate: Decimal
+
+
 class Signal(BaseModel):
     """A strategy's proposal to trade — never an order.
 
