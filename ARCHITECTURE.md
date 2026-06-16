@@ -104,6 +104,13 @@ operational pain with zero benefit.
 - REST backfill on startup and after disconnects; WS reconnect with exponential backoff.
 - Publishes `CandleClosed`, `TickerUpdate` events to the strategy engine.
 - Persists all candles to the time-series store (this becomes the backtest dataset).
+- **Perpetual funding history** is backfilled and topped up into its own store
+  (`FundingStore`), keyed by the *spot* symbol but fetched from the matching
+  USDT perp (`BTC/USDT` → `BTC/USDT:USDT`) on the same unified CCXT client. This
+  turns funding from a live-only tightener into a researchable series the
+  funding strategy grades on — backtest and live read one store the same way
+  (§3). Optional and fail-safe: a coin with no perp funding degrades to an empty
+  series, so it never blocks spot trading; depth follows `history_backfill_days`.
 
 ### 4.2 Strategy Engine
 - One strategy instance per (coin, strategy) pair, each consuming the event stream.

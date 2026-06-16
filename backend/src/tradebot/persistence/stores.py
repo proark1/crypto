@@ -22,6 +22,7 @@ from tradebot.core.models import (
     CandleInterval,
     Decision,
     Fill,
+    FundingRate,
     Order,
     OrderStatus,
     Side,
@@ -36,6 +37,7 @@ from tradebot.persistence.database import (
     custom_bots_table,
     decisions_table,
     fills_table,
+    funding_rates_table,
     orders_table,
     risk_state_table,
     strategy_settings_table,
@@ -227,6 +229,65 @@ class CandleStore:
         statement = select(func.min(candles_table.c.open_time)).where(
             candles_table.c.symbol == symbol,
             candles_table.c.interval == interval.value,
+        )
+        async with self._database.engine.connect() as connection:
+            value: datetime | None = (await connection.execute(statement)).scalar()
+        return value
+
+
+class FundingStore:
+    """Persisted perpetual funding history.
+
+    Mirrors :class:`CandleStore`: idempotent batched inserts keyed by
+    (symbol, funding_time), a time-range read for backtests, and the latest
+    stored time so backfill and the live poller resume without a gap. This is
+    the researchable series behind the funding strategy and the restart-durable
+    source for the funding tightener.
+    """
+
+    def __init__(self, database: Database) -> None:
+        """Bind the store to ``database``."""
+        self._database = database
+
+    async def insert_batch(self, rates: Sequence[FundingRate]) -> None:
+        """Insert ``rates`` in one statement; duplicates are ignored.
+
+        Idempotency by primary key (symbol, funding_time): a funding print for
+        a past window never legitimately changes, so re-ingesting an overlap
+        after a backfill or restart is harmless — and it will happen.
+        """
+        if not rates:
+            return
+        rows = [rate.model_dump() for rate in rates]
+        statement = pg_insert(funding_rates_table).on_conflict_do_nothing(
+            index_elements=["symbol", "funding_time"]
+        )
+        async with self._database.engine.begin() as connection:
+            await connection.execute(statement, rows)
+
+    async def fetch_range(
+        self, symbol: str, start: datetime, end: datetime
+    ) -> list[FundingRate]:
+        """Return funding with ``start <= funding_time < end``, time-ordered."""
+        _require_aware(start)
+        _require_aware(end)
+        statement = (
+            select(funding_rates_table)
+            .where(
+                funding_rates_table.c.symbol == symbol,
+                funding_rates_table.c.funding_time >= start,
+                funding_rates_table.c.funding_time < end,
+            )
+            .order_by(funding_rates_table.c.funding_time)
+        )
+        async with self._database.engine.connect() as connection:
+            rows = (await connection.execute(statement)).mappings().all()
+        return [FundingRate.model_validate(dict(row)) for row in rows]
+
+    async def latest_funding_time(self, symbol: str) -> datetime | None:
+        """Return the newest stored funding time — where backfill/poll resume."""
+        statement = select(func.max(funding_rates_table.c.funding_time)).where(
+            funding_rates_table.c.symbol == symbol,
         )
         async with self._database.engine.connect() as connection:
             value: datetime | None = (await connection.execute(statement)).scalar()

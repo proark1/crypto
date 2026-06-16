@@ -9,6 +9,7 @@ from tradebot.core.models import (
     Decision,
     DecisionOutcome,
     Fill,
+    FundingRate,
     Order,
     OrderType,
     ProtectiveExitPlan,
@@ -20,6 +21,7 @@ from tradebot.persistence import (
     Database,
     DecisionStore,
     FillStore,
+    FundingStore,
     OrderStore,
 )
 from tradebot.persistence.database import coerce_async_dsn
@@ -166,6 +168,55 @@ class TestCandleStore:
             await store.fetch_range("BTC/USDT", CandleInterval.M1, naive, BASE_TIME)
         with pytest.raises(ValueError, match="naive datetime"):
             await store.fetch_range("BTC/USDT", CandleInterval.M1, BASE_TIME, naive)
+
+
+def _funding(hours: int, rate: str = "0.0001", symbol: str = "BTC/USDT") -> FundingRate:
+    return FundingRate(
+        symbol=symbol, funding_time=BASE_TIME + timedelta(hours=hours), rate=Decimal(rate)
+    )
+
+
+class TestFundingStore:
+    async def test_round_trip_preserves_signed_exact_values(self, database: Database) -> None:
+        store = FundingStore(database)
+        original = _funding(0, rate="-0.00012345678901234567")  # shorts pay longs; exact
+        await store.insert_batch([original])
+
+        (loaded,) = await store.fetch_range(
+            "BTC/USDT", BASE_TIME, BASE_TIME + timedelta(hours=1)
+        )
+        assert loaded == original  # Decimal-exact, signed, timezone-aware
+
+    async def test_reinserting_overlap_is_idempotent(self, database: Database) -> None:
+        store = FundingStore(database)
+        await store.insert_batch([_funding(0), _funding(8)])
+        await store.insert_batch([_funding(8), _funding(16)])  # overlap on resume
+
+        rows = await store.fetch_range("BTC/USDT", BASE_TIME, BASE_TIME + timedelta(hours=24))
+        assert len(rows) == 3
+
+    async def test_fetch_range_is_half_open_and_ordered(self, database: Database) -> None:
+        store = FundingStore(database)
+        await store.insert_batch([_funding(16), _funding(0), _funding(8)])
+
+        rows = await store.fetch_range(
+            "BTC/USDT", BASE_TIME, BASE_TIME + timedelta(hours=16)  # excludes hour 16
+        )
+        assert [r.funding_time for r in rows] == [BASE_TIME, BASE_TIME + timedelta(hours=8)]
+
+    async def test_symbols_are_isolated(self, database: Database) -> None:
+        store = FundingStore(database)
+        await store.insert_batch([_funding(0, symbol="BTC/USDT"), _funding(0, symbol="ETH/USDT")])
+
+        rows = await store.fetch_range("ETH/USDT", BASE_TIME, BASE_TIME + timedelta(hours=1))
+        assert [r.symbol for r in rows] == ["ETH/USDT"]
+
+    async def test_latest_funding_time_for_resume(self, database: Database) -> None:
+        store = FundingStore(database)
+        assert await store.latest_funding_time("BTC/USDT") is None  # empty: cold start
+
+        await store.insert_batch([_funding(0), _funding(8)])
+        assert await store.latest_funding_time("BTC/USDT") == BASE_TIME + timedelta(hours=8)
 
 
 class TestCoinStore:

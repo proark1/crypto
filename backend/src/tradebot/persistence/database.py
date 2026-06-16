@@ -55,6 +55,17 @@ candles_table = Table(
 """PK (symbol, interval, open_time) doubles as the range-scan index for the
 hot fetch path (one symbol+interval ordered by time)."""
 
+funding_rates_table = Table(
+    "funding_rates",
+    metadata,
+    Column("symbol", Text, primary_key=True),
+    Column("funding_time", DateTime(timezone=True), primary_key=True),
+    Column("rate", Numeric, nullable=False),
+)
+"""Perpetual funding history — the researchable series behind the funding
+strategy and the restart-durable source for the funding tightener. PK
+(symbol, funding_time) doubles as the range-scan index for the by-time lookup."""
+
 fills_table = Table(
     "fills",
     metadata,

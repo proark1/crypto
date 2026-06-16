@@ -197,6 +197,13 @@ class AppConfig(BaseSettings):
     funding window) at or above which new entries pause — persistently high
     positive funding is crowded, over-leveraged longs."""
 
+    funding_history_enabled: bool = True
+    """Backfill and keep each traded coin's perpetual funding history in the
+    store — the researchable series the funding strategy grades on, derived from
+    the spot pair's matching USDT perp. Pure data collection (no trading effect
+    on its own), so on by default; a coin with no perp funding degrades to an
+    empty series. Depth follows ``history_backfill_days``."""
+
     cryptopanic_token: str | None = None
     """CryptoPanic API token. Unset disables news polling; the news gate
     still runs (scheduled-event windows work without any news source)."""

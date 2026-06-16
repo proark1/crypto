@@ -23,7 +23,7 @@ from collections.abc import Coroutine, Iterator, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
 import httpx
 
@@ -83,6 +83,7 @@ from tradebot.evaluation.sweep import (
 from tradebot.evaluation.triggered_sweeps import AcceptSweepScheduler
 from tradebot.execution import FeeSchedule, FillSimulatorConfig, SimulatedExecutionAdapter
 from tradebot.marketdata.aggregation import aggregate_candles
+from tradebot.marketdata.funding import FundingBackfiller, FundingHistoryExchange
 from tradebot.marketdata.live_feed import LiveMarketDataFeed, OhlcvExchange
 from tradebot.news import CryptoPanicSource, EventCalendar, NewsFlags, NewsGate, NewsMonitor
 from tradebot.persistence import (
@@ -97,6 +98,7 @@ from tradebot.persistence import (
     DecisionStore,
     EvaluationStore,
     FillStore,
+    FundingStore,
     OrderStore,
     RiskStateStore,
     StrategySettingsStore,
@@ -287,6 +289,7 @@ class Worker:
         self.config = config
         self.bus = EventBus()
         self.candle_store = CandleStore(database)
+        self.funding_store = FundingStore(database)
         self.fill_store = FillStore(database)
         self.decision_store = DecisionStore(database)
         self.order_store = OrderStore(database)
@@ -2275,6 +2278,7 @@ class Worker:
         sentiment_task: asyncio.Task[None] | None = None
         sentiment_client: httpx.AsyncClient | None = None
         funding_task: asyncio.Task[None] | None = None
+        funding_history_task: asyncio.Task[None] | None = None
         try:
             # The API comes up before initialize(): the first boot's deep
             # history backfill can run for minutes, and the platform
@@ -2306,6 +2310,7 @@ class Worker:
             backup_task, backup_client = self._start_backups_if_configured()
             sentiment_task, sentiment_client = self._start_sentiment_if_configured()
             funding_task = self._start_funding_if_configured()
+            funding_history_task = self._start_funding_history_if_enabled()
             improver_task = self._start_improver_if_enabled()
             campaign_task = self._start_campaign_driver()
             # TaskGroup, not gather: if one feed crashes, the others must be
@@ -2333,6 +2338,7 @@ class Worker:
                 backup_task,
                 sentiment_task,
                 funding_task,
+                funding_history_task,
             ):
                 if task is None:
                     continue
@@ -2539,6 +2545,61 @@ class Worker:
             symbol=self.config.funding_reference_symbol,
         )
         return task
+
+    def _start_funding_history_if_enabled(self) -> asyncio.Task[None] | None:
+        """Backfill and top up each coin's perp funding history when enabled.
+
+        Pure data collection — pages each traded coin's perp funding into the
+        store (keyed by the spot pair) so the funding strategy has a researchable
+        series, then tops it up hourly. Reuses the worker's market-data exchange
+        (ccxt serializes its own REST calls). Best-effort per coin: a pair with
+        no perp funding, or a transient error, degrades to an empty series rather
+        than crashing the worker. Coins added at runtime are picked up on the
+        next restart — the boot symbol set is captured here.
+        """
+        if not self.config.funding_history_enabled:
+            log_event(logger, logging.INFO, "funding_history_disabled")
+            return None
+        # Funding history is optional, not a venue requirement (the bot trades
+        # spot fine without it), so it stays off TradingVenue; the live ccxt
+        # client supplies it, an absent feed degrades inside backfill().
+        exchange = cast(FundingHistoryExchange, self._exchange)
+        backfillers = [
+            FundingBackfiller(
+                exchange,
+                self.funding_store,
+                symbol,
+                self.config.history_backfill_days,
+            )
+            for symbol in self.symbols
+        ]
+        task = asyncio.create_task(self._run_funding_backfillers(backfillers))
+
+        def log_funding_history_outcome(finished: asyncio.Task[None]) -> None:
+            try:
+                finished.result()
+            except asyncio.CancelledError:
+                pass
+            except Exception:  # pragma: no cover - run() catches its own
+                log_event(logger, logging.ERROR, "funding_history_crashed", exc_info=True)
+
+        task.add_done_callback(log_funding_history_outcome)
+        log_event(
+            logger,
+            logging.INFO,
+            "funding_history_enabled",
+            symbols=", ".join(self.symbols),
+        )
+        return task
+
+    @staticmethod
+    async def _run_funding_backfillers(backfillers: list[FundingBackfiller]) -> None:
+        """Run every coin's funding backfiller concurrently until cancelled.
+
+        Each ``run`` loop swallows its own fetch errors, so one coin's dead perp
+        feed never stops the others; cancellation (shutdown) unwinds them all.
+        """
+        await asyncio.gather(*(backfiller.run() for backfiller in backfillers))
 
     def _start_backups_if_configured(
         self,
