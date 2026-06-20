@@ -210,6 +210,27 @@ class TestFeed:
         assert [c.open_time for c in stored] == [BASE_TIME + timedelta(minutes=1)]
         assert [e.candle.open_time for e in received] == [BASE_TIME + timedelta(minutes=1)]
 
+    async def test_backfill_quarantines_shape_broken_candles(self, database: Database) -> None:
+        # Backfill once trusted _is_well_formed alone, so a finite-but-impossible
+        # candle (high < low) entered the stored dataset over REST without ever
+        # meeting validate_candle. It must now be quarantined like the live path.
+        store = CandleStore(database)
+        bad = [BASE_MS, 100.0, 90.0, 99.0, 100.0, 1.0]  # high 90 < low 99: impossible
+        exchange = FakeExchange([], rest_rows=[bad, row(1), row(2), row(3)])
+        feed = LiveMarketDataFeed(exchange, "BTC/USDT", store, EventBus())
+
+        inserted = await feed.backfill()
+
+        stored = await store.fetch_range(
+            "BTC/USDT", CandleInterval.M1, BASE_TIME, BASE_TIME + timedelta(minutes=10)
+        )
+        # The malformed minute-0 candle is dropped; the good ones land.
+        assert [c.open_time for c in stored] == [
+            BASE_TIME + timedelta(minutes=1),
+            BASE_TIME + timedelta(minutes=2),
+        ]
+        assert inserted == 2
+
     async def test_backfill_from_empty_store_drops_in_progress_row(
         self, database: Database
     ) -> None:
