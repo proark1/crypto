@@ -140,6 +140,39 @@ class TestCampaignDriver:
         assert status is not None and status.status == "completed"
         assert recorded == [status]
 
+    async def test_promotion_cap_is_wired_from_history_into_the_campaign(self) -> None:
+        # The driver reads the target's lifetime promotions from the durable
+        # history and projects them, with the cap, onto each campaign's config —
+        # so the per-target cap binds across the whole loop, not one campaign.
+        research = DriverResearch("baseline_best")
+
+        async def promotions_for(target: str) -> int:
+            return 4  # this target already promoted 4 times across past campaigns
+
+        driver = CampaignDriver(
+            sweeps=research,
+            store=research,
+            candle_store=NoCandles(),
+            active_params=_no_active_params,
+            symbols=lambda: ("BTC/USDT",),
+            promote=_promote,
+            confirm=None,
+            config=CampaignDriverConfig(
+                max_rounds=1,
+                cooldown_minutes=0.001,
+                scenario_count=10,
+                max_lifetime_promotions_per_target=5,
+            ),
+            clock=lambda: _NOW,
+            promotions_for=promotions_for,
+        )
+
+        status = await driver.run_one()
+
+        assert status is not None
+        assert status.config.prior_promotions == 4
+        assert status.config.max_lifetime_promotions == 5
+
     async def test_rotation_advances_through_every_target_then_wraps(self) -> None:
         driver = _driver(DriverResearch("baseline_best"))
 

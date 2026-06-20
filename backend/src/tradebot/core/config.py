@@ -412,6 +412,16 @@ class AppConfig(BaseSettings):
     campaign_cooldown_minutes: float = Field(default=30.0, gt=0.0)
     """Rest between campaigns, to leave CPU for live trading."""
 
+    campaign_max_lifetime_promotions_per_target: int = Field(default=0, ge=0)
+    """Per-target lifetime cap on the campaign loop's auto-promotions; ``0``
+    (the default) disables it. The loop runs forever, so without an outer
+    bound its cumulative multiple-comparisons exposure grows without limit.
+    Past this many promotions for a target (summed across all its campaigns
+    from the durable history), its campaigns keep researching but no longer
+    change the live config, until a human reviews and promotes manually or
+    raises the cap. Disabled by default so existing behaviour is unchanged
+    until an operator opts in."""
+
     @model_validator(mode="after")
     def _backfill_must_cover_campaign_window(self) -> AppConfig:
         """Reject a backfill shallower than the campaign's full data span.

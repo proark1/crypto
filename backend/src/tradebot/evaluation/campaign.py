@@ -169,9 +169,38 @@ class CampaignConfig(BaseModel):
     end-of-campaign holdout read keeps its own frozen seed so it stays
     comparable across campaigns."""
 
+    max_lifetime_promotions: int = Field(default=0, ge=0)
+    """Per-target lifetime cap on auto-promotions; ``0`` disables it. The
+    campaign loop runs forever, so without an outer bound the cumulative
+    multiple-comparisons exposure grows without limit — every campaign hands
+    the search fresh chances to promote a fluke, and the incumbent climbs from
+    inflated baselines. Once ``prior_promotions`` plus this campaign's own
+    promotions reach this cap, validated, engine-confirmed winners are still
+    *researched* (the round is recorded and the search refines) but no longer
+    *applied*; a human can review the evidence and promote manually or raise
+    the cap. It caps promotions, never research."""
+
+    prior_promotions: int = Field(default=0, ge=0)
+    """Auto-promotions this target accrued in *earlier* campaigns (summed from
+    the durable campaign history by the driver). Counts against
+    ``max_lifetime_promotions`` so the cap is a true lifetime bound across
+    campaigns, not a per-campaign one. ``0`` for a directly-constructed
+    campaign with no history."""
+
     def interval(self) -> CandleInterval:
         """Parse the timeframe; raises ``ValueError`` on unknown ones."""
         return CandleInterval(self.timeframe)
+
+    def promotions_frozen(self, promotions_this_campaign: int) -> bool:
+        """Whether the per-target lifetime promotion cap is reached.
+
+        ``0`` disables the cap. Otherwise the bound is across campaigns:
+        ``prior_promotions`` (earlier campaigns) plus this campaign's
+        promotions so far.
+        """
+        if self.max_lifetime_promotions <= 0:
+            return False
+        return self.prior_promotions + promotions_this_campaign >= self.max_lifetime_promotions
 
 
 @dataclass(frozen=True)
@@ -409,6 +438,26 @@ class ResearchCampaign:
                     winner_name,
                     None,
                     "validated winner is not auto-promotable; skipped",
+                )
+            )
+            return False
+        if config.promotions_frozen(status.promotions):
+            # The per-target lifetime promotion cap is reached: keep researching
+            # (record the round so the search still refines) but do not change
+            # the live config. Bounds the unbounded loop's cumulative
+            # multiple-comparisons exposure; a human can promote manually or
+            # raise the cap after reviewing the accumulated evidence.
+            total = config.prior_promotions + status.promotions
+            status.rounds.append(
+                CampaignRound(
+                    index,
+                    scale,
+                    sweep_id,
+                    verdict,
+                    winner.name,
+                    None,
+                    f"lifetime promotion cap reached ({total}/{config.max_lifetime_promotions} "
+                    f"for {config.target}); validated winner researched, not applied",
                 )
             )
             return False

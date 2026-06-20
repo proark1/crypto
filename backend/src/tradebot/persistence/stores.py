@@ -13,7 +13,7 @@ from decimal import Decimal
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import Numeric, func, select
+from sqlalchemy import Integer, Numeric, cast, func, select
 from sqlalchemy.dialects.postgresql import ARRAY, aggregate_order_by
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
@@ -845,6 +845,24 @@ class CampaignHistoryStore:
             .returning(campaign_history_table.c.id)
         )
         async with self._database.engine.begin() as connection:
+            return int((await connection.execute(statement)).scalar_one())
+
+    async def lifetime_promotions(self, target: str) -> int:
+        """Total promotions this target's finished campaigns ever applied.
+
+        Summed from the durable campaign history. The driver is the only
+        writer, and only on a campaign's terminal status, so this is the
+        authoritative cross-campaign count of auto-promotions for ``target``
+        (manual reverts and the single-sweep auto-improver never write here).
+        It backs the per-target lifetime promotion cap that bounds the
+        otherwise-unbounded campaign loop's cumulative exposure to the
+        multiple-comparisons inflation a continuous search accrues.
+        """
+        promotions = cast(campaign_history_table.c.snapshot["promotions"].astext, Integer)
+        statement = select(func.coalesce(func.sum(promotions), 0)).where(
+            campaign_history_table.c.snapshot["target"].astext == target
+        )
+        async with self._database.engine.connect() as connection:
             return int((await connection.execute(statement)).scalar_one())
 
     async def list(self, limit: int = 20) -> list[dict[str, Any]]:

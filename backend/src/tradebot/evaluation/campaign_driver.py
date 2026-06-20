@@ -101,6 +101,13 @@ class CampaignDriverConfig(BaseModel):
     refine_factor: float = Field(default=0.5, gt=0.0, lt=1.0)
     min_scale: float = Field(default=0.25, gt=0.0, le=1.0)
     cooldown_minutes: float = Field(default=30.0, gt=0.0)
+    max_lifetime_promotions_per_target: int = Field(default=0, ge=0)
+    """Per-target lifetime cap on auto-promotions across all campaigns; ``0``
+    disables it. Bounds the cumulative multiple-comparisons exposure of the
+    forever-running loop: past this many promotions for a target, its
+    campaigns still research but no longer change the live config (see
+    ``CampaignConfig.max_lifetime_promotions``)."""
+
     regime_routed: bool = True
     """How the ``production`` campaign grades its holdout — the regime router
     (the bot's real shape) when on, the trend family alone when off."""
@@ -124,6 +131,7 @@ class CampaignDriver:
         notify: Callable[[str], Awaitable[None]] | None = None,
         enabled: Callable[[], bool] | None = None,
         record: Callable[[CampaignStatus], Awaitable[None]] | None = None,
+        promotions_for: Callable[[str], Awaitable[int]] | None = None,
         funding_provider: FundingProvider | None = None,
     ) -> None:
         """Bind the driver to the worker's live state and apply paths.
@@ -133,8 +141,11 @@ class CampaignDriver:
         worker's journaled, paper-only apply path; ``confirm`` is the
         engine-backed veto. ``record`` persists each finished campaign to the
         durable history (the driver itself only holds the current one in
-        memory). Everything stateful arrives as a callable so each campaign
-        sees the world as it is when it runs.
+        memory). ``promotions_for`` reads that history back — a target's
+        lifetime auto-promotion count — to enforce the per-target promotion
+        cap; absent, the cap is simply never reached. Everything stateful
+        arrives as a callable so each campaign sees the world as it is when it
+        runs.
         """
         self._sweeps = sweeps
         self._store = store
@@ -148,6 +159,7 @@ class CampaignDriver:
         self._notify = notify
         self._enabled = enabled
         self._record = record
+        self._promotions_for = promotions_for
         self._funding_provider = funding_provider
         self._rotation = 0
         self._campaign: ResearchCampaign | None = None
@@ -198,12 +210,13 @@ class CampaignDriver:
         target = IMPROVEMENT_TARGETS[self._rotation % len(IMPROVEMENT_TARGETS)]
         symbol = symbols[(self._rotation // len(IMPROVEMENT_TARGETS)) % len(symbols)]
         self._rotation += 1
+        prior_promotions = await self._promotions_for(target) if self._promotions_for else 0
         campaign = self._assemble(target, symbol)
         # Publish the campaign before running it: run() populates its status
         # synchronously before its first await, so the live surface sees the
         # in-flight campaign rather than waiting hours for it to finish.
         self._campaign = campaign
-        await campaign.run(self._campaign_config(target, symbol))
+        await campaign.run(self._campaign_config(target, symbol, prior_promotions))
         status = campaign.status
         # Persist the finished campaign to the durable history. Best-effort:
         # the campaign already ran, so a history-write failure is logged and
@@ -243,8 +256,13 @@ class CampaignDriver:
             notify=self._notify,
         )
 
-    def _campaign_config(self, target: str, symbol: str) -> CampaignConfig:
-        """Project the driver config onto one campaign's ``CampaignConfig``."""
+    def _campaign_config(self, target: str, symbol: str, prior_promotions: int) -> CampaignConfig:
+        """Project the driver config onto one campaign's ``CampaignConfig``.
+
+        ``prior_promotions`` is the target's lifetime auto-promotion count from
+        earlier campaigns, so the per-target promotion cap binds across the
+        whole loop, not just within one campaign.
+        """
         config = self._config
         return CampaignConfig(
             target=target,
@@ -257,4 +275,6 @@ class CampaignDriver:
             max_hours=config.max_hours,
             refine_factor=config.refine_factor,
             min_scale=config.min_scale,
+            max_lifetime_promotions=config.max_lifetime_promotions_per_target,
+            prior_promotions=prior_promotions,
         )
