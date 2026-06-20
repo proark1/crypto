@@ -334,6 +334,7 @@ class ResearchCampaign:
                 advanced = await self._run_round(config, holdout_start, scale, status)
                 scale = 1.0 if advanced else scale * config.refine_factor
             status.holdout_read = await self._holdout_read(config, start_params, holdout_start)
+            await self._maybe_alert_revert(config, status.holdout_read)
             status.status = RunStatus.COMPLETED.value
             logger.info(
                 "research campaign on %s/%s completed: %d round(s), %d promotion(s) — %s",
@@ -526,6 +527,23 @@ class ResearchCampaign:
                 config.symbol,
             )
             return None
+
+    async def _maybe_alert_revert(
+        self, config: CampaignConfig, read: dict[str, Any] | None
+    ) -> None:
+        """Notify the operator when the holdout armed a revert (never auto-flip).
+
+        The read gates the alarm (a bootstrap-significant out-of-sample
+        regression), so this fires only on real evidence, not on a flat or
+        noisy move. It only *informs* — the config is never reverted
+        automatically; a human acts on the one-click revert the read armed.
+        """
+        if self._notify is None or read is None or not read.get("revert_armed"):
+            return
+        await self._notify(
+            f"campaign on {config.target}/{config.symbol}: the untouched holdout flagged an "
+            f"out-of-sample regression — revert armed for review. {read.get('explanation', '')}"
+        )
 
     async def _await_report(self, sweep_id: int) -> dict[str, Any] | None:
         """Poll until the sweep is terminal; ``None`` unless it completed."""
