@@ -6,7 +6,12 @@ deliberately ignorant of mode (backtest/paper/live), balances, and sizing;
 all of that belongs to the risk manager.
 """
 
+from tradebot.strategies.adx_trend import AdxTrendConfig, AdxTrendStrategy
 from tradebot.strategies.base import Strategy
+from tradebot.strategies.bollinger_reversion import (
+    BollingerReversionConfig,
+    BollingerReversionStrategy,
+)
 from tradebot.strategies.breakout import BreakoutConfig, BreakoutStrategy
 from tradebot.strategies.composite import CompositeStrategy
 from tradebot.strategies.controls import (
@@ -17,6 +22,7 @@ from tradebot.strategies.controls import (
     validate_control_params,
 )
 from tradebot.strategies.funding import FundingConfig, FundingProvider, FundingStrategy
+from tradebot.strategies.keltner import KeltnerConfig, KeltnerStrategy
 from tradebot.strategies.mean_reversion import MeanReversionConfig, MeanReversionStrategy
 from tradebot.strategies.momentum import MomentumConfig, MomentumStrategy
 from tradebot.strategies.router import RegimeStrategyRouter
@@ -26,12 +32,18 @@ from tradebot.strategies.trend_following import TrendFollowingConfig, TrendFollo
 
 __all__ = [
     "CONTROL_STRATEGIES",
+    "AdxTrendConfig",
+    "AdxTrendStrategy",
+    "BollingerReversionConfig",
+    "BollingerReversionStrategy",
     "BreakoutConfig",
     "BreakoutStrategy",
     "CompositeStrategy",
     "FundingConfig",
     "FundingProvider",
     "FundingStrategy",
+    "KeltnerConfig",
+    "KeltnerStrategy",
     "MeanReversionConfig",
     "MeanReversionStrategy",
     "MomentumConfig",

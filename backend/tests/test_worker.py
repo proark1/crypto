@@ -1181,6 +1181,9 @@ class TestCompetition:
             "momentum",
             "squeeze",
             "supertrend",
+            "bollinger_reversion",
+            "adx_trend",
+            "keltner",
             "funding",
         }
         # The trend challenger saw the same crossover production (bare trend
@@ -1223,7 +1226,7 @@ class TestCompetition:
         assert replayed.realized_pnl_quote() == traded.realized_pnl_quote()
         assert restarted.portfolio.quote_balance == first.portfolio.quote_balance
 
-    async def test_competition_snapshot_ranks_all_eight_accounts(self, database: Database) -> None:
+    async def test_competition_snapshot_ranks_all_eleven_accounts(self, database: Database) -> None:
         exchange = ScriptedExchange(CLOSES)
         worker = Worker(make_config(api_port=8923), database, exchange)
         exchange.worker = worker
@@ -1231,7 +1234,7 @@ class TestCompetition:
 
         rows = await worker.competition_snapshot()
 
-        assert len(rows) == 8  # production + seven challengers
+        assert len(rows) == 11  # production + ten challengers
         assert sum(1 for row in rows if row["is_production"]) == 1
         equities = [row["equity_quote"] for row in rows]
         assert all(equity is not None for equity in equities)

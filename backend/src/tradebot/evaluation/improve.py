@@ -31,8 +31,11 @@ from tradebot.evaluation.models import LearningFinding, RunStatus
 from tradebot.evaluation.runner import EvaluationRunConfig
 from tradebot.evaluation.sweep import DEFAULT_SCENARIO_COUNT, SweepCandidate, SweepConfig
 from tradebot.strategies import (
+    AdxTrendConfig,
+    BollingerReversionConfig,
     BreakoutConfig,
     FundingConfig,
+    KeltnerConfig,
     MeanReversionConfig,
     MomentumConfig,
     SqueezeConfig,
@@ -45,14 +48,23 @@ logger = logging.getLogger(__name__)
 PROMOTION_VERDICT = "validated"
 """The only sweep verdict that may change the traded configuration."""
 
-IMPROVEMENT_TARGETS = ("production", "breakout", "momentum", "squeeze", "supertrend", "funding")
+IMPROVEMENT_TARGETS = (
+    "production",
+    "breakout",
+    "momentum",
+    "squeeze",
+    "supertrend",
+    "bollinger_reversion",
+    "adx_trend",
+    "keltner",
+    "funding",
+)
 """What the loop improves, in rotation. ``production`` covers the regime-
 routed shape and therefore both of its families (trend following and mean
-reversion); ``breakout``, ``momentum``, ``squeeze``, and ``funding`` are the
-research families' solo competition accounts — tuning them sharpens the §13
-leaderboard evidence the §13.7 routing decision will be made on. Custom
-bots are absent on purpose: auto-tuning a user's recipe needs their opt-in
-(a later change)."""
+reversion); every other entry is a research family's solo competition
+account — tuning them sharpens the §13 leaderboard evidence the §13.7
+routing decision will be made on. Custom bots are absent on purpose:
+auto-tuning a user's recipe needs their opt-in (a later change)."""
 
 IMPROVEMENT_SCENARIO_COUNT = DEFAULT_SCENARIO_COUNT
 """Scenarios per candidate per period in automated research — the shared
@@ -954,6 +966,151 @@ def _supertrend_candidates(
     return _dedupe(raw, motivating)
 
 
+def _stop_variants(family: str, config: Any, scale: float) -> list[SweepCandidate]:
+    """Build the two shared stop-width variants every ATR-stop family carries."""
+    return [
+        SweepCandidate(
+            name="wider_stop",
+            family=family,
+            params=config.model_copy(
+                update={"atr_stop_multiple": round(config.atr_stop_multiple * _step(1.5, scale), 2)}
+            ).model_dump(),
+        ),
+        SweepCandidate(
+            name="tighter_stop",
+            family=family,
+            params=config.model_copy(
+                update={
+                    "atr_stop_multiple": max(
+                        0.5, round(config.atr_stop_multiple * _step(0.75, scale), 2)
+                    )
+                }
+            ).model_dump(),
+        ),
+    ]
+
+
+def _bollinger_reversion_candidates(
+    active: Mapping[str, Mapping[str, Any]],
+    findings: Sequence[tuple[int, str]],
+    scale: float = 1.0,
+) -> tuple[tuple[SweepCandidate, ...], tuple[int, ...]]:
+    """Build the Bollinger-reversion grid: band-width variants plus the stop.
+
+    The defining knob is ``num_stddev`` — how stretched a move must be to
+    count as oversold. A *wider* band demands a more extreme stretch (fewer,
+    higher-conviction entries); a *tighter* one triggers on milder dips.
+    """
+    config = BollingerReversionConfig(**active.get("bollinger_reversion", {}))
+    raw: list[SweepCandidate] = [
+        SweepCandidate(
+            name="active_bollinger_reversion",
+            family="bollinger_reversion",
+            params=config.model_dump(),
+        ),
+        SweepCandidate(
+            name="wider_band",
+            family="bollinger_reversion",
+            params=config.model_copy(
+                update={"num_stddev": round(config.num_stddev * _step(1.25, scale), 2)}
+            ).model_dump(),
+        ),
+        SweepCandidate(
+            name="tighter_band",
+            family="bollinger_reversion",
+            params=config.model_copy(
+                update={"num_stddev": max(0.5, round(config.num_stddev * _step(0.8, scale), 2))}
+            ).model_dump(),
+        ),
+        *_stop_variants("bollinger_reversion", config, scale),
+    ]
+    return _dedupe(raw, [])
+
+
+def _adx_trend_candidates(
+    active: Mapping[str, Mapping[str, Any]],
+    findings: Sequence[tuple[int, str]],
+    scale: float = 1.0,
+) -> tuple[tuple[SweepCandidate, ...], tuple[int, ...]]:
+    """Build the ADX-trend grid: trend-strength gate variants plus the stop.
+
+    The defining knob is ``adx_threshold`` — the minimum trend strength an
+    entry requires. A *higher* gate demands a stronger trend (fewer entries,
+    less chop); a *lower* one admits weaker trends (more entries).
+    """
+    config = AdxTrendConfig(**active.get("adx_trend", {}))
+    raw: list[SweepCandidate] = [
+        SweepCandidate(
+            name="active_adx_trend",
+            family="adx_trend",
+            params=config.model_dump(),
+        ),
+        SweepCandidate(
+            name="stricter_gate",
+            family="adx_trend",
+            params=config.model_copy(
+                update={"adx_threshold": round(config.adx_threshold * _step(1.25, scale), 1)}
+            ).model_dump(),
+        ),
+        SweepCandidate(
+            name="looser_gate",
+            family="adx_trend",
+            params=config.model_copy(
+                update={
+                    "adx_threshold": max(5.0, round(config.adx_threshold * _step(0.8, scale), 1))
+                }
+            ).model_dump(),
+        ),
+        *_stop_variants("adx_trend", config, scale),
+    ]
+    return _dedupe(raw, [])
+
+
+def _keltner_candidates(
+    active: Mapping[str, Mapping[str, Any]],
+    findings: Sequence[tuple[int, str]],
+    scale: float = 1.0,
+) -> tuple[tuple[SweepCandidate, ...], tuple[int, ...]]:
+    """Build the Keltner grid: channel-width variants plus the stop.
+
+    The defining knob is ``channel_atr_multiple`` — how far price must thrust
+    to break out. A *wider* channel demands a stronger thrust (fewer, later
+    entries); a *tighter* one triggers on milder breaks.
+    """
+    config = KeltnerConfig(**active.get("keltner", {}))
+    raw: list[SweepCandidate] = [
+        SweepCandidate(
+            name="active_keltner",
+            family="keltner",
+            params=config.model_dump(),
+        ),
+        SweepCandidate(
+            name="wider_channel",
+            family="keltner",
+            params=config.model_copy(
+                update={
+                    "channel_atr_multiple": round(
+                        config.channel_atr_multiple * _step(1.5, scale), 2
+                    )
+                }
+            ).model_dump(),
+        ),
+        SweepCandidate(
+            name="tighter_channel",
+            family="keltner",
+            params=config.model_copy(
+                update={
+                    "channel_atr_multiple": max(
+                        0.5, round(config.channel_atr_multiple * _step(0.75, scale), 2)
+                    )
+                }
+            ).model_dump(),
+        ),
+        *_stop_variants("keltner", config, scale),
+    ]
+    return _dedupe(raw, [])
+
+
 def build_candidates_for(
     target: str,
     active: Mapping[str, Mapping[str, Any]],
@@ -980,6 +1137,12 @@ def build_candidates_for(
         return _squeeze_candidates(active, findings, scale)
     if target == "supertrend":
         return _supertrend_candidates(active, findings, scale)
+    if target == "bollinger_reversion":
+        return _bollinger_reversion_candidates(active, findings, scale)
+    if target == "adx_trend":
+        return _adx_trend_candidates(active, findings, scale)
+    if target == "keltner":
+        return _keltner_candidates(active, findings, scale)
     if target == "funding":
         return _funding_candidates(active, findings, scale)
     raise ValueError(f"no improvement grid for {target!r}; known: {IMPROVEMENT_TARGETS}")
@@ -1007,6 +1170,12 @@ def _single_family_grid(
         return _squeeze_candidates(active, findings, scale)
     if family == "supertrend":
         return _supertrend_candidates(active, findings, scale)
+    if family == "bollinger_reversion":
+        return _bollinger_reversion_candidates(active, findings, scale)
+    if family == "adx_trend":
+        return _adx_trend_candidates(active, findings, scale)
+    if family == "keltner":
+        return _keltner_candidates(active, findings, scale)
     if family == "funding":
         return _funding_candidates(active, findings, scale)
     candidates, motivating = build_improvement_candidates(active, findings, scale)

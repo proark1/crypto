@@ -36,6 +36,9 @@ FAMILY_DESCRIPTIONS: Mapping[str, str] = {
     "momentum": "buys when upward momentum accelerates (MACD turns bullish)",
     "squeeze": "buys when price breaks upward out of a volatility squeeze (a coiled, quiet range)",
     "supertrend": "buys when the ATR-band supertrend flips up, exits when it flips back down",
+    "bollinger_reversion": "buys the recovery off the lower Bollinger band, exits at the basis",
+    "adx_trend": "buys a +DI cross-up confirmed by a strong ADX, exits when direction flips down",
+    "keltner": "buys a break above the upper Keltner channel, exits back at the basis",
     "funding": "buys when perpetual funding is deeply negative (crowded shorts), exits on recovery",
 }
 """Plain-words one-liners per family, shared by the builder UI and the
