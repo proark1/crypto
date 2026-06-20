@@ -359,6 +359,31 @@ class TestResearchCampaign:
 
         assert [config.seed for config in sweeps.started] == [3000, 3001]
 
+    async def test_lifetime_promotion_cap_freezes_promotion_but_keeps_researching(self) -> None:
+        # The per-target lifetime cap is already reached by earlier campaigns:
+        # a validated, confirmable winner is researched (the round is recorded)
+        # but never applied to the live config.
+        campaign, _sweeps, bot, _provider = _campaign([_validated()])
+
+        await campaign.run(_config(max_rounds=1, max_lifetime_promotions=2, prior_promotions=2))
+
+        assert bot.promotions == []  # cap reached: nothing applied
+        assert campaign.status is not None
+        assert campaign.status.promotions == 0
+        assert "lifetime promotion cap reached" in campaign.status.rounds[0].note
+
+    async def test_the_cap_counts_this_campaigns_own_promotions(self) -> None:
+        # cap=1, no prior: the first validated winner promotes, the second is
+        # frozen — the bound is cumulative within the campaign too, not just
+        # across campaigns.
+        campaign, _sweeps, bot, _provider = _campaign([_validated(), _validated()])
+
+        await campaign.run(_config(max_rounds=2, max_lifetime_promotions=1))
+
+        assert len(bot.promotions) == 1
+        assert campaign.status is not None and campaign.status.promotions == 1
+        assert "lifetime promotion cap reached" in campaign.status.rounds[1].note
+
     async def test_holdout_read_is_skipped_without_a_grader(self) -> None:
         campaign, _sweeps, _bot, _provider = _campaign([_kept("overfit")])
 

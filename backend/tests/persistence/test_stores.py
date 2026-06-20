@@ -660,6 +660,29 @@ class TestCampaignHistoryStore:
         with pytest.raises(ValueError, match="naive datetime"):
             await store.record({"target": "x"}, datetime(2026, 1, 1))  # naive boundary
 
+    async def test_lifetime_promotions_sums_per_target(self, database: Database) -> None:
+        from tradebot.persistence import CampaignHistoryStore
+
+        store = CampaignHistoryStore(database)
+        assert await store.lifetime_promotions("momentum") == 0  # no history yet
+
+        def snap(target: str, promotions: int) -> dict[str, object]:
+            return {
+                "target": target,
+                "symbol": "BTC/USDT",
+                "status": "completed",
+                "promotions": promotions,
+                "rounds": [],
+            }
+
+        await store.record(snap("momentum", 2), BASE_TIME)
+        await store.record(snap("momentum", 1), BASE_TIME + timedelta(hours=1))
+        await store.record(snap("production", 5), BASE_TIME + timedelta(hours=2))
+
+        assert await store.lifetime_promotions("momentum") == 3  # 2 + 1, momentum only
+        assert await store.lifetime_promotions("production") == 5
+        assert await store.lifetime_promotions("breakout") == 0  # never ran
+
 
 class TestRiskStateStore:
     async def test_round_trip_preserves_state_and_paused_symbols(self, database: Database) -> None:

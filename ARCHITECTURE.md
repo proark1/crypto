@@ -879,7 +879,15 @@ A **driver** runs campaigns continuously across the same target rotation
 (production, then each research family), one at a time — the loop is
 sequential, so it never contends with itself for the single research lane,
 and a round whose sweep loses that lane to a human-started sweep refines and
-retries. When enabled the campaign **supersedes** the single-sweep
+retries. Because the loop runs forever, its cumulative multiple-comparisons
+exposure has an outer bound too: an optional **per-target lifetime promotion
+cap** (`campaign_max_lifetime_promotions_per_target`, `0` = off) sums a
+target's auto-promotions across all its campaigns from the durable history,
+and once that count is reached the target's campaigns keep *researching* but
+no longer *apply* — a validated, engine-confirmed winner is recorded and the
+search refines, but the live config is frozen until a human reviews the
+accumulated evidence and promotes manually or raises the cap. The lifetime
+count and cap surface on the campaign status (`GET /campaign`). When enabled the campaign **supersedes** the single-sweep
 auto-improver (they share the one lane); when off — the default — nothing
 changes. Same scope as everything else here: this paper-only worker
 promotes through the journaled, revertible apply path, and the campaign's

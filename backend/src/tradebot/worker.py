@@ -207,6 +207,11 @@ def _campaign_snapshot(status: CampaignStatus | None) -> dict[str, Any] | None:
         "symbol": status.config.symbol,
         "status": status.status,
         "promotions": status.promotions,
+        # The cross-campaign cumulative-trials read: this target's lifetime
+        # auto-promotions (earlier campaigns plus this one) against the cap
+        # that freezes promotions while research continues (0 = uncapped).
+        "lifetime_promotions": status.config.prior_promotions + status.promotions,
+        "max_lifetime_promotions": status.config.max_lifetime_promotions,
         "stop_reason": status.stop_reason,
         "holdout_start": status.holdout_start,
         "started_at": status.started_at,
@@ -2797,11 +2802,15 @@ class Worker:
                 refine_factor=self.config.campaign_refine_factor,
                 min_scale=self.config.campaign_min_scale,
                 cooldown_minutes=self.config.campaign_cooldown_minutes,
+                max_lifetime_promotions_per_target=(
+                    self.config.campaign_max_lifetime_promotions_per_target
+                ),
                 regime_routed=self.regime_detector is not None,
             ),
             notify=self._notify,
             enabled=lambda: self._campaign_enabled,
             record=self._record_campaign,
+            promotions_for=self.campaign_history_store.lifetime_promotions,
             funding_provider=self._funding_series,
         )
         self._campaign_driver = driver
