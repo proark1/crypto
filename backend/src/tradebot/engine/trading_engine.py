@@ -450,10 +450,25 @@ class TradingEngine:
         but the journal does not would vanish on restart, which is exactly
         the gap this store closes. A journal write failure therefore aborts
         the submission.
+
+        If the submission fails (journal write error, or a live venue
+        rejecting the order), the entry's committed notional is released
+        before re-raising. The risk manager commits that notional against
+        account exposure and spendable balance the instant it sizes an
+        entry, on the assumption the engine always submits an approved
+        order; a failed submission breaks that assumption, and without the
+        release the commitment would leak forever, throttling every future
+        entry across all symbols against phantom exposure until the account
+        silently sized to zero. Releasing a non-entry id (an exit/stop that
+        never committed) is a harmless no-op.
         """
-        if self._order_store is not None:
-            await self._order_store.record_submitted(order)
-        await self._adapter.submit(order)
+        try:
+            if self._order_store is not None:
+                await self._order_store.record_submitted(order)
+            await self._adapter.submit(order)
+        except Exception:
+            self._risk_manager.on_order_cancelled(order.client_order_id)
+            raise
         if order.protective_exit is not None:
             self._submitted_entries[order.client_order_id] = order
 

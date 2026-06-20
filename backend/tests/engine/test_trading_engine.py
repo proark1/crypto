@@ -326,6 +326,49 @@ class TestPaperFlowOverBus:
             await engine.process_candle(make_candle(1, 100.0, symbol="ETH/USDT"))
 
 
+class TestEntrySubmissionFailure:
+    """A submission that raises must not leak the entry's committed notional."""
+
+    async def test_failed_entry_submission_releases_committed_notional(self) -> None:
+        """The risk manager commits an entry's notional against account
+        exposure the instant it sizes the order. If submission then fails
+        (venue rejection, journal write error), the commitment must be
+        released — otherwise it leaks forever and every future entry across
+        all symbols sizes against phantom exposure until the account starves.
+        """
+
+        class RejectingAdapter(SimulatedExecutionAdapter):
+            """A venue that rejects every entry at submission time."""
+
+            async def submit(self, order: Order) -> None:
+                if order.side == Side.BUY:
+                    raise RuntimeError("venue rejected the order")
+                await super().submit(order)
+
+        portfolio = Portfolio(INITIAL_BALANCE)
+        risk = RiskManager(RiskConfig(), portfolio)
+        engine = TradingEngine(
+            TrendFollowingStrategy(
+                TrendFollowingConfig(fast_ema_period=3, slow_ema_period=6, atr_period=3)
+            ),
+            risk,
+            portfolio,
+            RejectingAdapter(FillSimulatorConfig()),
+            symbol="BTC/USDT",
+        )
+
+        with pytest.raises(RuntimeError, match="venue rejected"):
+            for index, close in enumerate(CLOSES):
+                await engine.process_candle(make_candle(index, close))
+
+        # Nothing reached the venue and no position opened, so the account
+        # must hold zero committed entry notional — not a phantom claim that
+        # would throttle the next entry.
+        assert risk._committed_entries_quote == {}
+        assert portfolio.position("BTC/USDT") is None
+        assert portfolio.quote_balance == INITIAL_BALANCE
+
+
 class TestCircuitBreakerWiring:
     """The engine feeds the breakers; the breakers gate entries in the loop."""
 
