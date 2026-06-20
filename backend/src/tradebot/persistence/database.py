@@ -88,7 +88,9 @@ orders_table = Table(
     "orders",
     metadata,
     Column("client_order_id", Text, primary_key=True),
-    Column("bot_id", Text, nullable=False, server_default="production", index=True),
+    Column(
+        "bot_id", Text, primary_key=True, nullable=False, server_default="production", index=True
+    ),
     Column("signal_id", Text, nullable=False),
     Column("symbol", Text, nullable=False, index=True),
     Column("side", Text, nullable=False),
@@ -108,8 +110,12 @@ orders_table = Table(
 """Every order intent the engine ever submitted, with its latest known state
 (open / filled / cancelled) — the recovery source for in-flight orders, so a
 restart can re-arm the paper adapter instead of silently dropping them.
-Keyed by ``client_order_id``: ids are deterministic per intent, so the same
-intent resubmitted after a cancel reopens its row rather than duplicating it.
+Keyed by the composite ``(client_order_id, bot_id)``: the table is shared
+across every competition account, and ids are only deterministic *within* a
+bot's signal-id namespace, so keying on the id alone would let one bot's
+order silently overwrite another's (and its protective exit plan). The same
+intent resubmitted after a cancel reopens its own row rather than duplicating
+it; an existing single-column-PK database is widened in place at startup.
 ``triggered`` latches a stop-limit whose stop has crossed (the order behaves
 as a plain limit from then on, exactly like a real exchange), so a restart
 cannot un-trigger a stop. The ``protective_*`` columns flatten an entry's
@@ -416,6 +422,37 @@ def _add_missing_columns(connection: Connection, schema_metadata: MetaData = met
             )
 
 
+def _widen_orders_primary_key(connection: Connection) -> None:
+    """Widen the orders primary key to (client_order_id, bot_id) in place.
+
+    The orders table once keyed on ``client_order_id`` alone; the competition
+    made it a *shared* table where that id is only unique within a bot's
+    signal-id namespace, so the key must include ``bot_id`` or one bot's order
+    could silently overwrite another's (and its protective stop plan).
+    ``create_all`` builds new databases with the composite key directly; this
+    widens an existing single-column-PK database. It is the one sanctioned
+    in-place key change because it is safe *by construction* — a wider key can
+    never be violated by rows a narrower one already kept unique — so unlike a
+    genuine destructive migration it needs no Alembic ceremony.
+    """
+    inspector = inspect(connection)
+    if "orders" not in inspector.get_table_names():
+        return  # create_all just built it with the composite key
+    primary_key = inspector.get_pk_constraint("orders")
+    if primary_key.get("constrained_columns") != ["client_order_id"]:
+        return  # already the composite key (fresh build or prior widen)
+    constraint_name = primary_key["name"]
+    connection.execute(text(f'ALTER TABLE orders DROP CONSTRAINT "{constraint_name}"'))
+    connection.execute(text("ALTER TABLE orders ADD PRIMARY KEY (client_order_id, bot_id)"))
+    log_event(
+        logger,
+        logging.WARNING,
+        "orders_primary_key_widened",
+        old="client_order_id",
+        new="client_order_id,bot_id",
+    )
+
+
 _SYNC_SCHEME_PREFIXES = (
     "postgres://",
     "postgresql://",
@@ -472,13 +509,15 @@ class Database:
         database, and the first INSERT naming it would crash the worker.
         This sync closes that gap for the only schema evolution this
         project allows: **additive** changes (new tables, new nullable or
-        server-defaulted columns). Anything destructive — drops, renames,
-        type changes, NOT NULL without a server default — is refused
+        server-defaulted columns), plus the one provably-safe key *widening*
+        below (the orders composite key). Anything destructive — drops,
+        renames, type changes, NOT NULL without a server default — is refused
         loudly and means it is time to adopt real migrations (Alembic).
         """
         async with self._engine.begin() as connection:
             await connection.run_sync(metadata.create_all)
             await connection.run_sync(_add_missing_columns)
+            await connection.run_sync(_widen_orders_primary_key)
 
     async def __aenter__(self) -> Database:
         """Enter context: the engine connects lazily, nothing to do yet."""

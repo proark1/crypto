@@ -494,10 +494,13 @@ class OrderStore:
     async def record_submitted(self, order: Order) -> None:
         """Journal ``order`` as open, before the adapter accepts it.
 
-        Upsert by ``client_order_id``: ids are deterministic per intent, so
-        resubmitting a previously cancelled intent (e.g. the kill switch run
-        twice on the same candle) legitimately reopens its row. An intent
-        that ever filled is kept out of restoration by :meth:`fetch_open`'s
+        Upsert by the composite ``(bot_id, client_order_id)``: ids are
+        deterministic per intent but only unique within a bot's namespace, so
+        the conflict target must include ``bot_id`` or one bot's resubmit
+        would overwrite another bot's order with the same id. Resubmitting a
+        previously cancelled intent (e.g. the kill switch run twice on the
+        same candle) legitimately reopens *this bot's* row. An intent that
+        ever filled is kept out of restoration by :meth:`fetch_open`'s
         fill-journal guard, not by refusing the write here.
         """
         row = order.model_dump(exclude={"protective_exit"})
@@ -515,10 +518,11 @@ class OrderStore:
         # must carry the values the adapter is actually working with. The
         # SET clause references the excluded (inserted) row so the statement
         # shape stays constant and plan-cacheable.
+        key = {"bot_id", "client_order_id"}
         statement = pg_insert(orders_table)
         statement = statement.on_conflict_do_update(
-            index_elements=["client_order_id"],
-            set_={name: statement.excluded[name] for name in row if name != "client_order_id"},
+            index_elements=["client_order_id", "bot_id"],
+            set_={name: statement.excluded[name] for name in row if name not in key},
         )
         async with self._database.engine.begin() as connection:
             await connection.execute(statement, [row])
@@ -540,7 +544,10 @@ class OrderStore:
         """
         statement = (
             orders_table.update()
-            .where(orders_table.c.client_order_id == client_order_id)
+            .where(
+                orders_table.c.bot_id == self._bot_id,
+                orders_table.c.client_order_id == client_order_id,
+            )
             .values(triggered=True)
         )
         async with self._database.engine.begin() as connection:
@@ -550,7 +557,10 @@ class OrderStore:
         _require_aware(at)
         statement = (
             orders_table.update()
-            .where(orders_table.c.client_order_id == client_order_id)
+            .where(
+                orders_table.c.bot_id == self._bot_id,
+                orders_table.c.client_order_id == client_order_id,
+            )
             .values(status=status.value, status_at=at)
         )
         async with self._database.engine.begin() as connection:
@@ -571,6 +581,10 @@ class OrderStore:
                 fills_table.c.client_order_id,
                 func.sum(fills_table.c.quantity_base).label("filled_base"),
             )
+            # Scope to this bot: the fills table is shared, and grouping a
+            # client_order_id across all bots would mis-count the remainder
+            # when two accounts ever share an id.
+            .where(fills_table.c.bot_id == self._bot_id)
             .group_by(fills_table.c.client_order_id)
             .subquery()
         )
@@ -613,7 +627,10 @@ class OrderStore:
         """
         has_fill = (
             select(fills_table.c.id)
-            .where(fills_table.c.client_order_id == orders_table.c.client_order_id)
+            .where(
+                fills_table.c.bot_id == self._bot_id,
+                fills_table.c.client_order_id == orders_table.c.client_order_id,
+            )
             .exists()
         )
         statement = (
