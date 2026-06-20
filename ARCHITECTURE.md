@@ -727,8 +727,13 @@ data it was tuned on is overfit, and the report says so explicitly.
 Because a grid of N candidates gets N chances at a lucky winner, a
 challenger is only called *validated* when its edge over the baseline
 clears a one-sided bootstrap test at the Bonferroni-corrected
-significance level; every candidate's expectancy also carries a 95%
-bootstrap confidence interval. Accepted findings link to the config
+significance level **and** that edge *persists* across the walk-forward —
+the challenger must beat the baseline in a strict majority of the
+validation windows, not merely on the pooled average. An edge concentrated
+in one lucky stretch (which lifts the pooled average while losing the other
+windows) is rejected as overfit rather than promoted: pooled significance
+alone cannot see that concentration. Every candidate's expectancy also
+carries a 95% bootstrap confidence interval. Accepted findings link to the config
 change they motivated, so every strategy version carries its lineage:
 what changed, why, and whether validation confirmed it.
 
