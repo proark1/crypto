@@ -62,6 +62,8 @@ from tradebot.strategies import (
     SqueezeConfig,
     SqueezeStrategy,
     Strategy,
+    SupertrendConfig,
+    SupertrendStrategy,
     TrendFollowingConfig,
     TrendFollowingStrategy,
 )
@@ -87,17 +89,19 @@ STRATEGY_FAMILIES: Mapping[str, tuple[type[BaseModel], Callable[..., Strategy]]]
     "breakout": (BreakoutConfig, BreakoutStrategy),
     "momentum": (MomentumConfig, MomentumStrategy),
     "squeeze": (SqueezeConfig, SqueezeStrategy),
+    "supertrend": (SupertrendConfig, SupertrendStrategy),
     "funding": (FundingConfig, FundingStrategy),
 }
 """Sweepable families: name -> (config model, strategy constructor). A
 candidate names its family, so one sweep can pit families against each
-other on identical scenarios. ``breakout``, ``momentum``, ``squeeze``, and
-``funding`` are research families: sweeps, evaluation, the §12.7 improvement
-rotation, and the strategy competition all grade and tune them — promotions
-change what their solo competition accounts trade — but production routing
-(which regime activates them, at whose expense) remains the §13.7 human
-decision. ``funding`` reads a per-candle funding rate from an injected
-provider (see ``build_candidate_strategy``); built without one it is inert."""
+other on identical scenarios. ``breakout``, ``momentum``, ``squeeze``,
+``supertrend``, and ``funding`` are research families: sweeps, evaluation,
+the §12.7 improvement rotation, and the strategy competition all grade and
+tune them — promotions change what their solo competition accounts trade —
+but production routing (which regime activates them, at whose expense)
+remains the §13.7 human decision. ``funding`` reads a per-candle funding rate
+from an injected provider (see ``build_candidate_strategy``); built without
+one it is inert."""
 
 
 def validate_family_params(family: str, params: Mapping[str, Any]) -> None:

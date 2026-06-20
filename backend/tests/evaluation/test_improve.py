@@ -234,20 +234,21 @@ class TestAutoImprover:
             "breakout",
             "momentum",
             "squeeze",
+            "supertrend",
             "funding",
             "trend_following",
             "breakout",
             "momentum",
             "squeeze",
-            "funding",
         ]
+        # Six targets now, so the symbol advances after every sixth cycle.
         assert [config.symbol for config in sweeps.configs] == [
             "BTC/USDT",
             "BTC/USDT",
             "BTC/USDT",
             "BTC/USDT",
             "BTC/USDT",
-            "ETH/USDT",
+            "BTC/USDT",
             "ETH/USDT",
             "ETH/USDT",
             "ETH/USDT",
