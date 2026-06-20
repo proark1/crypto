@@ -114,8 +114,29 @@ LINEUP: tuple[CompetitorSpec, ...] = (
         risk_state_row_id=8,
         description="Buys when the ATR-band supertrend flips up, exits when it flips down.",
     ),
+    CompetitorSpec(
+        bot_id="bollinger_reversion",
+        label="Bollinger reversion",
+        family="bollinger_reversion",
+        risk_state_row_id=9,
+        description="Buys the recovery off the lower Bollinger band, exits at the basis.",
+    ),
+    CompetitorSpec(
+        bot_id="adx_trend",
+        label="ADX trend",
+        family="adx_trend",
+        risk_state_row_id=10,
+        description="Buys a +DI cross-up confirmed by a strong ADX, exits when it flips down.",
+    ),
+    CompetitorSpec(
+        bot_id="keltner",
+        label="Keltner breakout",
+        family="keltner",
+        risk_state_row_id=11,
+        description="Buys a break above the upper Keltner channel, exits back at the basis.",
+    ),
 )
-"""Eight bots, eight strategies. Order is leaderboard display order before
+"""Eleven bots, eleven strategies. Order is leaderboard display order before
 ranking; ``risk_state_row_id`` values are append-only — a removed entry's
 row id is never reused."""
 

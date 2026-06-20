@@ -45,18 +45,18 @@ def make_candle(index: int, close: float) -> Candle:
 
 
 class TestLineup:
-    def test_eight_competitors_with_unique_stable_identities(self) -> None:
-        assert len(LINEUP) == 8
+    def test_eleven_competitors_with_unique_stable_identities(self) -> None:
+        assert len(LINEUP) == 11
         bot_ids = [spec.bot_id for spec in LINEUP]
-        assert len(set(bot_ids)) == 8
+        assert len(set(bot_ids)) == 11
         assert PRODUCTION_BOT_ID in bot_ids
-        assert "supertrend" in bot_ids
+        assert {"supertrend", "bollinger_reversion", "adx_trend", "keltner"} <= set(bot_ids)
         # Risk-state rows must never collide: each account's brakes are
         # persisted under its fixed row id.
         row_ids = [spec.risk_state_row_id for spec in LINEUP]
-        assert len(set(row_ids)) == 8
+        assert len(set(row_ids)) == 11
         assert spec_for(PRODUCTION_BOT_ID).risk_state_row_id == 1
-        assert spec_for("supertrend").risk_state_row_id == 8
+        assert spec_for("keltner").risk_state_row_id == 11
 
     def test_funding_challenger_trades_on_the_injected_series(self) -> None:
         # The funding bot is inert without a provider; given one, it trades —
