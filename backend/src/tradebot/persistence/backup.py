@@ -26,7 +26,8 @@ from urllib.parse import quote
 
 import httpx
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import select
+from sqlalchemy import Integer, select, text
+from sqlalchemy.ext.asyncio import AsyncConnection
 
 from tradebot.core.logging import log_event
 from tradebot.persistence.database import Database, metadata
@@ -99,7 +100,50 @@ async def restore_tables(database: Database, archive: bytes) -> dict[str, int]:
             typed_rows = [_coerce_row(table, row) for row in rows]
             await connection.execute(table.insert(), typed_rows)
             counts[table.name] = len(rows)
+        # Restore inserts rows with their original ids, which does NOT advance
+        # the owning sequences — so the next autoincrement INSERT (e.g. the
+        # first paper fill after recovery) would reuse id=1 and collide on the
+        # primary key, crashing the recovered bot on its very first trade. Bump
+        # every autoincrement sequence past the ids just restored.
+        await _reset_autoincrement_sequences(connection)
     return counts
+
+
+async def _reset_autoincrement_sequences(connection: AsyncConnection) -> None:
+    """Advance each autoincrement PK sequence past the restored max id.
+
+    Iterates the schema's single-column integer primary keys (the surrogate
+    ``id`` columns) and, for any backed by a Postgres sequence, sets that
+    sequence so the next ``nextval`` is ``max(id) + 1`` — or the sequence's
+    start when the table is empty. ``pg_get_serial_sequence`` returns NULL for
+    keys with no owned sequence (none today, but defensive), in which case the
+    row is filtered out and nothing happens. Table and column names come from
+    our own metadata, never user input, so identifier interpolation is safe.
+    """
+    for table in metadata.sorted_tables:
+        primary_key_columns = list(table.primary_key.columns)
+        if len(primary_key_columns) != 1:
+            continue  # composite keys (candles, funding_rates) own no sequence
+        column = primary_key_columns[0]
+        if not isinstance(column.type, Integer):  # BigInteger subclasses Integer
+            continue
+        # setval(seq, value, is_called): is_called=true means the next nextval
+        # returns value+1 (use max id for a populated table); is_called=false
+        # returns value itself (rewind an empty table to its start).
+        await connection.execute(
+            text(
+                f'''
+                SELECT setval(
+                    sequence_name,
+                    GREATEST(COALESCE((SELECT MAX("{column.name}") FROM "{table.name}"), 0), 1),
+                    (SELECT MAX("{column.name}") IS NOT NULL FROM "{table.name}")
+                )
+                FROM (SELECT pg_get_serial_sequence(:table_name, :column_name) AS sequence_name) s
+                WHERE sequence_name IS NOT NULL
+                '''
+            ),
+            {"table_name": table.name, "column_name": column.name},
+        )
 
 
 def _coerce_row(table: Any, row: dict[str, Any]) -> dict[str, Any]:
