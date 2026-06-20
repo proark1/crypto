@@ -859,7 +859,15 @@ class TradingEngine:
                     stop_order.quantity_base,
                 )
         if fill.side == Side.SELL:
-            if fill.client_order_id == self._pending_exit_order:
+            if fill.client_order_id == self._pending_exit_order and completed:
+                # Only a *fully* filled exit clears the single-exit latch. A
+                # partial exit fill (a volume-capped market SELL on a thin
+                # candle, or a live partial) leaves the order still working, so
+                # the latch must stay set: clearing it on the first partial
+                # would let the next candle's strategy SELL — or the stop
+                # backstop — size a second order against the still-open
+                # position and sell it short, the exact double-sell the latch
+                # exists to prevent (ARCHITECTURE.md 4.4).
                 self._pending_exit_order = None
             if self._portfolio.position(fill.symbol) is None:
                 # Flat again: nothing left to protect or ratchet.
