@@ -382,6 +382,28 @@ class TestExecutionFidelity:
         (fill,) = collector.fills
         assert fill.price_quote == Decimal("100.5")  # 100 x (1 + 0.01 x 0.5)
 
+    async def test_extreme_volume_impact_cannot_drive_a_sell_fill_non_positive(self) -> None:
+        """A pathological volume_impact_bps must not crash the fill handler.
+
+        Without the slippage cap, a SELL priced at open x (1 - slip) went to
+        zero or negative once modeled slippage reached 100%, which a Fill
+        (price_quote > 0) rejects. The cap keeps the fill strictly positive.
+        """
+        adapter, collector = make_adapter(
+            FillSimulatorConfig(
+                maker_fee_bps=Decimal(0),
+                taker_fee_bps=Decimal(0),
+                market_slippage_bps=Decimal(0),
+                volume_impact_bps=Decimal(2_000_000),  # 200x per whole candle: absurd
+            )
+        )
+        await adapter.submit(make_order(Side.SELL, OrderType.MARKET, quantity="10"))  # whole candle
+        await adapter.process_candle(make_candle())  # priced the sell <= 0 before the cap
+
+        (fill,) = collector.fills
+        assert fill.price_quote > 0  # strictly positive: no crash
+        assert fill.price_quote == Decimal("5")  # 100 x (1 - 0.95), the clamped floor
+
     async def test_latency_delays_activation_by_n_candles(self) -> None:
         adapter, collector = make_adapter(FillSimulatorConfig(submit_latency_candles=2))
         await adapter.submit(make_order())

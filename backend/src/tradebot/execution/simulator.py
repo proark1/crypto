@@ -40,6 +40,10 @@ from tradebot.core.models import ACCOUNTING_RESOLUTION, Candle, Fill, Order, Ord
 from tradebot.execution.adapter import FillHandler
 
 _BPS_DIVISOR = Decimal(10_000)
+_MAX_SLIPPAGE_FRACTION = Decimal("0.95")
+"""Hard ceiling on modeled slippage, so a SELL fill price stays strictly
+positive (a Fill rejects price_quote <= 0). Far above any realistic fill;
+it only ever binds on a pathological volume_impact_bps config."""
 
 # A fat-finger guard, not a market rule: no spot venue charges 10% a side, so
 # a value above this is almost certainly a units mistake (percent vs bps).
@@ -268,6 +272,13 @@ class SimulatedExecutionAdapter:
             slip += (self._config.volume_impact_bps / _BPS_DIVISOR) * (
                 quantity / candle.volume_base
             )
+        # Cap modeled slippage below 100%: a pathological volume_impact_bps on a
+        # thin candle could otherwise drive a SELL fill (open * (1 - slip)) to
+        # zero or negative, which a Fill (price_quote > 0) rejects — crashing
+        # the fill handler. Real fills never execute at a non-positive price, so
+        # clamp the model at its extreme. Default/sane configs (slip well under
+        # 1) are untouched, and the golden backtest is unaffected.
+        slip = min(slip, _MAX_SLIPPAGE_FRACTION)
         direction = 1 if order.side == Side.BUY else -1
         price = (candle.open_quote * (1 + direction * slip)).quantize(
             ACCOUNTING_RESOLUTION, rounding=ROUND_HALF_EVEN
