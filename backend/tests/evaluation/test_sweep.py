@@ -136,6 +136,59 @@ class TestValidationVerdict:
         assert "too few to test" in explanation
         assert significance["p_value"] is None
 
+    def test_an_edge_concentrated_in_one_window_is_overfit_not_validated(self) -> None:
+        """Pooled significance is not enough: a real edge must persist across
+        windows, not live in one lucky stretch that lifts the pooled average."""
+        # The winner clears the pooled significance test (as in the validated
+        # case), but per-window it beats the baseline in only 1 of 3 windows.
+        baseline_windows = [
+            score("baseline", enough("0.1")),
+            score("baseline", enough("0.5")),
+            score("baseline", enough("0.5")),
+        ]
+        winner_windows = [
+            score("challenger", enough("0.6")),  # wins this window
+            score("challenger", enough("0.1")),  # loses
+            score("challenger", enough("0.1")),  # loses
+        ]
+        verdict, explanation, significance = validation_verdict(
+            baseline=score("baseline", enough("0.1")),
+            winner=score("challenger", enough("0.4")),
+            comparisons=4,
+            seed=7,
+            baseline_by_window=baseline_windows,
+            winner_by_window=winner_windows,
+        )
+        assert verdict == "overfit"
+        assert "won only 1 of 3 validation windows" in explanation
+        assert significance["windows_won"] == 1
+        assert significance["windows_total"] == 3
+
+    def test_an_edge_that_persists_across_a_majority_of_windows_is_validated(self) -> None:
+        """The same pooled edge, but now winning a strict majority of windows."""
+        baseline_windows = [
+            score("baseline", enough("0.1")),
+            score("baseline", enough("0.1")),
+            score("baseline", enough("0.5")),
+        ]
+        winner_windows = [
+            score("challenger", enough("0.6")),  # wins
+            score("challenger", enough("0.6")),  # wins
+            score("challenger", enough("0.1")),  # loses one
+        ]
+        verdict, explanation, significance = validation_verdict(
+            baseline=score("baseline", enough("0.1")),
+            winner=score("challenger", enough("0.4")),
+            comparisons=4,
+            seed=7,
+            baseline_by_window=baseline_windows,
+            winner_by_window=winner_windows,
+        )
+        assert verdict == "validated"
+        assert "survived walk-forward" in explanation
+        assert significance["windows_won"] == 2
+        assert significance["windows_total"] == 3
+
 
 class TestBuildCandidateStrategy:
     def test_unknown_parameter_raises_instead_of_being_ignored(self) -> None:
