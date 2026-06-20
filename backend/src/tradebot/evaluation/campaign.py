@@ -158,6 +158,17 @@ class CampaignConfig(BaseModel):
     campaign stops rather than spend the budget on indistinguishable
     neighbours."""
 
+    base_seed: int = Field(default=7, ge=0)
+    """Seed the per-round scenario draw is derived from (round seed =
+    ``base_seed * 1000 + round_index``). Each round of an iterated campaign
+    samples a *different* scenario set, so a winner has to clear the bar on
+    independent draws rather than fit the idiosyncrasies of one fixed draw
+    re-graded every round — a subtle but real overfitting channel when the
+    search climbs by repeatedly probing the same sample. Deterministic from
+    this base, so the whole campaign still reproduces bit for bit; the
+    end-of-campaign holdout read keeps its own frozen seed so it stays
+    comparable across campaigns."""
+
     def interval(self) -> CandleInterval:
         """Parse the timeframe; raises ``ValueError`` on unknown ones."""
         return CandleInterval(self.timeframe)
@@ -342,6 +353,9 @@ class ResearchCampaign:
                 window_end=holdout_start,
                 candidates=candidates,
                 motivating_finding_ids=tuple(motivating),
+                # Rotate the scenario draw per round so the search cannot climb
+                # by overfitting one fixed sample re-graded every round.
+                seed=config.base_seed * 1000 + index,
             )
             sweep_id = await self._sweeps.start(sweep_config)
         except ValueError as error:

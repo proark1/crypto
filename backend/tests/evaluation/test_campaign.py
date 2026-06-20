@@ -347,6 +347,18 @@ class TestResearchCampaign:
         assert {config.window_end for config in sweeps.started} == {expected}
         assert campaign.status is not None and campaign.status.holdout_start == expected
 
+    async def test_each_round_rotates_the_scenario_seed(self) -> None:
+        # Successive rounds must sample *different* scenario draws, so the
+        # search cannot climb by overfitting one fixed sample re-graded every
+        # round. Derived deterministically from base_seed for reproducibility.
+        campaign, sweeps, _bot, _provider = _campaign(
+            [_kept("overfit"), _kept("overfit")], clock=ManualClock(_T0)
+        )
+
+        await campaign.run(_config(max_rounds=2, base_seed=3))
+
+        assert [config.seed for config in sweeps.started] == [3000, 3001]
+
     async def test_holdout_read_is_skipped_without_a_grader(self) -> None:
         campaign, _sweeps, _bot, _provider = _campaign([_kept("overfit")])
 

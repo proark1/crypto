@@ -867,7 +867,13 @@ honesty read** (the §12.5 cost-sensitivity stance: it informs, and arms the
 human's revert, but never vetoes; every step was already walk-forward
 validated, and the verdict is withheld unless both sides clear the
 minimum-trades bar). The fixed budget bounds how many lucky draws the search
-gets, on top of each round's Bonferroni bar.
+gets, on top of each round's Bonferroni bar. Each round also samples a
+**different scenario draw** (the round's sweep seed is derived as
+`base_seed * 1000 + round_index`), so a winner has to clear the bar on
+independent draws rather than fit the idiosyncrasies of one fixed sample
+re-graded every round; the seed is deterministic from the campaign's base
+seed, so the whole run still reproduces bit for bit, and the holdout read
+keeps its own frozen seed to stay comparable across campaigns.
 
 A **driver** runs campaigns continuously across the same target rotation
 (production, then each research family), one at a time — the loop is
