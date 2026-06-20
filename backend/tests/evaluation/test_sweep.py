@@ -113,9 +113,17 @@ class TestValidationVerdict:
 
     def test_a_noisy_edge_fails_the_corrected_significance_test(self) -> None:
         # Mean +0.1R vs 0.0R, but the spread dwarfs the edge — the point
-        # estimate "wins" while the bootstrap cannot tell it from luck.
-        noisy_winner = score("challenger", ["1.1", "-0.9"] * (MIN_SWEEP_TRADES // 2))
-        flat_baseline = score("baseline", ["1.0", "-1.0"] * (MIN_SWEEP_TRADES // 2))
+        # estimate "wins" while the bootstrap cannot tell it from luck. The R
+        # series is clustered (a run of wins then a run of losses), so the
+        # moving-block bootstrap keeps the runs intact and sees the real,
+        # large spread rather than an i.i.d. shuffle that would understate it.
+        noisy_winner = score(
+            "challenger",
+            ["1.0", "1.1", "0.9", "1.0", "1.0", "-0.9", "-0.8", "-0.9", "-0.8", "-0.6"],
+        )
+        flat_baseline = score(
+            "baseline", ["1.0", "1.0", "0.9", "1.0", "1.1", "-1.0", "-1.0", "-1.0", "-1.0", "-1.0"]
+        )
 
         verdict, explanation, significance = validation_verdict(
             baseline=flat_baseline, winner=noisy_winner, comparisons=5, seed=7

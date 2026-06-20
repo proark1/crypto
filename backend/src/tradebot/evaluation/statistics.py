@@ -5,12 +5,24 @@ its apparent edge is inflated by selection: with enough candidates, one of
 them wins by luck alone. Two defenses live here, both deliberately free of
 distributional assumptions (per-trade R is fat-tailed and skewed):
 
-- **Bootstrap resampling** turns a candidate's R-multiples into a
+- **Block bootstrap resampling** turns a candidate's R-multiples into a
   confidence interval on expectancy and a one-sided p-value for "the
   challenger's true expectancy exceeds the baseline's".
 - **Bonferroni correction** divides the significance level by the number
   of comparisons the sweep made, so a grid of K variants does not get K
   chances at a 5% fluke.
+
+The resampling is a **moving-block** bootstrap, not the textbook i.i.d.
+one. The R series is *not* independent: scenarios are sampled on a short
+stride with a multi-candle horizon, so consecutive scenarios overlap and a
+single price move spawns clusters of correlated trades. An i.i.d. resample
+(draw each trade independently) ignores that dependence, understates the
+true spread of the mean, and so hands out p-values that are too small —
+exactly how a fluke gets called "validated". Resampling contiguous blocks
+of length ``O(n**(1/3))`` (the standard rate for the mean of a dependent
+series) preserves the within-cluster correlation, so the resampled means
+spread as widely as the dependent data really warrants. It is strictly
+more conservative than i.i.d. and collapses to it only for tiny samples.
 
 R-multiples are ratios of money and stay ``Decimal`` end to end. Every
 resample is driven by a seeded ``random.Random``, so a sweep report is
@@ -19,6 +31,7 @@ reproducible bit for bit from its config.
 
 from __future__ import annotations
 
+import math
 import random
 from collections.abc import Sequence
 from decimal import ROUND_HALF_EVEN, Decimal
@@ -63,7 +76,8 @@ def bootstrap_expectancy_interval(
     if len(r_values) < MIN_BOOTSTRAP_SAMPLES:
         return None
     rng = random.Random(seed)
-    means = sorted(_resampled_mean(r_values, rng) for _ in range(resamples))
+    block = _block_size(len(r_values))
+    means = sorted(_resampled_mean(r_values, rng, block) for _ in range(resamples))
     return ExpectancyInterval(
         low_r=_quantize(means[int(_CI_LOWER_QUANTILE * (len(means) - 1))]),
         high_r=_quantize(means[int(_CI_UPPER_QUANTILE * (len(means) - 1))]),
@@ -79,18 +93,22 @@ def superiority_p_value(
     """One-sided bootstrap p-value that the challenger beats the baseline.
 
     Resamples both R series independently (they come from different trade
-    sets, so pairing is impossible) and counts how often the challenger's
-    mean fails to exceed the baseline's: the fraction of resamples in which
-    the apparent edge vanishes. ``None`` when either side is too thin to
-    resample — a missing p-value must read as "unknown", never "passed".
+    sets, so pairing is impossible), each with its own block length, and
+    counts how often the challenger's mean fails to exceed the baseline's:
+    the fraction of resamples in which the apparent edge vanishes. ``None``
+    when either side is too thin to resample — a missing p-value must read
+    as "unknown", never "passed".
     """
     if len(challenger_r) < MIN_BOOTSTRAP_SAMPLES or len(baseline_r) < MIN_BOOTSTRAP_SAMPLES:
         return None
     rng = random.Random(seed)
+    challenger_block = _block_size(len(challenger_r))
+    baseline_block = _block_size(len(baseline_r))
     not_superior = sum(
         1
         for _ in range(resamples)
-        if _resampled_mean(challenger_r, rng) <= _resampled_mean(baseline_r, rng)
+        if _resampled_mean(challenger_r, rng, challenger_block)
+        <= _resampled_mean(baseline_r, rng, baseline_block)
     )
     return _quantize(Decimal(not_superior) / Decimal(resamples))
 
@@ -107,9 +125,40 @@ def corrected_significance(comparisons: int) -> Decimal:
     return BASE_SIGNIFICANCE / Decimal(comparisons)
 
 
-def _resampled_mean(values: Sequence[Decimal], rng: random.Random) -> Decimal:
-    resample = rng.choices(values, k=len(values))
-    return sum(resample, Decimal(0)) / Decimal(len(resample))
+def _block_size(n: int) -> int:
+    """Moving-block length for ``n`` observations.
+
+    ``round(n ** (1/3))`` is the standard optimal rate for the bootstrap of
+    a dependent series' mean (Politis & Romano), floored at 1. It grows
+    slowly — 1 trade at n<3, ~3 at n=16, ~5 at n=125, ~7 at n=343 — so a
+    real sweep (hundreds of trades) blocks enough to span a cluster of
+    overlapping-scenario trades, while a tiny sample collapses to the
+    ordinary i.i.d. resample (block length 1) rather than over-blocking.
+    """
+    return max(1, round(math.pow(n, 1 / 3)))
+
+
+def _resampled_mean(values: Sequence[Decimal], rng: random.Random, block_size: int) -> Decimal:
+    """Mean of one moving-block bootstrap resample of ``values``.
+
+    For ``block_size == 1`` this is the ordinary i.i.d. resample. Otherwise
+    it draws contiguous blocks of ``block_size`` from random (overlapping)
+    start positions and concatenates them until at least ``len(values)``
+    elements are collected, then averages the first ``len(values)`` — so the
+    resample is the same size as the sample but carries the sample's local
+    autocorrelation instead of destroying it.
+    """
+    n = len(values)
+    if block_size <= 1:
+        resample: list[Decimal] = rng.choices(values, k=n)
+    else:
+        max_start = max(0, n - block_size)
+        collected: list[Decimal] = []
+        while len(collected) < n:
+            start = rng.randint(0, max_start)
+            collected.extend(values[start : start + block_size])
+        resample = collected[:n]
+    return sum(resample, Decimal(0)) / Decimal(n)
 
 
 def _quantize(value: Decimal) -> Decimal:
