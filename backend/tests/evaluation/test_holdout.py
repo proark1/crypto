@@ -40,6 +40,47 @@ class TestRead:
         assert read["final_expectancy_r"] is None
         assert "too thin" in read["explanation"]
 
+    def test_a_significant_out_of_sample_regression_arms_the_revert(self) -> None:
+        # Start config beats final out of sample, and the bootstrap says it is
+        # significant — the revert is armed for the human to review.
+        read = _read(
+            _T0,
+            _T1,
+            1500,
+            Decimal("0.20"),
+            30,
+            Decimal("0.05"),
+            28,
+            regression_p=Decimal("0.01"),
+        )
+        assert read["judged"] is True
+        assert read["revert_armed"] is True
+        assert read["improved"] is False
+        assert read["regression_p"] == "0.01"
+        assert "revert armed" in read["explanation"]
+
+    def test_a_regression_within_the_noise_does_not_arm_the_revert(self) -> None:
+        # Same point estimate, but the move is not bootstrap-significant: no
+        # false alarm on slice noise.
+        read = _read(
+            _T0,
+            _T1,
+            1500,
+            Decimal("0.20"),
+            30,
+            Decimal("0.05"),
+            28,
+            regression_p=Decimal("0.30"),
+        )
+        assert read["judged"] is True
+        assert read["revert_armed"] is False
+        assert "within the noise" in read["explanation"]
+
+    def test_a_thin_slice_arms_nothing(self) -> None:
+        read = _read(_T0, _T1, 80, Decimal("0.9"), 3, None, 0, regression_p=None)
+        assert read["judged"] is False
+        assert read["revert_armed"] is False
+
     def test_the_explanation_rounds_r_but_the_fields_keep_full_precision(self) -> None:
         read = _read(_T0, _T1, 1500, Decimal("0.050000000000"), 30, Decimal("0.200000000000"), 28)
         assert "from 0.0500R to 0.2000R" in read["explanation"]

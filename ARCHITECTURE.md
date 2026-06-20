@@ -857,12 +857,19 @@ structural. Every round is graded strictly *before* a **reserved holdout**
 (`SweepConfig.window_end`): the most-recent `campaign_holdout_days` are never
 swept, so the search cannot turn the validation windows into a second
 training set across rounds. At the end the untouched slice grades the
-campaign's net move once — start config versus final — a **non-gating
-honesty read** (the §12.5 cost-sensitivity stance: it informs, and arms the
-human's revert, but never vetoes; every step was already walk-forward
-validated, and the verdict is withheld unless both sides clear the
-minimum-trades bar). The fixed budget bounds how many lucky draws the search
-gets, on top of each round's Bonferroni bar.
+campaign's net move once — start config versus final — a **never-auto-flip
+honesty read**: it never vetoes a step (every step was already walk-forward
+validated) and never reverts the live config on its own (a continuous bot
+must not flip itself on one slice), and the verdict is withheld unless both
+sides clear the minimum-trades bar. But the slice it grades is the one the
+search never touched, so the read does more than narrate — it **arms** the
+human's one-click revert when the start configuration *significantly* beats
+the final one out of sample. "Significantly" is the same block-bootstrap
+superiority test the sweeps use, at `BASE_SIGNIFICANCE`, so a flat or noisy
+move never raises a false alarm and a real regression never passes as "no
+improvement"; an armed revert also sends an operator alert. The fixed budget
+bounds how many lucky draws the search gets, on top of each round's
+Bonferroni bar.
 
 A **driver** runs campaigns continuously across the same target rotation
 (production, then each research family), one at a time — the loop is
