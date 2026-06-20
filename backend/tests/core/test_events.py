@@ -81,6 +81,39 @@ async def test_unsubscribed_handler_sees_no_further_events() -> None:
     assert len(received) == 1
 
 
+async def test_unsubscribe_during_dispatch_does_not_skip_a_later_handler() -> None:
+    """A handler that unsubscribes another mid-dispatch must not cause the
+    still-active handlers after it to be skipped for the in-flight event.
+
+    This mirrors the live topology: a runtime coin removal (unsubscribe) can
+    land while a candle is being dispatched. Iterating the live list would
+    shift it under the loop and silently drop the next handler — a missed
+    signal or exit. The snapshot makes the removal take effect next publish.
+    """
+    bus = EventBus()
+    calls: list[str] = []
+    removed = False
+
+    async def second(event: CandleClosed) -> None:
+        calls.append("second")
+
+    async def first(event: CandleClosed) -> None:
+        nonlocal removed
+        calls.append("first")
+        if not removed:
+            bus.unsubscribe(CandleClosed, second)  # remove a later handler mid-dispatch
+            removed = True
+
+    bus.subscribe(CandleClosed, first)
+    bus.subscribe(CandleClosed, second)
+
+    await bus.publish(make_candle_closed())
+    assert calls == ["first", "second"]  # both ran exactly once this event
+
+    await bus.publish(make_candle_closed())
+    assert calls == ["first", "second", "first"]  # second is gone from here on
+
+
 async def test_unsubscribing_an_unknown_handler_is_loud() -> None:
     bus = EventBus()
 
