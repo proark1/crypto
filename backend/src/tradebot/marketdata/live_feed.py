@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -50,12 +51,26 @@ class OhlcvExchange(Protocol):
 
 
 def _is_well_formed(row: OhlcvRow) -> bool:
-    """Return True if the row has a timestamp and all five OHLCV fields.
+    """Return True if the row is a usable OHLCV bar.
 
-    Some venues occasionally emit rows with ``None`` fields through CCXT; a
-    single such row must degrade to a logged drop, never a crashed feed.
+    A row must carry a timestamp and five present, finite fields, with the
+    four prices strictly positive and the volume non-negative — the exact
+    shape a :class:`Candle` will accept (its prices are ``gt=0``, its volume
+    ``ge=0``). Some venues occasionally emit rows with ``None`` fields, a
+    zero/negative print, or a NaN/inf through CCXT; each must degrade to a
+    logged drop, never a crashed feed. This guard is load-bearing: the
+    ``Candle`` construction these rows feed runs *outside* the stream loop's
+    reconnect ``try/except`` (in :meth:`OhlcvCandleTracker.update`), so a row
+    that slipped through to a failing construction would kill the feed task
+    outright rather than be quarantined.
     """
-    return len(row) >= 6 and all(row[i] is not None for i in range(6))
+    if len(row) < 6 or any(row[i] is None for i in range(6)):
+        return False
+    if not all(math.isfinite(row[i]) for i in range(6)):
+        return False
+    if any(row[i] <= 0 for i in range(1, 5)):  # OHLC strictly positive
+        return False
+    return row[5] >= 0  # volume non-negative
 
 
 def _row_to_candle(row: OhlcvRow, symbol: str, interval: CandleInterval) -> Candle:
