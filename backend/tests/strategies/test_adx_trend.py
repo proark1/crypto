@@ -51,11 +51,11 @@ def run(strategy: AdxTrendStrategy, closes: list[float]) -> list[tuple[int, Sign
 # A sustained decline (builds -DI dominance and ADX), then a sustained rally
 # (flips +DI above -DI with ADX still strong → entry), then a decline (flips
 # direction back down → exit).
-DOWN_THEN_UP_THEN_DOWN = (
-    [108.0, 105.0, 102.0, 99.0, 96.0, 93.0, 90.0]  # decline
-    + [94.0, 99.0, 105.0, 112.0, 120.0]  # rally: +DI cross-up under strong ADX
-    + [114.0, 107.0, 99.0, 91.0]  # decline: direction flips down
-)
+DOWN_THEN_UP_THEN_DOWN = [
+    *[108.0, 105.0, 102.0, 99.0, 96.0, 93.0, 90.0],  # decline
+    *[94.0, 99.0, 105.0, 112.0, 120.0],  # rally: +DI cross-up under strong ADX
+    *[114.0, 107.0, 99.0, 91.0],  # decline: direction flips down
+]
 
 
 class TestAdxTrend:
