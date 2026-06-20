@@ -107,8 +107,15 @@ LINEUP: tuple[CompetitorSpec, ...] = (
         risk_state_row_id=7,
         description="Buys deeply negative perpetual funding (crowded shorts), exits on recovery.",
     ),
+    CompetitorSpec(
+        bot_id="supertrend",
+        label="Supertrend",
+        family="supertrend",
+        risk_state_row_id=8,
+        description="Buys when the ATR-band supertrend flips up, exits when it flips down.",
+    ),
 )
-"""Seven bots, seven strategies. Order is leaderboard display order before
+"""Eight bots, eight strategies. Order is leaderboard display order before
 ranking; ``risk_state_row_id`` values are append-only — a removed entry's
 row id is never reused."""
 
