@@ -264,17 +264,21 @@ class LiveMarketDataFeed:
         if floor_since_ms is not None and (since_ms is None or since_ms < floor_since_ms):
             since_ms = floor_since_ms
         inserted = 0
+        last_since_ms: int | None = None
         while True:
+            # No-progress guard: a venue that keeps returning the same page
+            # (same ``since``) must never spin the crawl forever — one repeat
+            # of the fetch cursor ends it. The cursor only advances when a new
+            # candle is stored, so a stall means there is nothing left.
+            if since_ms is not None and since_ms == last_since_ms:
+                break
+            last_since_ms = since_ms
             rows = await self._exchange.fetch_ohlcv(
                 self._symbol, self._interval.value, since=since_ms
             )
             if len(rows) <= 1:
                 break
-            candles = [
-                _row_to_candle(row, self._symbol, self._interval)
-                for row in rows[:-1]
-                if _is_well_formed(row)
-            ]
+            candles = self._clean_candles(rows[:-1])
             candles = [c for c in candles if latest is None or c.open_time > latest]
             if not candles:
                 break
@@ -283,6 +287,36 @@ class LiveMarketDataFeed:
             latest = candles[-1].open_time
             since_ms = utc_ms(latest + self._interval.duration)
         return inserted
+
+    def _clean_candles(self, rows: Sequence[OhlcvRow]) -> list[Candle]:
+        """Build candles for the rows that pass *both* ingest gates.
+
+        Backfill once trusted ``_is_well_formed`` alone, so a shape-broken but
+        finite candle (e.g. high < low) entered the stored dataset — the
+        backtest, research, and warm-up source — without ever meeting
+        ``validate_candle``, the quarantine gate the live stream applies. This
+        runs the identical shape check over every backfilled row, dropping and
+        loudly logging any that fail, so a malformed candle never silently
+        poisons history just because it arrived over REST instead of the WS.
+        """
+        clean: list[Candle] = []
+        for row in rows:
+            if not _is_well_formed(row):
+                continue
+            candle = _row_to_candle(row, self._symbol, self._interval)
+            issues = validate_candle(candle)
+            if issues:
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "backfill_candle_quarantined",
+                    symbol=candle.symbol,
+                    open_time=candle.open_time.isoformat(),
+                    reasons="; ".join(issues),
+                )
+                continue
+            clean.append(candle)
+        return clean
 
     async def _deepen_history(self) -> int:
         """Extend stored history *backward* to the configured horizon.
@@ -305,12 +339,7 @@ class LiveMarketDataFeed:
             rows = await self._exchange.fetch_ohlcv(
                 self._symbol, self._interval.value, since=since_ms
             )
-            candles = [
-                _row_to_candle(row, self._symbol, self._interval)
-                for row in rows
-                if _is_well_formed(row)
-            ]
-            candles = [c for c in candles if c.open_time < earliest]
+            candles = [c for c in self._clean_candles(rows) if c.open_time < earliest]
             if not candles:
                 break  # reached the already-stored range (or the venue's depth)
             await self._store.insert_batch(candles)
