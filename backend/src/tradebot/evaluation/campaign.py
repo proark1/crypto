@@ -158,9 +158,49 @@ class CampaignConfig(BaseModel):
     campaign stops rather than spend the budget on indistinguishable
     neighbours."""
 
+    base_seed: int = Field(default=7, ge=0)
+    """Seed the per-round scenario draw is derived from (round seed =
+    ``base_seed * 1000 + round_index``). Each round of an iterated campaign
+    samples a *different* scenario set, so a winner has to clear the bar on
+    independent draws rather than fit the idiosyncrasies of one fixed draw
+    re-graded every round — a subtle but real overfitting channel when the
+    search climbs by repeatedly probing the same sample. Deterministic from
+    this base, so the whole campaign still reproduces bit for bit; the
+    end-of-campaign holdout read keeps its own frozen seed so it stays
+    comparable across campaigns."""
+
+    max_lifetime_promotions: int = Field(default=0, ge=0)
+    """Per-target lifetime cap on auto-promotions; ``0`` disables it. The
+    campaign loop runs forever, so without an outer bound the cumulative
+    multiple-comparisons exposure grows without limit — every campaign hands
+    the search fresh chances to promote a fluke, and the incumbent climbs from
+    inflated baselines. Once ``prior_promotions`` plus this campaign's own
+    promotions reach this cap, validated, engine-confirmed winners are still
+    *researched* (the round is recorded and the search refines) but no longer
+    *applied*; a human can review the evidence and promote manually or raise
+    the cap. It caps promotions, never research."""
+
+    prior_promotions: int = Field(default=0, ge=0)
+    """Auto-promotions this target accrued in *earlier* campaigns (summed from
+    the durable campaign history by the driver). Counts against
+    ``max_lifetime_promotions`` so the cap is a true lifetime bound across
+    campaigns, not a per-campaign one. ``0`` for a directly-constructed
+    campaign with no history."""
+
     def interval(self) -> CandleInterval:
         """Parse the timeframe; raises ``ValueError`` on unknown ones."""
         return CandleInterval(self.timeframe)
+
+    def promotions_frozen(self, promotions_this_campaign: int) -> bool:
+        """Whether the per-target lifetime promotion cap is reached.
+
+        ``0`` disables the cap. Otherwise the bound is across campaigns:
+        ``prior_promotions`` (earlier campaigns) plus this campaign's
+        promotions so far.
+        """
+        if self.max_lifetime_promotions <= 0:
+            return False
+        return self.prior_promotions + promotions_this_campaign >= self.max_lifetime_promotions
 
 
 @dataclass(frozen=True)
@@ -294,6 +334,7 @@ class ResearchCampaign:
                 advanced = await self._run_round(config, holdout_start, scale, status)
                 scale = 1.0 if advanced else scale * config.refine_factor
             status.holdout_read = await self._holdout_read(config, start_params, holdout_start)
+            await self._maybe_alert_revert(config, status.holdout_read)
             status.status = RunStatus.COMPLETED.value
             logger.info(
                 "research campaign on %s/%s completed: %d round(s), %d promotion(s) — %s",
@@ -342,6 +383,9 @@ class ResearchCampaign:
                 window_end=holdout_start,
                 candidates=candidates,
                 motivating_finding_ids=tuple(motivating),
+                # Rotate the scenario draw per round so the search cannot climb
+                # by overfitting one fixed sample re-graded every round.
+                seed=config.base_seed * 1000 + index,
             )
             sweep_id = await self._sweeps.start(sweep_config)
         except ValueError as error:
@@ -395,6 +439,26 @@ class ResearchCampaign:
                     winner_name,
                     None,
                     "validated winner is not auto-promotable; skipped",
+                )
+            )
+            return False
+        if config.promotions_frozen(status.promotions):
+            # The per-target lifetime promotion cap is reached: keep researching
+            # (record the round so the search still refines) but do not change
+            # the live config. Bounds the unbounded loop's cumulative
+            # multiple-comparisons exposure; a human can promote manually or
+            # raise the cap after reviewing the accumulated evidence.
+            total = config.prior_promotions + status.promotions
+            status.rounds.append(
+                CampaignRound(
+                    index,
+                    scale,
+                    sweep_id,
+                    verdict,
+                    winner.name,
+                    None,
+                    f"lifetime promotion cap reached ({total}/{config.max_lifetime_promotions} "
+                    f"for {config.target}); validated winner researched, not applied",
                 )
             )
             return False
@@ -463,6 +527,23 @@ class ResearchCampaign:
                 config.symbol,
             )
             return None
+
+    async def _maybe_alert_revert(
+        self, config: CampaignConfig, read: dict[str, Any] | None
+    ) -> None:
+        """Notify the operator when the holdout armed a revert (never auto-flip).
+
+        The read gates the alarm (a bootstrap-significant out-of-sample
+        regression), so this fires only on real evidence, not on a flat or
+        noisy move. It only *informs* — the config is never reverted
+        automatically; a human acts on the one-click revert the read armed.
+        """
+        if self._notify is None or read is None or not read.get("revert_armed"):
+            return
+        await self._notify(
+            f"campaign on {config.target}/{config.symbol}: the untouched holdout flagged an "
+            f"out-of-sample regression — revert armed for review. {read.get('explanation', '')}"
+        )
 
     async def _await_report(self, sweep_id: int) -> dict[str, Any] | None:
         """Poll until the sweep is terminal; ``None`` unless it completed."""

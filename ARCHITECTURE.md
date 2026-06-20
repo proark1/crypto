@@ -31,7 +31,11 @@ This document is the target design. Implementation status as of June 2026
 | Squeeze strategy family (§13) | **Research + competition** — volatility-squeeze breakout: enters the *upward release* of a Bollinger-band-inside-Keltner-channel compression (TTM-style coil), exits when the close falls back below the Bollinger basis, shared ATR stop convention and managed-stop knobs, optional volume-confirmation entry filter (§5.2.3, off by default); built from the new TA-Lib-verified incremental Bollinger plus the existing EMA/ATR; sweepable, evaluated, auto-tuned by the §12.7 rotation (its keltner-width knob is the squeeze tightness the grid tunes), and traded solo by its competition account; unrouted in production until the §13.7 evidence gate is met and a human routes it |
 | Momentum strategy family (§13) | **Research + competition** — MACD histogram-crossover entries (12/26/9 defaults, zero-line filter on by default), histogram-flip exits, shared ATR stop convention, optional volume-confirmation entry filter (§5.2.3, off by default); built from the TA-Lib-verified incremental EMA; sweepable, evaluated, and auto-tuned by the §12.7 rotation like every family (promotions change its solo competition account), traded solo by that account, unrouted in production until the §13.7 evidence gate is met and a human routes it |
 | Funding strategy family (§13) | **Research + competition** — the first non-price family: longs when the perpetual funding rate is deeply negative (over-crowded shorts, squeeze risk up), exits on recovery, shared ATR stop convention; reads the funding rate per candle from an injected funding series backed by the same store in backtest and live (§4.1), so it grades and trades on one code path; an absent series makes it inert, never an error; sweepable, evaluated, and auto-tuned by the §12.7 rotation (its grid steps the entry/exit thresholds and the stop), traded solo by its competition account, unrouted in production |
-| Strategy competition: paper-bot lineup + custom bot builder, per-bot controls, leaderboard, research comparison (§13) | **Done** — production regime router plus six solo-family challengers (trend, mean-reversion, breakout, momentum, squeeze, funding) trade the same coins, candles, and gates from isolated journal-backed paper accounts (bot-scoped fills/orders/decisions/risk rows, per-bot signal-id namespacing, full restart replay per account); GET /competition serves the equity-ranked leaderboard; POST /evaluations/compare grades the whole lineup on byte-identical scenario sets (one frozen window + seed, grouped runs) for the research screen's side-by-side table; solo bots trade ungated by the regime router's family schedule (news/event vetoes still apply to all); per-bot pause/resume/kill + detail API; user-built custom bots (rule recipes, any/all entry voting via CompositeStrategy, validated + persisted + hot-editable + restart-replayed) |
+| Supertrend strategy family (§13) | **Research + competition** — a distinct trend family from the EMA-crossover follower: an ATR-band (the Supertrend factor) that locks in the trend's direction and flips only when the close pierces the opposite band — entries on the up-flip, exits on the down-flip, shared ATR stop convention and managed-stop knobs, optional volume-confirmation entry filter (§5.2.3, off by default); built from the existing TA-Lib-verified ATR; sweepable, evaluated, auto-tuned by the §12.7 rotation (its grid steps the band width and the stop), and traded solo by its competition account; unrouted in production until the §13.7 evidence gate is met and a human routes it |
+| Bollinger reversion strategy family (§13) | **Research + competition** — a band-based mean reversion distinct from the RSI family: buys when the close pierces *below* the lower Bollinger band (a stretched, oversold move) and then closes back inside it — the recovery, never the fall — and exits at the basis (the middle band); shared ATR stop convention and managed-stop knobs; built from the existing TA-Lib-verified Bollinger; sweepable, evaluated, auto-tuned by the §12.7 rotation (its grid steps the band width and the stop), traded solo by its competition account; unrouted in production until §13.7 |
+| ADX trend strategy family (§13) | **Research + competition** — a trend family gated on trend *strength*: buys when +DI crosses above -DI **and** ADX confirms a real trend (at or above a threshold), exits when direction flips back down; the ADX gate keeps it out of the chop a plain crossover whipsaws on; shared ATR stop convention and managed-stop knobs; built from the existing TA-Lib-verified ADX/DMI; sweepable, evaluated, auto-tuned by the §12.7 rotation (its grid steps the strength gate and the stop), traded solo by its competition account; unrouted in production until §13.7 |
+| Keltner breakout strategy family (§13) | **Research + competition** — a volatility-channel breakout distinct from the Donchian breakout and the squeeze: buys when the close breaks above an EMA basis plus an ATR band (the volatility envelope), exits when it falls back to the basis; shared ATR stop convention and managed-stop knobs; built from the existing EMA + ATR; sweepable, evaluated, auto-tuned by the §12.7 rotation (its grid steps the channel width and the stop), traded solo by its competition account; unrouted in production until §13.7 |
+| Strategy competition: paper-bot lineup + custom bot builder, per-bot controls, leaderboard, research comparison (§13) | **Done** — production regime router plus ten solo-family challengers (trend, mean-reversion, breakout, momentum, squeeze, supertrend, bollinger-reversion, adx-trend, keltner, funding) trade the same coins, candles, and gates from isolated journal-backed paper accounts (bot-scoped fills/orders/decisions/risk rows, per-bot signal-id namespacing, full restart replay per account); GET /competition serves the equity-ranked leaderboard; POST /evaluations/compare grades the whole lineup on byte-identical scenario sets (one frozen window + seed, grouped runs) for the research screen's side-by-side table; solo bots trade ungated by the regime router's family schedule (news/event vetoes still apply to all); per-bot pause/resume/kill + detail API; user-built custom bots (rule recipes, any/all entry voting via CompositeStrategy, validated + persisted + hot-editable + restart-replayed) |
 | Strategy bake-off: one-click grid tournament (§13.8) | **Done** — ten energy presets (each family at calm/bold) plus the production baseline and a seeded random-entry control (the noise floor) graded across the full `{1h,4h,1d} × {10,50,100d}` grid, one cell per comparison on byte-identical scenarios, driven through the single research lane and polled to completion; cells with too little history reported `insufficient_data` and excluded; ranked by average return fraction with a live leaderboard updated per cell; persisted to `bake_off_jobs` (per-cell runs stay in `evaluation_runs`); POST /research/bakeoff + GET /research/bakeoff[s] with a research-tab UI |
 | Observability: dead-man's switch, metrics, DB backups (§4.9, §7) | **Done** — structured JSON logging (one event per line, env-switchable to text for local tailing) with signal→order→fill correlation fields across the engine and risk manager, amounts kept exact as Decimal-derived strings; heartbeat ping gated on feed freshness; /metrics (feed lag, equity, breakers, bus counters) behind the bearer token; live-vs-backtest divergence measurable per coin (the §10 paper-gate metric: live paper fills matched against a same-candle replay of the production strategy shape; zero is the one-code-path expectation, non-zero is documented gating or a parity bug); scheduled gzipped-JSONL backups to S3-compatible storage with exact-Decimal restore (production restore drill pending, see checklist) |
 | Live trading (§8 Phase 3) | **Missing** — blockers enumerated in LIVE_TRADING_CHECKLIST.md |
@@ -727,8 +731,13 @@ data it was tuned on is overfit, and the report says so explicitly.
 Because a grid of N candidates gets N chances at a lucky winner, a
 challenger is only called *validated* when its edge over the baseline
 clears a one-sided bootstrap test at the Bonferroni-corrected
-significance level; every candidate's expectancy also carries a 95%
-bootstrap confidence interval. Accepted findings link to the config
+significance level **and** that edge *persists* across the walk-forward —
+the challenger must beat the baseline in a strict majority of the
+validation windows, not merely on the pooled average. An edge concentrated
+in one lucky stretch (which lifts the pooled average while losing the other
+windows) is rejected as overfit rather than promoted: pooled significance
+alone cannot see that concentration. Every candidate's expectancy also
+carries a 95% bootstrap confidence interval. Accepted findings link to the config
 change they motivated, so every strategy version carries its lineage:
 what changed, why, and whether validation confirmed it.
 
@@ -857,18 +866,39 @@ structural. Every round is graded strictly *before* a **reserved holdout**
 (`SweepConfig.window_end`): the most-recent `campaign_holdout_days` are never
 swept, so the search cannot turn the validation windows into a second
 training set across rounds. At the end the untouched slice grades the
-campaign's net move once — start config versus final — a **non-gating
-honesty read** (the §12.5 cost-sensitivity stance: it informs, and arms the
-human's revert, but never vetoes; every step was already walk-forward
-validated, and the verdict is withheld unless both sides clear the
-minimum-trades bar). The fixed budget bounds how many lucky draws the search
-gets, on top of each round's Bonferroni bar.
+campaign's net move once — start config versus final — a **never-auto-flip
+honesty read**: it never vetoes a step (every step was already walk-forward
+validated) and never reverts the live config on its own (a continuous bot
+must not flip itself on one slice), and the verdict is withheld unless both
+sides clear the minimum-trades bar. But the slice it grades is the one the
+search never touched, so the read does more than narrate — it **arms** the
+human's one-click revert when the start configuration *significantly* beats
+the final one out of sample. "Significantly" is the same block-bootstrap
+superiority test the sweeps use, at `BASE_SIGNIFICANCE`, so a flat or noisy
+move never raises a false alarm and a real regression never passes as "no
+improvement"; an armed revert also sends an operator alert. The fixed budget
+bounds how many lucky draws the search gets, on top of each round's
+Bonferroni bar. Each round also samples a **different scenario draw** (the
+round's sweep seed is derived as `base_seed * 1000 + round_index`), so a
+winner has to clear the bar on independent draws rather than fit the
+idiosyncrasies of one fixed sample re-graded every round; the seed is
+deterministic from the campaign's base seed, so the whole run still
+reproduces bit for bit, and the holdout read keeps its own frozen seed to
+stay comparable across campaigns.
 
 A **driver** runs campaigns continuously across the same target rotation
 (production, then each research family), one at a time — the loop is
 sequential, so it never contends with itself for the single research lane,
 and a round whose sweep loses that lane to a human-started sweep refines and
-retries. When enabled the campaign **supersedes** the single-sweep
+retries. Because the loop runs forever, its cumulative multiple-comparisons
+exposure has an outer bound too: an optional **per-target lifetime promotion
+cap** (`campaign_max_lifetime_promotions_per_target`, `0` = off) sums a
+target's auto-promotions across all its campaigns from the durable history,
+and once that count is reached the target's campaigns keep *researching* but
+no longer *apply* — a validated, engine-confirmed winner is recorded and the
+search refines, but the live config is frozen until a human reviews the
+accumulated evidence and promotes manually or raises the cap. The lifetime
+count and cap surface on the campaign status (`GET /campaign`). When enabled the campaign **supersedes** the single-sweep
 auto-improver (they share the one lane); when off — the default — nothing
 changes. Same scope as everything else here: this paper-only worker
 promotes through the journaled, revertible apply path, and the campaign's

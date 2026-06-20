@@ -86,6 +86,15 @@ class EventBus:
         Awaits each handler to completion before calling the next; exceptions
         propagate to the publisher so failures in order/position handling are
         never silently swallowed.
+
+        Dispatch iterates a snapshot of the handler list. The live topology
+        runs one shared bus with several per-symbol feeds publishing candles
+        concurrently, and a runtime coin removal (``unsubscribe``) can land at
+        an ``await`` boundary mid-dispatch; mutating the very list being
+        iterated would silently skip the next still-active handler. The
+        snapshot makes a subscribe/unsubscribe during dispatch take effect on
+        the *next* publish, not the in-flight one. The sequential backtest path
+        never mutates mid-dispatch, so this is byte-identical there.
         """
-        for handler in self._handlers.get(type(event), []):
+        for handler in list(self._handlers.get(type(event), [])):
             await handler(event)

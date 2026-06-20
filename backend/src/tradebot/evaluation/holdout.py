@@ -8,12 +8,17 @@ through the same scenario pipeline (one code path) over **byte-identical**
 holdout scenarios, so the only variable is the configuration — the
 fair-comparison rule the bake-off already uses.
 
-The read is non-gating by design (the §12.5 cost-sensitivity precedent):
-every promotion was already walk-forward validated, so this never vetoes —
-it reports, in plain words, whether the cumulative move still looks good on
-data the search never touched, and arms the human's one-click revert when
-it does not. It never raises: a span too short to host a scenario, or too
-few trades to compare, resolves to a read that says so.
+The read never vetoes and never auto-reverts: every promotion was already
+walk-forward validated, and a continuous bot must not flip its own config on
+one slice. But the move it grades *is* the one the search never touched, so
+the read does more than narrate — it **arms** the human's one-click revert
+when the evidence is real. "Real" is a bootstrap test, not a point estimate:
+the revert is armed only when the start configuration *significantly* beats
+the final one on the holdout (the block-bootstrap superiority test below its
+significance level), so noise around a flat move never raises a false alarm
+and a genuine out-of-sample regression never slips through as "no
+improvement". It still never raises: a span too short to host a scenario, or
+too few trades to compare, resolves to a read that says so and arms nothing.
 """
 
 from __future__ import annotations
@@ -29,6 +34,12 @@ from tradebot.core.models import ACCOUNTING_RESOLUTION, Candle, CandleInterval, 
 from tradebot.evaluation.campaign import HoldoutGrader
 from tradebot.evaluation.engine import ScenarioEvaluator
 from tradebot.evaluation.generator import GeneratorConfig, generate_specs
+from tradebot.evaluation.statistics import (
+    BASE_SIGNIFICANCE,
+    ExpectancyInterval,
+    bootstrap_expectancy_interval,
+    superiority_p_value,
+)
 from tradebot.evaluation.sweep import DEFAULT_SCENARIO_COUNT, MIN_SWEEP_TRADES
 from tradebot.execution import FillSimulatorConfig
 from tradebot.marketdata import aggregate_candles
@@ -112,6 +123,11 @@ def make_holdout_grader(
             if final_outcome.r_multiple is not None:
                 final_r.append(final_outcome.r_multiple)
             await asyncio.sleep(0)  # never starve the live candle loop
+        # Bootstrap the out-of-sample evidence: a one-sided test that the
+        # *start* configuration beats the *final* one (a regression), plus an
+        # expectancy CI on each side for the surface. The block bootstrap keeps
+        # this honest about the overlapping holdout scenarios.
+        regression_p = superiority_p_value(start_r, final_r, seed)
         return _read(
             holdout_start,
             end,
@@ -120,6 +136,9 @@ def make_holdout_grader(
             len(start_r),
             _expectancy(final_r),
             len(final_r),
+            regression_p=regression_p,
+            start_ci=bootstrap_expectancy_interval(start_r, seed),
+            final_ci=bootstrap_expectancy_interval(final_r, seed),
         )
 
     return grade
@@ -154,6 +173,10 @@ def _read(
     start_trades: int,
     final_expectancy: Decimal | None,
     final_trades: int,
+    *,
+    regression_p: Decimal | None = None,
+    start_ci: ExpectancyInterval | None = None,
+    final_ci: ExpectancyInterval | None = None,
 ) -> dict[str, Any]:
     """Compose the plain-words read; ``judged`` gates the improvement claim.
 
@@ -161,6 +184,12 @@ def _read(
     ``MIN_SWEEP_TRADES`` on the holdout; below that the read carries the
     numbers but withholds the verdict (``judged`` false), so a thin slice is
     never mistaken for proof either way.
+
+    ``revert_armed`` is the bootstrap gate: armed only when the move is judged
+    *and* the start configuration significantly beats the final one out of
+    sample (``regression_p`` at or below :data:`BASE_SIGNIFICANCE`). A flat or
+    noisy move never arms it; ``regression_p`` is ``None`` (untested) for a
+    thin slice, which also arms nothing.
     """
     judged = (
         start_expectancy is not None
@@ -174,16 +203,25 @@ def _read(
         else None
     )
     improved = bool(judged and delta is not None and delta > 0)
-    if judged:
-        explanation = (
-            f"on {holdout_candles} untouched holdout candles the campaign moved expectancy "
-            f"from {_prose_r(start_expectancy)}R to {_prose_r(final_expectancy)}R "
-            f"({'an improvement' if improved else 'no improvement'} out of sample)"
-        )
-    else:
+    revert_armed = bool(judged and regression_p is not None and regression_p <= BASE_SIGNIFICANCE)
+    if not judged:
         explanation = (
             f"the holdout was too thin to judge: {start_trades} vs {final_trades} graded "
             f"trades over {holdout_candles} candles (need {MIN_SWEEP_TRADES} each)"
+        )
+    elif revert_armed:
+        explanation = (
+            f"on {holdout_candles} untouched holdout candles the start configuration beats the "
+            f"campaign's final one ({_prose_r(start_expectancy)}R vs {_prose_r(final_expectancy)}R "
+            f"per trade, p={regression_p} at the {BASE_SIGNIFICANCE} level) — an out-of-sample "
+            f"regression; revert armed for review"
+        )
+    else:
+        outcome = "an improvement" if improved else "no improvement"
+        explanation = (
+            f"on {holdout_candles} untouched holdout candles the campaign moved expectancy "
+            f"from {_prose_r(start_expectancy)}R to {_prose_r(final_expectancy)}R "
+            f"({outcome} out of sample, within the noise of the slice)"
         )
     return {
         "holdout_start": holdout_start.isoformat(),
@@ -191,10 +229,21 @@ def _read(
         "holdout_candles": holdout_candles,
         "start_expectancy_r": str(start_expectancy) if start_expectancy is not None else None,
         "final_expectancy_r": str(final_expectancy) if final_expectancy is not None else None,
+        "start_expectancy_ci_r": _ci_block(start_ci),
+        "final_expectancy_ci_r": _ci_block(final_ci),
         "start_trades": start_trades,
         "final_trades": final_trades,
         "delta_r": str(delta) if delta is not None else None,
+        "regression_p": str(regression_p) if regression_p is not None else None,
         "judged": judged,
         "improved": improved,
+        "revert_armed": revert_armed,
         "explanation": explanation,
     }
+
+
+def _ci_block(interval: ExpectancyInterval | None) -> dict[str, str] | None:
+    """Serialize a bootstrap expectancy interval as strings, or ``None``."""
+    if interval is None:
+        return None
+    return {"low": str(interval.low_r), "high": str(interval.high_r)}

@@ -124,6 +124,28 @@ class TestTracker:
         # The broken bucket is dropped entirely; the stream keeps flowing.
         assert [c.open_time for c in closed] == [BASE_TIME + timedelta(minutes=1)]
 
+    def test_non_positive_and_non_finite_rows_are_dropped_not_crashed(self) -> None:
+        """A bad-tick price must be quarantined at the row, not crash the feed.
+
+        A zero/negative/NaN/inf price passes a Candle's gt=0 validator only by
+        raising — and that construction runs inside update(), outside the
+        stream loop's reconnect guard. Each such row must be dropped here so
+        the feed task survives and keeps emitting the good buckets.
+        """
+        tracker = OhlcvCandleTracker("BTC/USDT", CandleInterval.M1)
+        zero_price = [BASE_MS, 100.0, 101.0, 99.0, 0.0, 1.0]
+        negative_price = [BASE_MS + MINUTE_MS, 100.0, 101.0, 99.0, -5.0, 1.0]
+        nan_price = [BASE_MS + 2 * MINUTE_MS, 100.0, 101.0, 99.0, float("nan"), 1.0]
+        inf_price = [BASE_MS + 3 * MINUTE_MS, 100.0, 101.0, 99.0, float("inf"), 1.0]
+        negative_volume = [BASE_MS + 4 * MINUTE_MS, 100.0, 101.0, 99.0, 100.0, -1.0]
+
+        closed = tracker.update(
+            [zero_price, negative_price, nan_price, inf_price, negative_volume, row(5), row(6)]
+        )
+
+        # Every malformed bucket is dropped; only the clean closed bucket emits.
+        assert [c.open_time for c in closed] == [BASE_TIME + timedelta(minutes=5)]
+
 
 class TestFeed:
     async def test_closed_candles_are_persisted_and_published(self, database: Database) -> None:
@@ -187,6 +209,27 @@ class TestFeed:
         )
         assert [c.open_time for c in stored] == [BASE_TIME + timedelta(minutes=1)]
         assert [e.candle.open_time for e in received] == [BASE_TIME + timedelta(minutes=1)]
+
+    async def test_backfill_quarantines_shape_broken_candles(self, database: Database) -> None:
+        # Backfill once trusted _is_well_formed alone, so a finite-but-impossible
+        # candle (high < low) entered the stored dataset over REST without ever
+        # meeting validate_candle. It must now be quarantined like the live path.
+        store = CandleStore(database)
+        bad = [BASE_MS, 100.0, 90.0, 99.0, 100.0, 1.0]  # high 90 < low 99: impossible
+        exchange = FakeExchange([], rest_rows=[bad, row(1), row(2), row(3)])
+        feed = LiveMarketDataFeed(exchange, "BTC/USDT", store, EventBus())
+
+        inserted = await feed.backfill()
+
+        stored = await store.fetch_range(
+            "BTC/USDT", CandleInterval.M1, BASE_TIME, BASE_TIME + timedelta(minutes=10)
+        )
+        # The malformed minute-0 candle is dropped; the good ones land.
+        assert [c.open_time for c in stored] == [
+            BASE_TIME + timedelta(minutes=1),
+            BASE_TIME + timedelta(minutes=2),
+        ]
+        assert inserted == 2
 
     async def test_backfill_from_empty_store_drops_in_progress_row(
         self, database: Database

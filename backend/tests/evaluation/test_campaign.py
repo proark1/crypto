@@ -347,12 +347,80 @@ class TestResearchCampaign:
         assert {config.window_end for config in sweeps.started} == {expected}
         assert campaign.status is not None and campaign.status.holdout_start == expected
 
+    async def test_each_round_rotates_the_scenario_seed(self) -> None:
+        # Successive rounds must sample *different* scenario draws, so the
+        # search cannot climb by overfitting one fixed sample re-graded every
+        # round. Derived deterministically from base_seed for reproducibility.
+        campaign, sweeps, _bot, _provider = _campaign(
+            [_kept("overfit"), _kept("overfit")], clock=ManualClock(_T0)
+        )
+
+        await campaign.run(_config(max_rounds=2, base_seed=3))
+
+        assert [config.seed for config in sweeps.started] == [3000, 3001]
+
+    async def test_lifetime_promotion_cap_freezes_promotion_but_keeps_researching(self) -> None:
+        # The per-target lifetime cap is already reached by earlier campaigns:
+        # a validated, confirmable winner is researched (the round is recorded)
+        # but never applied to the live config.
+        campaign, _sweeps, bot, _provider = _campaign([_validated()])
+
+        await campaign.run(_config(max_rounds=1, max_lifetime_promotions=2, prior_promotions=2))
+
+        assert bot.promotions == []  # cap reached: nothing applied
+        assert campaign.status is not None
+        assert campaign.status.promotions == 0
+        assert "lifetime promotion cap reached" in campaign.status.rounds[0].note
+
+    async def test_the_cap_counts_this_campaigns_own_promotions(self) -> None:
+        # cap=1, no prior: the first validated winner promotes, the second is
+        # frozen — the bound is cumulative within the campaign too, not just
+        # across campaigns.
+        campaign, _sweeps, bot, _provider = _campaign([_validated(), _validated()])
+
+        await campaign.run(_config(max_rounds=2, max_lifetime_promotions=1))
+
+        assert len(bot.promotions) == 1
+        assert campaign.status is not None and campaign.status.promotions == 1
+        assert "lifetime promotion cap reached" in campaign.status.rounds[1].note
+
     async def test_holdout_read_is_skipped_without_a_grader(self) -> None:
         campaign, _sweeps, _bot, _provider = _campaign([_kept("overfit")])
 
         await campaign.run(_config(max_rounds=1))
 
         assert campaign.status is not None and campaign.status.holdout_read is None
+
+    async def test_a_holdout_armed_revert_alerts_the_operator(self) -> None:
+        # The end-of-campaign holdout flagged an out-of-sample regression and
+        # armed the revert; the operator is told, but the config is never
+        # auto-reverted — a human acts on it.
+        recorder = Recorder()
+
+        async def regressed_holdout(
+            start_params: Mapping[str, Mapping[str, Any]],
+            final_params: Mapping[str, Mapping[str, Any]],
+            holdout_start: datetime,
+        ) -> dict[str, Any] | None:
+            return {"revert_armed": True, "explanation": "start beats final out of sample"}
+
+        campaign, _sweeps, _bot, _provider = _campaign(
+            [_kept("overfit")], holdout=regressed_holdout, notify=recorder
+        )
+
+        await campaign.run(_config(max_rounds=1))
+
+        assert any("revert armed for review" in message for message in recorder.messages)
+
+    async def test_a_clean_holdout_does_not_alert(self) -> None:
+        recorder = Recorder()
+        campaign, _sweeps, _bot, _provider = _campaign(
+            [_kept("overfit")], holdout=_holdout, notify=recorder
+        )
+
+        await campaign.run(_config(max_rounds=1))
+
+        assert not any("revert armed" in message for message in recorder.messages)
 
     async def test_a_sweep_with_no_verdict_refines_without_promoting(self) -> None:
         campaign, _sweeps, bot, _provider = _campaign([None])  # sweep id 0 reads as failed

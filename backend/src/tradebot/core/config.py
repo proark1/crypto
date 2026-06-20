@@ -15,7 +15,7 @@ from typing import Literal
 from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from tradebot.core.models import AutonomyMode
+from tradebot.core.models import AutonomyMode, NonNegativeAmount, PositiveAmount
 
 
 def validate_symbol_quote(symbol: str, quote_currency: str) -> None:
@@ -109,17 +109,17 @@ class AppConfig(BaseSettings):
     database_url: str | None = None
     """Postgres DSN (``postgresql+asyncpg://...``); required to run the worker."""
 
-    paper_initial_balance_quote: Decimal = Decimal("10000")
-    """Starting paper balance in the quote currency."""
+    paper_initial_balance_quote: PositiveAmount = Decimal("10000")
+    """Starting paper balance in the quote currency (must be > 0)."""
 
-    buy_fee_bps: Decimal = Decimal("10")
+    buy_fee_bps: NonNegativeAmount = Decimal("10")
     """Trading fee charged on every *buy* fill, in basis points of notional
     (10 bps = 0.1%, the conventional spot taker fee). This is only the boot
     default: once an operator sets fees in the UI, the persisted value wins.
     Applies to live paper fills across every bot; backtests keep their own
     deterministic cost model."""
 
-    sell_fee_bps: Decimal = Decimal("10")
+    sell_fee_bps: NonNegativeAmount = Decimal("10")
     """Trading fee charged on every *sell* fill, in basis points of notional
     (see ``buy_fee_bps``)."""
 
@@ -412,6 +412,16 @@ class AppConfig(BaseSettings):
     campaign_cooldown_minutes: float = Field(default=30.0, gt=0.0)
     """Rest between campaigns, to leave CPU for live trading."""
 
+    campaign_max_lifetime_promotions_per_target: int = Field(default=0, ge=0)
+    """Per-target lifetime cap on the campaign loop's auto-promotions; ``0``
+    (the default) disables it. The loop runs forever, so without an outer
+    bound its cumulative multiple-comparisons exposure grows without limit.
+    Past this many promotions for a target (summed across all its campaigns
+    from the durable history), its campaigns keep researching but no longer
+    change the live config, until a human reviews and promotes manually or
+    raises the cap. Disabled by default so existing behaviour is unchanged
+    until an operator opts in."""
+
     @model_validator(mode="after")
     def _backfill_must_cover_campaign_window(self) -> AppConfig:
         """Reject a backfill shallower than the campaign's full data span.
@@ -496,5 +506,6 @@ class AppConfig(BaseSettings):
     proposal_ttl_seconds: int = 900
     """Co-pilot proposals expire after this many seconds unanswered."""
 
-    proposal_max_drift_fraction: Decimal = Decimal("0.01")
-    """Approval refused once price moves this fraction from the proposal price."""
+    proposal_max_drift_fraction: PositiveAmount = Decimal("0.01")
+    """Approval refused once price moves this fraction from the proposal price
+    (must be > 0)."""

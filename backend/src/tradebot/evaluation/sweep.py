@@ -49,12 +49,18 @@ from tradebot.execution import FillSimulatorConfig
 from tradebot.marketdata import aggregate_candles
 from tradebot.persistence import CandleStore, EvaluationStore
 from tradebot.strategies import (
+    AdxTrendConfig,
+    AdxTrendStrategy,
+    BollingerReversionConfig,
+    BollingerReversionStrategy,
     BreakoutConfig,
     BreakoutStrategy,
     CompositeStrategy,
     FundingConfig,
     FundingProvider,
     FundingStrategy,
+    KeltnerConfig,
+    KeltnerStrategy,
     MeanReversionConfig,
     MeanReversionStrategy,
     MomentumConfig,
@@ -62,6 +68,8 @@ from tradebot.strategies import (
     SqueezeConfig,
     SqueezeStrategy,
     Strategy,
+    SupertrendConfig,
+    SupertrendStrategy,
     TrendFollowingConfig,
     TrendFollowingStrategy,
 )
@@ -87,17 +95,22 @@ STRATEGY_FAMILIES: Mapping[str, tuple[type[BaseModel], Callable[..., Strategy]]]
     "breakout": (BreakoutConfig, BreakoutStrategy),
     "momentum": (MomentumConfig, MomentumStrategy),
     "squeeze": (SqueezeConfig, SqueezeStrategy),
+    "supertrend": (SupertrendConfig, SupertrendStrategy),
+    "bollinger_reversion": (BollingerReversionConfig, BollingerReversionStrategy),
+    "adx_trend": (AdxTrendConfig, AdxTrendStrategy),
+    "keltner": (KeltnerConfig, KeltnerStrategy),
     "funding": (FundingConfig, FundingStrategy),
 }
 """Sweepable families: name -> (config model, strategy constructor). A
 candidate names its family, so one sweep can pit families against each
-other on identical scenarios. ``breakout``, ``momentum``, ``squeeze``, and
-``funding`` are research families: sweeps, evaluation, the §12.7 improvement
-rotation, and the strategy competition all grade and tune them — promotions
-change what their solo competition accounts trade — but production routing
-(which regime activates them, at whose expense) remains the §13.7 human
-decision. ``funding`` reads a per-candle funding rate from an injected
-provider (see ``build_candidate_strategy``); built without one it is inert."""
+other on identical scenarios. Every family except the two ``production``
+routes (``trend_following`` and ``mean_reversion``) is a research family:
+sweeps, evaluation, the §12.7 improvement rotation, and the strategy
+competition all grade and tune them — promotions change what their solo
+competition accounts trade — but production routing (which regime activates
+them, at whose expense) remains the §13.7 human decision. ``funding`` reads a
+per-candle funding rate from an injected provider (see
+``build_candidate_strategy``); built without one it is inert."""
 
 
 def validate_family_params(family: str, params: Mapping[str, Any]) -> None:
@@ -438,7 +451,12 @@ class SweepRunner:
         # every one of them spends part of the significance budget.
         comparisons = len(config.candidates) - 1
         report["verdict"], report["explanation"], report["significance"] = validation_verdict(
-            baseline_validation, winner_validation, comparisons=comparisons, seed=config.seed
+            baseline_validation,
+            winner_validation,
+            comparisons=comparisons,
+            seed=config.seed,
+            baseline_by_window=baseline_by_window,
+            winner_by_window=winner_by_window,
         )
         # Robustness read (§10), non-gating: does the challenger's edge
         # survive worse fees/slippage? Only when asked (manual sweeps), and
@@ -552,16 +570,45 @@ def _prose_r(value: Decimal | None) -> str:
     return str(value.quantize(Decimal("0.0001"), rounding=ROUND_HALF_EVEN))
 
 
+def _winner_window_wins(
+    baseline_by_window: Sequence[CandidateScore],
+    winner_by_window: Sequence[CandidateScore],
+) -> tuple[int, int]:
+    """Count validation windows where the winner's expectancy beat the baseline's.
+
+    Returns (wins, total). A window where either side has no comparable
+    per-trade expectancy counts against the winner — anti-overfitting errs
+    toward not promoting.
+    """
+    wins = 0
+    for base, win in zip(baseline_by_window, winner_by_window, strict=True):
+        base_r = base.expectancy_r
+        win_r = win.expectancy_r
+        if base_r is not None and win_r is not None and win_r > base_r:
+            wins += 1
+    return wins, len(winner_by_window)
+
+
 def validation_verdict(
-    baseline: CandidateScore, winner: CandidateScore, comparisons: int, seed: int
+    baseline: CandidateScore,
+    winner: CandidateScore,
+    comparisons: int,
+    seed: int,
+    *,
+    baseline_by_window: Sequence[CandidateScore] | None = None,
+    winner_by_window: Sequence[CandidateScore] | None = None,
 ) -> tuple[str, str, dict[str, Any]]:
     """Phrase the walk-forward outcome in plain words (§12.5).
 
-    Returns (verdict, explanation, significance block). "Validated" now
-    means *statistically* validated: the challenger's edge over the
-    baseline on the untouched slices must clear a one-sided bootstrap test
-    at the Bonferroni-corrected level — a grid of N variants does not get
-    N chances at a 5% fluke.
+    Returns (verdict, explanation, significance block). "Validated" means
+    *statistically* validated **and** *persistent*: the challenger's edge over
+    the baseline on the untouched slices must clear a one-sided bootstrap test
+    at the Bonferroni-corrected level (a grid of N variants does not get N
+    chances at a 5% fluke), AND — when per-window scores are supplied — the
+    challenger must beat the baseline in a strict majority of the validation
+    windows. The window gate stops an edge that lives in one lucky stretch
+    (dragging the pooled average up) from being promoted as if it were real;
+    the pooled significance test alone cannot see that concentration.
     """
     threshold = corrected_significance(comparisons)
     significance: dict[str, Any] = {
@@ -608,6 +655,24 @@ def validation_verdict(
             f"{comparisons} comparisons (p={p_value}, needs <= {threshold})",
             significance,
         )
+    # Per-window consistency gate: a real edge persists across successive
+    # validation periods rather than living in one lucky window that lifts the
+    # pooled average. Require a strict majority of windows before promoting.
+    # Skipped only when the caller passes no per-window scores (unit tests of
+    # the pooled statistics in isolation); the production sweep always does.
+    if baseline_by_window is not None and winner_by_window is not None:
+        wins, total = _winner_window_wins(baseline_by_window, winner_by_window)
+        significance["windows_won"] = wins
+        significance["windows_total"] = total
+        if wins * 2 <= total:
+            return (
+                "overfit",
+                f"{winner.candidate.name} beat {baseline.candidate.name} on the pooled "
+                f"validation data (p={p_value}) but won only {wins} of {total} validation "
+                f"windows; the edge was concentrated in a minority of periods, not "
+                f"persistent across the walk-forward — keep {baseline.candidate.name}",
+                significance,
+            )
     return (
         "validated",
         f"{winner.candidate.name} beat {baseline.candidate.name} on the untouched "

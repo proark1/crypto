@@ -53,6 +53,9 @@ Amount = Annotated[Decimal, BeforeValidator(_reject_float)]
 PositiveAmount = Annotated[Decimal, BeforeValidator(_reject_float), Field(gt=0)]
 """A monetary amount that must be strictly positive (prices, order quantities)."""
 
+NonNegativeAmount = Annotated[Decimal, BeforeValidator(_reject_float), Field(ge=0)]
+"""A monetary amount that must be zero or positive (e.g. a fee rate)."""
+
 UtcDatetime = Annotated[datetime, BeforeValidator(_ensure_utc)]
 """A timestamp guaranteed to be timezone-aware and normalized to UTC."""
 

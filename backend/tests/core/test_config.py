@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 import pytest
 from pydantic import ValidationError
 
@@ -170,3 +172,40 @@ def test_config_is_frozen(monkeypatch: pytest.MonkeyPatch) -> None:
     config = AppConfig()
     with pytest.raises(ValidationError):
         config.mode = TradingMode.LIVE  # type: ignore[misc]
+
+
+def test_money_config_rejects_float_input() -> None:
+    """Money config rejects float like every monetary domain field (invariant 1).
+
+    Env vars arrive as strings, so a float can only reach config via a
+    programmatic kwarg — exactly how tests and tools construct AppConfig. The
+    float kwargs below are deliberately wrong-typed to exercise that guard.
+    """
+    with pytest.raises(ValidationError, match="float is not allowed"):
+        AppConfig(paper_initial_balance_quote=10000.0)
+    with pytest.raises(ValidationError, match="float is not allowed"):
+        AppConfig(buy_fee_bps=10.0)
+    with pytest.raises(ValidationError, match="float is not allowed"):
+        AppConfig(sell_fee_bps=10.0)
+    with pytest.raises(ValidationError, match="float is not allowed"):
+        AppConfig(proposal_max_drift_fraction=0.01)
+
+
+def test_money_config_enforces_sane_bounds() -> None:
+    """Positive balance and drift, non-negative fees — an unsafe value fails loudly."""
+    with pytest.raises(ValidationError):
+        AppConfig(paper_initial_balance_quote=Decimal("0"))  # must be > 0
+    with pytest.raises(ValidationError):
+        AppConfig(buy_fee_bps=Decimal("-1"))  # a fee cannot be negative
+    with pytest.raises(ValidationError):
+        AppConfig(proposal_max_drift_fraction=Decimal("0"))  # must be > 0
+
+
+def test_money_config_accepts_decimal_kwarg_and_string_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A Decimal kwarg and a string env var (how config really loads) both parse exactly."""
+    monkeypatch.setenv("TRADEBOT_BUY_FEE_BPS", "7")
+    config = AppConfig(paper_initial_balance_quote=Decimal("500"))
+    assert config.paper_initial_balance_quote == Decimal("500")
+    assert config.buy_fee_bps == Decimal("7")

@@ -136,6 +136,40 @@ class TestDumpAndRestore:
         with pytest.raises(ValueError, match="unsupported backup version"):
             await restore_tables(database, bogus)
 
+    async def test_writes_after_restore_do_not_collide_on_autoincrement_id(
+        self, database: Database
+    ) -> None:
+        """The recovered bot must be able to trade.
+
+        Restore inserts rows with their original ids without advancing the
+        owning sequence, so the next autoincrement INSERT would reuse id=1 and
+        crash on the primary key. The first post-recovery write — exactly what
+        a recovered bot does — must get a fresh id, not collide.
+        """
+        await seed(database)  # one fill -> id 1
+        archive = await dump_tables(database)
+        async with database.engine.begin() as connection:
+            await connection.run_sync(metadata.drop_all)
+            await connection.run_sync(metadata.create_all)
+        await restore_tables(database, archive)
+
+        fill_store = FillStore(database)
+        # This is the write that crashed before the sequence reset.
+        await fill_store.append(
+            Fill(
+                client_order_id="ord-after-restore",
+                symbol="BTC/USDT",
+                side=Side.BUY,
+                price_quote=Decimal("100"),
+                quantity_base=Decimal("0.01"),
+                fee_quote=Decimal("0.001"),
+                filled_at=BASE_TIME + timedelta(minutes=1),
+            )
+        )
+
+        order_ids = {fill.client_order_id for fill in await fill_store.fetch_all()}
+        assert order_ids == {"ord-1", "ord-after-restore"}  # both rows, no collision
+
 
 class TestSigV4:
     def test_signature_matches_the_published_aws_test_vector(self) -> None:

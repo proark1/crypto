@@ -148,6 +148,31 @@ class RecordingStrategy:
         return None
 
 
+class SellEveryCandleStrategy:
+    """Emits a SELL on every candle while a position is held.
+
+    Drives the exit path repeatedly: if a partially-filled exit wrongly
+    cleared the single-exit latch, the next candle's SELL would size a second
+    order against the still-open position and sell it short.
+    """
+
+    @property
+    def name(self) -> str:
+        return "sell_every_candle"
+
+    def on_candle(self, candle: Candle, position: Position | None) -> Signal | None:
+        if position is None:
+            return None
+        return Signal(
+            strategy_name="sell_every_candle",
+            symbol=candle.symbol,
+            side=Side.SELL,
+            confidence=1.0,
+            stop_price_quote=Decimal("90"),
+            created_at=candle.close_time,
+        )
+
+
 class TestTradeTimeframeAggregation:
     """The engine rolls the 1m feed up to the timeframe it is told to trade.
 
@@ -324,6 +349,49 @@ class TestPaperFlowOverBus:
         await engine.process_candle(make_candle(0, 100.0))
         with pytest.raises(ValueError, match="bound to BTC/USDT"):
             await engine.process_candle(make_candle(1, 100.0, symbol="ETH/USDT"))
+
+
+class TestEntrySubmissionFailure:
+    """A submission that raises must not leak the entry's committed notional."""
+
+    async def test_failed_entry_submission_releases_committed_notional(self) -> None:
+        """The risk manager commits an entry's notional against account
+        exposure the instant it sizes the order. If submission then fails
+        (venue rejection, journal write error), the commitment must be
+        released — otherwise it leaks forever and every future entry across
+        all symbols sizes against phantom exposure until the account starves.
+        """
+
+        class RejectingAdapter(SimulatedExecutionAdapter):
+            """A venue that rejects every entry at submission time."""
+
+            async def submit(self, order: Order) -> None:
+                if order.side == Side.BUY:
+                    raise RuntimeError("venue rejected the order")
+                await super().submit(order)
+
+        portfolio = Portfolio(INITIAL_BALANCE)
+        risk = RiskManager(RiskConfig(), portfolio)
+        engine = TradingEngine(
+            TrendFollowingStrategy(
+                TrendFollowingConfig(fast_ema_period=3, slow_ema_period=6, atr_period=3)
+            ),
+            risk,
+            portfolio,
+            RejectingAdapter(FillSimulatorConfig()),
+            symbol="BTC/USDT",
+        )
+
+        with pytest.raises(RuntimeError, match="venue rejected"):
+            for index, close in enumerate(CLOSES):
+                await engine.process_candle(make_candle(index, close))
+
+        # Nothing reached the venue and no position opened, so the account
+        # must hold zero committed entry notional — not a phantom claim that
+        # would throttle the next entry.
+        assert risk._committed_entries_quote == {}
+        assert portfolio.position("BTC/USDT") is None
+        assert portfolio.quote_balance == INITIAL_BALANCE
 
 
 class TestCircuitBreakerWiring:
@@ -1084,6 +1152,51 @@ class TestProtectiveStop:
 
 
 class TestPartialFills:
+    async def test_partial_exit_fill_does_not_double_sell_into_a_short(self) -> None:
+        """A volume-capped exit fills across candles; the single-exit latch
+        must stay set until it completes.
+
+        Regression: clearing ``_pending_exit_order`` on the first *partial*
+        exit fill let the next candle's strategy SELL size a second market
+        order against the still-open position. Two exits against one spot
+        position over-sell it short — which the portfolio rejects with a hard
+        ValueError ("spot cannot go short"). The fix gates the latch clear on
+        the exit order completing.
+        """
+        portfolio = Portfolio(INITIAL_BALANCE)
+        # Seed a clean 20-unit long with no pending entry and no managed stop,
+        # so only the exit path is under test.
+        held = Decimal("20")
+        portfolio.apply_fill(
+            Fill(
+                client_order_id="seed-entry",
+                symbol="BTC/USDT",
+                side=Side.BUY,
+                quantity_base=held,
+                price_quote=Decimal("100"),
+                fee_quote=Decimal("0"),
+                filled_at=BASE_TIME,
+            )
+        )
+        engine = TradingEngine(
+            SellEveryCandleStrategy(),
+            RiskManager(RiskConfig(), portfolio),
+            portfolio,
+            # Candle volume 10, cap 0.6 -> at most 6 units/candle: the 20-unit
+            # exit can only fill across four candles (6 + 6 + 6 + 2).
+            SimulatedExecutionAdapter(FillSimulatorConfig(max_volume_fraction=Decimal("0.6"))),
+            symbol="BTC/USDT",
+        )
+
+        for index in range(8):
+            await engine.process_candle(make_candle(index, 100.0))
+
+        sells = [fill for fill in engine.fills if fill.side == Side.SELL]
+        total_sold = sum((fill.quantity_base for fill in sells), Decimal(0))
+        assert total_sold == held  # exactly one position's worth left the book
+        assert portfolio.position("BTC/USDT") is None  # flat, never short
+        assert engine.open_orders() == ()  # no second exit order left working
+
     async def test_partial_entry_rearms_the_stop_cumulatively(self, database: Database) -> None:
         """Each partial re-protects the whole position, and the order's
         journal row stays open until the remainder fills."""

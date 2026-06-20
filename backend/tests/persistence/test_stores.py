@@ -2,6 +2,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
+from sqlalchemy import text
 
 from tradebot.core.models import (
     Candle,
@@ -342,6 +343,61 @@ class TestOrderStore:
         assert loaded.order == original  # Decimal-exact, field-for-field
         assert loaded.triggered is False
 
+    async def test_cross_bot_orders_with_the_same_id_do_not_collide(
+        self, database: Database
+    ) -> None:
+        # The orders table is shared; the composite (client_order_id, bot_id)
+        # key keeps two accounts' same-id orders — and their stops — separate,
+        # where the old single-column key let one overwrite the other.
+        bot_a = OrderStore(database, "bot_a")
+        bot_b = OrderStore(database, "bot_b")
+        await bot_a.record_submitted(make_order("ord-1", order_type=OrderType.STOP_LIMIT))
+        await bot_b.record_submitted(make_order("ord-1"))
+
+        # Both rows coexist; each store sees only its own.
+        (a_open,) = await bot_a.fetch_open()
+        (b_open,) = await bot_b.fetch_open()
+        assert a_open.order.order_type == OrderType.STOP_LIMIT
+        assert b_open.order.order_type == OrderType.MARKET
+
+        # Closing one bot's order leaves the other's untouched.
+        await bot_a.mark_filled("ord-1", BASE_TIME + timedelta(minutes=1))
+        assert await bot_a.fetch_open() == []
+        assert len(await bot_b.fetch_open()) == 1
+
+    async def test_a_single_column_pk_database_is_widened_in_place(
+        self, database: Database
+    ) -> None:
+        # Revert to the old single-column key to simulate a pre-competition
+        # database, with a legacy production order already in it (inserted
+        # raw, as the old code would have, under the single-column key).
+        async with database.engine.begin() as connection:
+            await connection.execute(text("ALTER TABLE orders DROP CONSTRAINT orders_pkey"))
+            await connection.execute(text("ALTER TABLE orders ADD PRIMARY KEY (client_order_id)"))
+            await connection.execute(
+                text(
+                    "INSERT INTO orders (client_order_id, bot_id, signal_id, symbol, side, "
+                    "order_type, quantity_base, created_at, status, triggered, status_at) VALUES "
+                    "('ord-legacy', 'production', 'sig', 'BTC/USDT', 'sell', 'market', 0.001, "
+                    "'2026-01-02T00:00:00+00:00', 'open', false, '2026-01-02T00:00:00+00:00')"
+                )
+            )
+
+        # The startup schema sync widens the key in place — safe, since a wider
+        # key cannot be violated by rows the narrower one kept unique.
+        await database.create_schema()
+
+        # The legacy row survived, and a second bot can now hold the same id.
+        await OrderStore(database, "challenger").record_submitted(make_order("ord-legacy"))
+        production = {
+            o.order.client_order_id for o in await OrderStore(database, "production").fetch_open()
+        }
+        challenger = {
+            o.order.client_order_id for o in await OrderStore(database, "challenger").fetch_open()
+        }
+        assert production == {"ord-legacy"}
+        assert challenger == {"ord-legacy"}
+
     async def test_terminal_orders_are_not_restorable(self, database: Database) -> None:
         store = OrderStore(database)
         await store.record_submitted(make_order("ord-filled"))
@@ -659,6 +715,29 @@ class TestCampaignHistoryStore:
         store = CampaignHistoryStore(database)
         with pytest.raises(ValueError, match="naive datetime"):
             await store.record({"target": "x"}, datetime(2026, 1, 1))  # naive boundary
+
+    async def test_lifetime_promotions_sums_per_target(self, database: Database) -> None:
+        from tradebot.persistence import CampaignHistoryStore
+
+        store = CampaignHistoryStore(database)
+        assert await store.lifetime_promotions("momentum") == 0  # no history yet
+
+        def snap(target: str, promotions: int) -> dict[str, object]:
+            return {
+                "target": target,
+                "symbol": "BTC/USDT",
+                "status": "completed",
+                "promotions": promotions,
+                "rounds": [],
+            }
+
+        await store.record(snap("momentum", 2), BASE_TIME)
+        await store.record(snap("momentum", 1), BASE_TIME + timedelta(hours=1))
+        await store.record(snap("production", 5), BASE_TIME + timedelta(hours=2))
+
+        assert await store.lifetime_promotions("momentum") == 3  # 2 + 1, momentum only
+        assert await store.lifetime_promotions("production") == 5
+        assert await store.lifetime_promotions("breakout") == 0  # never ran
 
 
 class TestRiskStateStore:

@@ -31,11 +31,15 @@ from tradebot.evaluation.models import LearningFinding, RunStatus
 from tradebot.evaluation.runner import EvaluationRunConfig
 from tradebot.evaluation.sweep import DEFAULT_SCENARIO_COUNT, SweepCandidate, SweepConfig
 from tradebot.strategies import (
+    AdxTrendConfig,
+    BollingerReversionConfig,
     BreakoutConfig,
     FundingConfig,
+    KeltnerConfig,
     MeanReversionConfig,
     MomentumConfig,
     SqueezeConfig,
+    SupertrendConfig,
     TrendFollowingConfig,
 )
 
@@ -44,14 +48,23 @@ logger = logging.getLogger(__name__)
 PROMOTION_VERDICT = "validated"
 """The only sweep verdict that may change the traded configuration."""
 
-IMPROVEMENT_TARGETS = ("production", "breakout", "momentum", "squeeze", "funding")
+IMPROVEMENT_TARGETS = (
+    "production",
+    "breakout",
+    "momentum",
+    "squeeze",
+    "supertrend",
+    "bollinger_reversion",
+    "adx_trend",
+    "keltner",
+    "funding",
+)
 """What the loop improves, in rotation. ``production`` covers the regime-
 routed shape and therefore both of its families (trend following and mean
-reversion); ``breakout``, ``momentum``, ``squeeze``, and ``funding`` are the
-research families' solo competition accounts — tuning them sharpens the §13
-leaderboard evidence the §13.7 routing decision will be made on. Custom
-bots are absent on purpose: auto-tuning a user's recipe needs their opt-in
-(a later change)."""
+reversion); every other entry is a research family's solo competition
+account — tuning them sharpens the §13 leaderboard evidence the §13.7
+routing decision will be made on. Custom bots are absent on purpose:
+auto-tuning a user's recipe needs their opt-in (a later change)."""
 
 IMPROVEMENT_SCENARIO_COUNT = DEFAULT_SCENARIO_COUNT
 """Scenarios per candidate per period in automated research — the shared
@@ -832,6 +845,272 @@ def _funding_candidates(
     return _dedupe(raw, [])
 
 
+def _supertrend_candidates(
+    active: Mapping[str, Mapping[str, Any]],
+    findings: Sequence[tuple[int, str]],
+    scale: float = 1.0,
+) -> tuple[tuple[SweepCandidate, ...], tuple[int, ...]]:
+    """Build the supertrend family's grid: band-width variants plus knobs.
+
+    The defining knob is ``atr_multiple`` — the ATR band width that decides
+    how hard the trend locks. A *wider* band locks harder (fewer, later flips,
+    fewer whipsaws but later entries); a *tighter* band flips sooner (more,
+    earlier signals). The finding map leans on that: losing or chasing entries
+    widen the band (and add volume confirmation, the false-flip guard), while
+    staying flat through moves tightens it. Stop-width and stop-management
+    knobs ride alongside, exactly as the other trend families' grids do.
+    """
+    supertrend = SupertrendConfig(**active.get("supertrend", {}))
+    raw: list[SweepCandidate] = [
+        SweepCandidate(
+            name="active_supertrend",
+            family="supertrend",
+            params=supertrend.model_dump(),
+        ),
+        SweepCandidate(
+            name="wider_band",
+            family="supertrend",
+            params=supertrend.model_copy(
+                update={"atr_multiple": round(supertrend.atr_multiple * _step(1.5, scale), 2)}
+            ).model_dump(),
+        ),
+        SweepCandidate(
+            name="tighter_band",
+            family="supertrend",
+            params=supertrend.model_copy(
+                update={
+                    "atr_multiple": max(0.5, round(supertrend.atr_multiple * _step(0.75, scale), 2))
+                }
+            ).model_dump(),
+        ),
+        SweepCandidate(
+            name="wider_stop",
+            family="supertrend",
+            params=supertrend.model_copy(
+                update={
+                    "atr_stop_multiple": round(supertrend.atr_stop_multiple * _step(1.5, scale), 2)
+                }
+            ).model_dump(),
+        ),
+        SweepCandidate(
+            name="tighter_stop",
+            family="supertrend",
+            params=supertrend.model_copy(
+                update={
+                    "atr_stop_multiple": max(
+                        0.5, round(supertrend.atr_stop_multiple * _step(0.75, scale), 2)
+                    )
+                }
+            ).model_dump(),
+        ),
+    ]
+    motivating: list[int] = []
+    losing_entry_ids = [
+        finding_id
+        for finding_id, pattern in findings
+        if "chase" in pattern or "trend is down" in pattern or "trend is ranging" in pattern
+    ]
+    if losing_entry_ids:
+        motivating += losing_entry_ids
+        raw.append(
+            SweepCandidate(
+                name="stricter_band",
+                family="supertrend",
+                params=supertrend.model_copy(
+                    update={"atr_multiple": round(supertrend.atr_multiple * 1.4, 2)}
+                ).model_dump(),
+            )
+        )
+        volume_toggle = 1.0 if supertrend.min_volume_ratio == 0 else 0.0
+        raw.append(
+            SweepCandidate(
+                name="volume_confirm" if volume_toggle else "no_volume_confirm",
+                family="supertrend",
+                params=supertrend.model_copy(
+                    update={"min_volume_ratio": volume_toggle}
+                ).model_dump(),
+            )
+        )
+    missed_ids = [finding_id for finding_id, pattern in findings if "stays flat" in pattern]
+    if missed_ids:
+        # The easier-entry knob is the tighter band already in the base grid;
+        # the finding rides as motivation without spending another candidate.
+        motivating += missed_ids
+    wrong_hold_ids = [
+        finding_id for finding_id, pattern in findings if "ride into their stops" in pattern
+    ]
+    if wrong_hold_ids:
+        motivating += wrong_hold_ids
+        raw.append(
+            SweepCandidate(
+                name="breakeven_lock" if supertrend.breakeven_at_r == 0 else "no_breakeven",
+                family="supertrend",
+                params=supertrend.model_copy(
+                    update={"breakeven_at_r": 1.0 if supertrend.breakeven_at_r == 0 else 0.0}
+                ).model_dump(),
+            )
+        )
+    early_exit_ids = [finding_id for finding_id, pattern in findings if "cut winners" in pattern]
+    if early_exit_ids:
+        motivating += early_exit_ids
+        trail_toggle = supertrend.atr_stop_multiple if supertrend.trail_atr_multiple == 0 else 0.0
+        raw.append(
+            SweepCandidate(
+                name="atr_trailing" if trail_toggle else "no_trailing",
+                family="supertrend",
+                params=supertrend.model_copy(
+                    update={"trail_atr_multiple": trail_toggle}
+                ).model_dump(),
+            )
+        )
+    return _dedupe(raw, motivating)
+
+
+def _stop_variants(family: str, config: Any, scale: float) -> list[SweepCandidate]:
+    """Build the two shared stop-width variants every ATR-stop family carries."""
+    return [
+        SweepCandidate(
+            name="wider_stop",
+            family=family,
+            params=config.model_copy(
+                update={"atr_stop_multiple": round(config.atr_stop_multiple * _step(1.5, scale), 2)}
+            ).model_dump(),
+        ),
+        SweepCandidate(
+            name="tighter_stop",
+            family=family,
+            params=config.model_copy(
+                update={
+                    "atr_stop_multiple": max(
+                        0.5, round(config.atr_stop_multiple * _step(0.75, scale), 2)
+                    )
+                }
+            ).model_dump(),
+        ),
+    ]
+
+
+def _bollinger_reversion_candidates(
+    active: Mapping[str, Mapping[str, Any]],
+    findings: Sequence[tuple[int, str]],
+    scale: float = 1.0,
+) -> tuple[tuple[SweepCandidate, ...], tuple[int, ...]]:
+    """Build the Bollinger-reversion grid: band-width variants plus the stop.
+
+    The defining knob is ``num_stddev`` — how stretched a move must be to
+    count as oversold. A *wider* band demands a more extreme stretch (fewer,
+    higher-conviction entries); a *tighter* one triggers on milder dips.
+    """
+    config = BollingerReversionConfig(**active.get("bollinger_reversion", {}))
+    raw: list[SweepCandidate] = [
+        SweepCandidate(
+            name="active_bollinger_reversion",
+            family="bollinger_reversion",
+            params=config.model_dump(),
+        ),
+        SweepCandidate(
+            name="wider_band",
+            family="bollinger_reversion",
+            params=config.model_copy(
+                update={"num_stddev": round(config.num_stddev * _step(1.25, scale), 2)}
+            ).model_dump(),
+        ),
+        SweepCandidate(
+            name="tighter_band",
+            family="bollinger_reversion",
+            params=config.model_copy(
+                update={"num_stddev": max(0.5, round(config.num_stddev * _step(0.8, scale), 2))}
+            ).model_dump(),
+        ),
+        *_stop_variants("bollinger_reversion", config, scale),
+    ]
+    return _dedupe(raw, [])
+
+
+def _adx_trend_candidates(
+    active: Mapping[str, Mapping[str, Any]],
+    findings: Sequence[tuple[int, str]],
+    scale: float = 1.0,
+) -> tuple[tuple[SweepCandidate, ...], tuple[int, ...]]:
+    """Build the ADX-trend grid: trend-strength gate variants plus the stop.
+
+    The defining knob is ``adx_threshold`` — the minimum trend strength an
+    entry requires. A *higher* gate demands a stronger trend (fewer entries,
+    less chop); a *lower* one admits weaker trends (more entries).
+    """
+    config = AdxTrendConfig(**active.get("adx_trend", {}))
+    raw: list[SweepCandidate] = [
+        SweepCandidate(
+            name="active_adx_trend",
+            family="adx_trend",
+            params=config.model_dump(),
+        ),
+        SweepCandidate(
+            name="stricter_gate",
+            family="adx_trend",
+            params=config.model_copy(
+                update={"adx_threshold": round(config.adx_threshold * _step(1.25, scale), 1)}
+            ).model_dump(),
+        ),
+        SweepCandidate(
+            name="looser_gate",
+            family="adx_trend",
+            params=config.model_copy(
+                update={
+                    "adx_threshold": max(5.0, round(config.adx_threshold * _step(0.8, scale), 1))
+                }
+            ).model_dump(),
+        ),
+        *_stop_variants("adx_trend", config, scale),
+    ]
+    return _dedupe(raw, [])
+
+
+def _keltner_candidates(
+    active: Mapping[str, Mapping[str, Any]],
+    findings: Sequence[tuple[int, str]],
+    scale: float = 1.0,
+) -> tuple[tuple[SweepCandidate, ...], tuple[int, ...]]:
+    """Build the Keltner grid: channel-width variants plus the stop.
+
+    The defining knob is ``channel_atr_multiple`` — how far price must thrust
+    to break out. A *wider* channel demands a stronger thrust (fewer, later
+    entries); a *tighter* one triggers on milder breaks.
+    """
+    config = KeltnerConfig(**active.get("keltner", {}))
+    raw: list[SweepCandidate] = [
+        SweepCandidate(
+            name="active_keltner",
+            family="keltner",
+            params=config.model_dump(),
+        ),
+        SweepCandidate(
+            name="wider_channel",
+            family="keltner",
+            params=config.model_copy(
+                update={
+                    "channel_atr_multiple": round(
+                        config.channel_atr_multiple * _step(1.5, scale), 2
+                    )
+                }
+            ).model_dump(),
+        ),
+        SweepCandidate(
+            name="tighter_channel",
+            family="keltner",
+            params=config.model_copy(
+                update={
+                    "channel_atr_multiple": max(
+                        0.5, round(config.channel_atr_multiple * _step(0.75, scale), 2)
+                    )
+                }
+            ).model_dump(),
+        ),
+        *_stop_variants("keltner", config, scale),
+    ]
+    return _dedupe(raw, [])
+
+
 def build_candidates_for(
     target: str,
     active: Mapping[str, Mapping[str, Any]],
@@ -856,6 +1135,14 @@ def build_candidates_for(
         return _momentum_candidates(active, findings, scale)
     if target == "squeeze":
         return _squeeze_candidates(active, findings, scale)
+    if target == "supertrend":
+        return _supertrend_candidates(active, findings, scale)
+    if target == "bollinger_reversion":
+        return _bollinger_reversion_candidates(active, findings, scale)
+    if target == "adx_trend":
+        return _adx_trend_candidates(active, findings, scale)
+    if target == "keltner":
+        return _keltner_candidates(active, findings, scale)
     if target == "funding":
         return _funding_candidates(active, findings, scale)
     raise ValueError(f"no improvement grid for {target!r}; known: {IMPROVEMENT_TARGETS}")
@@ -881,6 +1168,14 @@ def _single_family_grid(
         return _momentum_candidates(active, findings, scale)
     if family == "squeeze":
         return _squeeze_candidates(active, findings, scale)
+    if family == "supertrend":
+        return _supertrend_candidates(active, findings, scale)
+    if family == "bollinger_reversion":
+        return _bollinger_reversion_candidates(active, findings, scale)
+    if family == "adx_trend":
+        return _adx_trend_candidates(active, findings, scale)
+    if family == "keltner":
+        return _keltner_candidates(active, findings, scale)
     if family == "funding":
         return _funding_candidates(active, findings, scale)
     candidates, motivating = build_improvement_candidates(active, findings, scale)
