@@ -32,7 +32,7 @@ ready — so it changes only by an explicit amendment.
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Mapping, Sequence
+from collections.abc import Container, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation
@@ -124,6 +124,19 @@ class RoutingCandidacy:
     def is_candidate(self) -> bool:
         """A routing *candidate* only when all three conditions hold."""
         return self.validated_edge.met and self.beats_incumbent.met and self.live_paper.met
+
+
+def newly_qualified_candidates(
+    candidacies: Sequence[RoutingCandidacy], already_alerted: Container[str]
+) -> list[str]:
+    """Return families that are §13.7 candidates and not yet alerted about.
+
+    Pure: the worker passes the current candidacy verdicts and the set of
+    families it has already announced, and gets back the ones to announce now
+    (in candidacy order). Drives the once-per-family alert without re-spamming
+    on every watch tick or after a redeploy.
+    """
+    return [c.family for c in candidacies if c.is_candidate and c.family not in already_alerted]
 
 
 def evaluate_candidacy(evidence: CandidacyEvidence, now: datetime) -> RoutingCandidacy:

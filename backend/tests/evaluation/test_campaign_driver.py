@@ -173,6 +173,34 @@ class TestCampaignDriver:
         assert status.config.prior_promotions == 4
         assert status.config.max_lifetime_promotions == 5
 
+    async def test_auto_revert_defaults_off_in_the_campaign(self) -> None:
+        # The library default stays alert-only; the worker opts campaigns in.
+        status = await _driver(DriverResearch("baseline_best")).run_one()
+
+        assert status is not None and status.config.auto_revert is False
+
+    async def test_auto_revert_is_wired_from_driver_config_into_the_campaign(self) -> None:
+        # The tripwire toggle must reach the campaign that acts on it; a dropped
+        # mapping here would silently disable auto-revert in production.
+        research = DriverResearch("baseline_best")
+        driver = CampaignDriver(
+            sweeps=research,
+            store=research,
+            candle_store=NoCandles(),
+            active_params=_no_active_params,
+            symbols=lambda: ("BTC/USDT",),
+            promote=_promote,
+            confirm=None,
+            config=CampaignDriverConfig(
+                max_rounds=1, cooldown_minutes=0.001, scenario_count=10, auto_revert=True
+            ),
+            clock=lambda: _NOW,
+        )
+
+        status = await driver.run_one()
+
+        assert status is not None and status.config.auto_revert is True
+
     async def test_rotation_advances_through_every_target_then_wraps(self) -> None:
         driver = _driver(DriverResearch("baseline_best"))
 

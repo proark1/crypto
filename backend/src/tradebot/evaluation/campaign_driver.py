@@ -113,6 +113,13 @@ class CampaignDriverConfig(BaseModel):
     """How the ``production`` campaign grades its holdout — the regime router
     (the bot's real shape) when on, the trend family alone when off."""
 
+    auto_revert: bool = False
+    """Auto-revert a campaign whose reserved holdout arms a revert (a
+    bootstrap-significant out-of-sample regression of its net change), instead
+    of only alerting — the reproducibility tripwire (see
+    ``CampaignConfig.auto_revert``). The worker maps
+    ``campaign_auto_revert_on_regression`` onto this."""
+
 
 class CampaignDriver:
     """Runs research campaigns continuously across the §12.7 target rotation."""
@@ -294,4 +301,5 @@ class CampaignDriver:
             min_scale=config.min_scale,
             max_lifetime_promotions=config.max_lifetime_promotions_per_target,
             prior_promotions=prior_promotions,
+            auto_revert=config.auto_revert,
         )

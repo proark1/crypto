@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable, Coroutine, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Collection, Coroutine, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, Protocol
@@ -187,6 +187,17 @@ class CampaignConfig(BaseModel):
     campaigns, not a per-campaign one. ``0`` for a directly-constructed
     campaign with no history."""
 
+    auto_revert: bool = False
+    """When the reserved holdout *arms a revert* — a bootstrap-significant
+    out-of-sample regression of the campaign's net change — undo it instead of
+    only alerting. The promoted families are reverted to the params they had
+    when the campaign started, journaled as a new (revertible) version. This is
+    the reproducibility tripwire: a promotion that does not reproduce its edge
+    on the untouched slice is rolled back automatically. ``False`` (the safe
+    library default) keeps the historical alert-only behaviour; the worker
+    turns it on via ``campaign_auto_revert_on_regression``. Gated on the same
+    significant evidence as the alert, so it never reverts on noise."""
+
     def interval(self) -> CandleInterval:
         """Parse the timeframe; raises ``ValueError`` on unknown ones."""
         return CandleInterval(self.timeframe)
@@ -304,6 +315,10 @@ class ResearchCampaign:
         status = CampaignStatus(config=config, started_at=started)
         self.status = status
         start_params = _snapshot(self._active_params())
+        # The families this campaign actually promotes — the exact set the
+        # tripwire reverts, so a first-ever promotion (no row at start) is
+        # undone and a family the campaign never touched is left alone.
+        promoted_families: set[str] = set()
         holdout_start = started - timedelta(days=config.holdout_days)
         status.holdout_start = holdout_start
         deadline = started + timedelta(hours=config.max_hours)
@@ -331,10 +346,12 @@ class ResearchCampaign:
                 if scale < config.min_scale:
                     status.stop_reason = "converged: no validated improvement at the finest step"
                     break
-                advanced = await self._run_round(config, holdout_start, scale, status)
+                advanced = await self._run_round(
+                    config, holdout_start, scale, status, promoted_families
+                )
                 scale = 1.0 if advanced else scale * config.refine_factor
             status.holdout_read = await self._holdout_read(config, start_params, holdout_start)
-            await self._maybe_alert_revert(config, status.holdout_read)
+            await self._maybe_revert(config, start_params, promoted_families, status.holdout_read)
             status.status = RunStatus.COMPLETED.value
             logger.info(
                 "research campaign on %s/%s completed: %d round(s), %d promotion(s) — %s",
@@ -360,11 +377,14 @@ class ResearchCampaign:
         holdout_start: datetime,
         scale: float,
         status: CampaignStatus,
+        promoted_families: set[str],
     ) -> bool:
         """Run one round; return whether it promoted (and so advanced the incumbent).
 
         Appends exactly one ``CampaignRound`` to ``status`` whatever happens,
-        so the budget always advances and the record is never silent.
+        so the budget always advances and the record is never silent. Records
+        any promoted family in ``promoted_families`` so the holdout tripwire
+        knows exactly what to revert.
         """
         index = len(status.rounds)
         candidates_seq, motivating = await self._candidates(self._active_params(), scale)
@@ -485,6 +505,7 @@ class ResearchCampaign:
             winner.family, winner.params, sweep_id, f"auto-promoted (campaign): {explanation}"
         )
         status.promotions += 1
+        promoted_families.add(winner.family)
         status.rounds.append(
             CampaignRound(
                 index,
@@ -528,22 +549,63 @@ class ResearchCampaign:
             )
             return None
 
-    async def _maybe_alert_revert(
-        self, config: CampaignConfig, read: dict[str, Any] | None
+    async def _maybe_revert(
+        self,
+        config: CampaignConfig,
+        start_params: Mapping[str, Mapping[str, Any]],
+        promoted_families: Collection[str],
+        read: dict[str, Any] | None,
     ) -> None:
-        """Notify the operator when the holdout armed a revert (never auto-flip).
+        """Act on an armed revert: auto-undo when enabled, else only alert.
 
-        The read gates the alarm (a bootstrap-significant out-of-sample
-        regression), so this fires only on real evidence, not on a flat or
-        noisy move. It only *informs* — the config is never reverted
-        automatically; a human acts on the one-click revert the read armed.
+        The read gates the action (a bootstrap-significant out-of-sample
+        regression of the campaign's net change), so it fires only on real
+        evidence, not on a flat or noisy move — the reproducibility tripwire. A
+        promotion that does not reproduce its edge on the untouched slice is, by
+        construction, the overfit the whole pipeline guards against.
+
+        With ``auto_revert`` on, each family this campaign promoted is restored
+        to its start-of-campaign value through the journaled, revertible promote
+        path (a human can re-promote or re-revert), and the operator is told
+        what was undone. A family that had no settings row at the start (its
+        first-ever promotion) reverts to ``{}`` — i.e. back to code defaults,
+        the exact pre-campaign state — which is the common, and most important,
+        tripwire case. With it off, the historical behaviour: only inform, and a
+        human acts on the one-click revert the read armed.
         """
-        if self._notify is None or read is None or not read.get("revert_armed"):
+        if read is None or not read.get("revert_armed"):
             return
-        await self._notify(
+        explanation = str(read.get("explanation", ""))
+        if not config.auto_revert:
+            if self._notify is not None:
+                await self._notify(
+                    f"campaign on {config.target}/{config.symbol}: the untouched holdout flagged "
+                    f"an out-of-sample regression — revert armed for review. {explanation}"
+                )
+            return
+        final_params = _snapshot(self._active_params())
+        # Restrict to families this campaign promoted (not a global diff of the
+        # shared live state), and skip any whose net change is already zero.
+        reverted = [
+            family
+            for family in sorted(promoted_families)
+            if final_params.get(family, {}) != dict(start_params.get(family, {}))
+        ]
+        for family in reverted:
+            await self._promote(
+                family,
+                dict(start_params.get(family, {})),
+                None,
+                f"auto-revert: out-of-sample regression on {config.target}/{config.symbol}",
+            )
+        message = (
             f"campaign on {config.target}/{config.symbol}: the untouched holdout flagged an "
-            f"out-of-sample regression — revert armed for review. {read.get('explanation', '')}"
+            f"out-of-sample regression — auto-reverted {', '.join(reverted) or 'nothing'} to the "
+            f"pre-campaign config. {explanation}"
         )
+        logger.info("%s", message)
+        if self._notify is not None:
+            await self._notify(message)
 
     async def _await_report(self, sweep_id: int) -> dict[str, Any] | None:
         """Poll until the sweep is terminal; ``None`` unless it completed."""

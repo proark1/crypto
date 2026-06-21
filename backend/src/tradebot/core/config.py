@@ -431,6 +431,16 @@ class AppConfig(BaseSettings):
     Moves no money and pauses no account — it only reallocates research time;
     off restores the flat rotation."""
 
+    campaign_auto_revert_on_regression: bool = True
+    """The reproducibility tripwire: when a campaign's reserved holdout arms a
+    revert — a bootstrap-significant out-of-sample regression of its net change
+    — undo the promotion automatically (restore the pre-campaign params through
+    the journaled, revertible path) rather than only alerting. On by default
+    because reverting a promotion that fails to reproduce its edge on the
+    untouched slice is the *safe* direction (it removes a likely overfit, and a
+    human can re-promote). Gated on the same significant evidence as the alert,
+    so it never reverts on noise; routing a family live is unaffected (§13.7)."""
+
     @model_validator(mode="after")
     def _backfill_must_cover_campaign_window(self) -> AppConfig:
         """Reject a backfill shallower than the campaign's full data span.

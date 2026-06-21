@@ -9,9 +9,12 @@ from tradebot.competition.candidacy import (
     RESEARCH_FAMILIES,
     CandidacyEvidence,
     ComparisonOutcome,
+    Condition,
+    RoutingCandidacy,
     assemble_candidacies,
     best_regime,
     evaluate_candidacy,
+    newly_qualified_candidates,
 )
 
 NOW = datetime(2026, 6, 13, tzinfo=UTC)
@@ -308,3 +311,37 @@ def _crun(
         "summary": {"by_archetype": {regime: {"expectancy_r": expectancy_r}}},
         "created_at": created_at,
     }
+
+
+def _candidacy(family: str, *, candidate: bool) -> RoutingCandidacy:
+    on = Condition(met=True, detail="")
+    off = Condition(met=False, detail="")
+    # A non-candidate fails one condition (the validated edge); the rest hold.
+    return RoutingCandidacy(family, on if candidate else off, on, on)
+
+
+class TestNewlyQualifiedCandidates:
+    def test_returns_only_new_candidates_in_order(self) -> None:
+        candidacies = [
+            _candidacy("breakout", candidate=True),
+            _candidacy("momentum", candidate=True),
+            _candidacy("squeeze", candidate=False),
+        ]
+        # momentum was already alerted; breakout is newly qualified; squeeze is
+        # not a candidate at all.
+        assert newly_qualified_candidates(candidacies, {"momentum"}) == ["breakout"]
+
+    def test_empty_when_all_candidates_already_alerted(self) -> None:
+        candidacies = [_candidacy("breakout", candidate=True)]
+        assert newly_qualified_candidates(candidacies, {"breakout"}) == []
+
+    def test_preserves_candidacy_order_across_multiple_new_candidates(self) -> None:
+        # Two survivors: the output must keep their input (candidacy) order.
+        candidacies = [
+            _candidacy("squeeze", candidate=True),
+            _candidacy("breakout", candidate=True),
+        ]
+        assert newly_qualified_candidates(candidacies, set()) == ["squeeze", "breakout"]
+
+    def test_empty_input_yields_nothing(self) -> None:
+        assert newly_qualified_candidates([], set()) == []

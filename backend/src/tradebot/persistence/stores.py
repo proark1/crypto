@@ -32,6 +32,7 @@ from tradebot.persistence.database import (
     bot_capital_table,
     campaign_history_table,
     campaign_settings_table,
+    candidacy_alerts_table,
     candles_table,
     coins_table,
     custom_bots_table,
@@ -831,6 +832,36 @@ class CampaignSettingsStore:
         async with self._database.engine.connect() as connection:
             row = (await connection.execute(statement)).first()
         return None if row is None else bool(row[0])
+
+
+class CandidacyAlertStore:
+    """Which research families the operator has already been told earned §13.7.
+
+    The dedup behind the candidacy alert: it fires once per family, not on
+    every watch tick and not again after every redeploy. A family stays
+    recorded even if it later loses candidacy, so a brief flap does not re-spam.
+    """
+
+    def __init__(self, database: Database) -> None:
+        """Bind the store to ``database``."""
+        self._database = database
+
+    async def load_alerted(self) -> set[str]:
+        """Return the set of families already alerted about."""
+        statement = select(candidacy_alerts_table.c.family)
+        async with self._database.engine.connect() as connection:
+            rows = (await connection.execute(statement)).all()
+        return {str(row[0]) for row in rows}
+
+    async def mark(self, family: str, at: datetime) -> None:
+        """Record that ``family`` has been alerted (idempotent on the family)."""
+        _require_aware(at)
+        row = {"family": family, "alerted_at": at}
+        statement = pg_insert(candidacy_alerts_table).on_conflict_do_nothing(
+            index_elements=["family"]
+        )
+        async with self._database.engine.begin() as connection:
+            await connection.execute(statement, [row])
 
 
 class CampaignHistoryStore:
