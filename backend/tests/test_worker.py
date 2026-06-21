@@ -6,11 +6,13 @@ import os
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from typing import cast
 
 import httpx
 import pytest
 
 from tradebot.competition import LINEUP, PRODUCTION_BOT_ID, CompetitorSpec, validate_rules
+from tradebot.competition.candidacy import Condition, RoutingCandidacy
 from tradebot.core.config import AppConfig, TradingMode
 from tradebot.core.events import CandleClosed
 from tradebot.core.models import (
@@ -24,6 +26,7 @@ from tradebot.core.models import (
 )
 from tradebot.evaluation.runner import EvaluationRunConfig
 from tradebot.marketdata.live_feed import OhlcvRow
+from tradebot.notify.telegram import TelegramNotifier
 from tradebot.persistence import Database, FillStore, OrderStore
 from tradebot.persistence.database import metadata
 from tradebot.worker import PRODUCTION_FAMILIES, Worker, _campaign_snapshot
@@ -1497,3 +1500,122 @@ class TestShutdown:
             run_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await run_task
+
+
+class _FakeNotifier:
+    """Stands in for ``TelegramNotifier``: records sends, scripts the result.
+
+    ``send`` returns ``deliver`` so a rejected/failed delivery (``False``) can
+    be exercised without a network — the candidacy watch must not record a
+    family as alerted unless its alert was actually delivered.
+    """
+
+    def __init__(self, deliver: bool = True) -> None:
+        self.deliver = deliver
+        self.sent: list[str] = []
+
+    async def send(self, text: str) -> bool:
+        self.sent.append(text)
+        return self.deliver
+
+
+def _candidacy(family: str, *, candidate: bool) -> RoutingCandidacy:
+    on = Condition(met=True, detail="")
+    off = Condition(met=False, detail="")
+    # A non-candidate fails one condition (the validated edge); the rest hold.
+    return RoutingCandidacy(family, on if candidate else off, on, on)
+
+
+class TestCandidacyWatch:
+    """The §13.7 candidacy alert: the glue that reads, notifies, and dedups."""
+
+    async def test_alerts_a_newly_qualified_family_and_records_it(
+        self, database: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        worker = Worker(make_config(), database, ScriptedExchange([]))
+        fake = _FakeNotifier(deliver=True)
+        worker._notifier = cast(TelegramNotifier, fake)
+
+        async def candidacies() -> list[RoutingCandidacy]:
+            return [_candidacy("breakout", candidate=True)]
+
+        monkeypatch.setattr(worker, "routing_candidacies", candidacies)
+
+        await worker._alert_new_candidacies()
+
+        assert len(fake.sent) == 1
+        assert "breakout" in fake.sent[0] and "routing candidacy" in fake.sent[0]
+        assert await worker.candidacy_alert_store.load_alerted() == {"breakout"}
+
+    async def test_does_not_re_alert_an_already_recorded_family(
+        self, database: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        worker = Worker(make_config(), database, ScriptedExchange([]))
+        await worker.candidacy_alert_store.mark("breakout", BASE_TIME)
+        fake = _FakeNotifier(deliver=True)
+        worker._notifier = cast(TelegramNotifier, fake)
+
+        async def candidacies() -> list[RoutingCandidacy]:
+            return [_candidacy("breakout", candidate=True)]
+
+        monkeypatch.setattr(worker, "routing_candidacies", candidacies)
+
+        await worker._alert_new_candidacies()
+
+        assert fake.sent == []  # already announced; the dedup holds
+        assert await worker.candidacy_alert_store.load_alerted() == {"breakout"}
+
+    async def test_a_failed_send_leaves_the_family_unrecorded_for_retry(
+        self, database: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The one human gate must not be silently suppressed: a send that fails
+        # leaves the family unmarked, so the next tick retries until delivered.
+        worker = Worker(make_config(), database, ScriptedExchange([]))
+        fake = _FakeNotifier(deliver=False)
+        worker._notifier = cast(TelegramNotifier, fake)
+
+        async def candidacies() -> list[RoutingCandidacy]:
+            return [_candidacy("breakout", candidate=True)]
+
+        monkeypatch.setattr(worker, "routing_candidacies", candidacies)
+
+        await worker._alert_new_candidacies()
+
+        assert len(fake.sent) == 1  # attempted...
+        assert await worker.candidacy_alert_store.load_alerted() == set()  # ...but not recorded
+
+        fake.deliver = True  # the next tick's send goes through
+        await worker._alert_new_candidacies()
+
+        assert len(fake.sent) == 2  # retried
+        assert await worker.candidacy_alert_store.load_alerted() == {"breakout"}
+
+    async def test_no_notifier_short_circuits_before_any_candidacy_read(
+        self, database: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        worker = Worker(make_config(), database, ScriptedExchange([]))
+        worker._notifier = None  # nobody to tell
+        read = False
+
+        async def candidacies() -> list[RoutingCandidacy]:
+            nonlocal read
+            read = True
+            return []
+
+        monkeypatch.setattr(worker, "routing_candidacies", candidacies)
+
+        await worker._alert_new_candidacies()
+
+        assert read is False  # skipped the (potentially expensive) read entirely
+
+    async def test_the_watch_loop_returns_on_the_stop_latch(self, database: Database) -> None:
+        # The regression guard for the shutdown hang: the watch runs inside the
+        # run TaskGroup, which only closes once every task returns — so the loop
+        # must exit on the stop latch, not merely on cancellation.
+        worker = Worker(make_config(), database, ScriptedExchange([]))
+        worker._notifier = None  # each tick is a no-op; the loop must still exit
+        task = asyncio.create_task(worker._run_candidacy_watch())
+        await asyncio.sleep(0)  # let it reach the stop-aware wait
+        worker._stop_requested.set()
+
+        await asyncio.wait_for(task, timeout=5)  # returns promptly, does not hang

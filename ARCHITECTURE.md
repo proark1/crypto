@@ -869,17 +869,26 @@ structural. Every round is graded strictly *before* a **reserved holdout**
 (`SweepConfig.window_end`): the most-recent `campaign_holdout_days` are never
 swept, so the search cannot turn the validation windows into a second
 training set across rounds. At the end the untouched slice grades the
-campaign's net move once — start config versus final — a **never-auto-flip
+campaign's net move once — start config versus final — an **out-of-sample
 honesty read**: it never vetoes a step (every step was already walk-forward
-validated) and never reverts the live config on its own (a continuous bot
-must not flip itself on one slice), and the verdict is withheld unless both
-sides clear the minimum-trades bar. But the slice it grades is the one the
-search never touched, so the read does more than narrate — it **arms** the
-human's one-click revert when the start configuration *significantly* beats
-the final one out of sample. "Significantly" is the same block-bootstrap
-superiority test the sweeps use, at `BASE_SIGNIFICANCE`, so a flat or noisy
-move never raises a false alarm and a real regression never passes as "no
-improvement"; an armed revert also sends an operator alert. The fixed budget
+validated), and the verdict is withheld unless both sides clear the
+minimum-trades bar. But the slice it grades is the one the search never
+touched, so the read does more than narrate — it **arms a revert** when the
+start configuration *significantly* beats the final one out of sample.
+"Significantly" is the same block-bootstrap superiority test the sweeps use,
+at `BASE_SIGNIFICANCE`, so a flat or noisy move never raises a false alarm and
+a real regression never passes as "no improvement". An armed revert is the
+**reproducibility tripwire**: a promotion that fails to reproduce its edge on
+the untouched slice is, by construction, the overfit the whole pipeline guards
+against. With `campaign_auto_revert_on_regression` on (the default), the armed
+revert is *acted on* — each family the campaign changed is restored to its
+pre-campaign params through the journaled, revertible promote path, and the
+operator is told what was undone — because reverting a promotion that does not
+reproduce is the *safe* direction (a human can re-promote). Turned off, it
+keeps the historical never-auto-flip behaviour: only alert, and a human acts on
+the one-click revert. Either way the action is gated on the same significant
+evidence, so it never fires on noise; routing a family live is untouched
+(§13.7). The fixed budget
 bounds how many lucky draws the search gets, on top of each round's
 Bonferroni bar. Each round also samples a **different scenario draw** (the
 round's sweep seed is derived as `base_seed * 1000 + round_index`), so a
@@ -1234,6 +1243,14 @@ and reports whether all three hold. The evaluation is pure
 over the fetched record (database-free, fully tested); the surface only
 flags candidacy, exactly as this section requires — it never routes
 anything.
+
+So the operator does not have to watch that surface, a light **candidacy
+watch** (worker loop, one slow tick) alerts the moment a family newly meets
+all three conditions — the autonomous flywheel runs the research up to the
+gate and then *taps the human on the shoulder* for the one step it reserves.
+The alert is deduped (one row per alerted family in `candidacy_alerts`), so it
+fires once, not on every tick and not again after a redeploy, and it stays an
+alert: routing the family in is still the human decision above.
 
 ### 13.8 The bake-off (one button, the whole grid)
 

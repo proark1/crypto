@@ -412,6 +412,172 @@ class TestResearchCampaign:
 
         assert any("revert armed for review" in message for message in recorder.messages)
 
+    async def test_a_holdout_armed_revert_auto_reverts_when_enabled(self) -> None:
+        # auto_revert on (the reproducibility tripwire): the armed revert is
+        # acted on, not just announced — the promoted family is restored to its
+        # pre-campaign params through the journaled, revertible promote path.
+        recorder = Recorder()
+
+        async def regressed_holdout(
+            start_params: Mapping[str, Mapping[str, Any]],
+            final_params: Mapping[str, Mapping[str, Any]],
+            holdout_start: datetime,
+        ) -> dict[str, Any] | None:
+            return {"revert_armed": True, "explanation": "start beats final out of sample"}
+
+        bot = FakeBot({"momentum": {"fast_ema_period": 12, "slow_ema_period": 26}})
+        campaign, _sweeps, _bot, _provider = _campaign(
+            [_validated()], bot=bot, holdout=regressed_holdout, notify=recorder
+        )
+
+        await campaign.run(_config(max_rounds=1, auto_revert=True))
+
+        # The validated round promoted the challenger, then the armed revert
+        # restored the start-of-campaign params — exactly two promotions, no
+        # spurious extra revert.
+        assert len(bot.promotions) == 2
+        family, params, sweep_id, note = bot.promotions[-1]
+        assert family == "momentum"
+        assert params == {"fast_ema_period": 12, "slow_ema_period": 26}
+        assert sweep_id is None
+        assert note is not None and "auto-revert" in note
+        assert any("auto-reverted momentum" in message for message in recorder.messages)
+
+    async def test_a_first_ever_promotion_is_reverted_to_defaults_when_armed(self) -> None:
+        # The tripwire's most important case: a family with NO settings row at
+        # campaign start (its first-ever promotion). The armed revert must undo
+        # it — restoring the empty/default config, the true pre-campaign state —
+        # not silently report "nothing" and leave the overfit live.
+        recorder = Recorder()
+
+        async def regressed_holdout(
+            start_params: Mapping[str, Mapping[str, Any]],
+            final_params: Mapping[str, Mapping[str, Any]],
+            holdout_start: datetime,
+        ) -> dict[str, Any] | None:
+            return {"revert_armed": True, "explanation": "start beats final out of sample"}
+
+        bot = FakeBot({})  # momentum has never been promoted before this campaign
+        campaign, _sweeps, _bot, _provider = _campaign(
+            [_validated()], bot=bot, holdout=regressed_holdout, notify=recorder
+        )
+
+        await campaign.run(_config(max_rounds=1, auto_revert=True))
+
+        assert len(bot.promotions) == 2  # the validated promote, then the revert
+        family, params, sweep_id, note = bot.promotions[-1]
+        assert family == "momentum"
+        assert params == {}  # back to code defaults (there was no pre-campaign row)
+        assert sweep_id is None
+        assert note is not None and "auto-revert" in note
+        assert any("auto-reverted momentum" in message for message in recorder.messages)
+
+    async def test_auto_revert_restores_every_family_the_campaign_promoted(self) -> None:
+        # Multi-family: the campaign promotes two distinct families over two
+        # rounds; the armed revert restores BOTH to their pre-campaign params.
+        recorder = Recorder()
+
+        async def regressed_holdout(
+            start_params: Mapping[str, Mapping[str, Any]],
+            final_params: Mapping[str, Mapping[str, Any]],
+            holdout_start: datetime,
+        ) -> dict[str, Any] | None:
+            return {"revert_armed": True, "explanation": "start beats final out of sample"}
+
+        class TwoFamilyProvider(StaticProvider):
+            """Promotes momentum in round 0, then breakout in round 1."""
+
+            async def __call__(
+                self, active_params: Mapping[str, Mapping[str, Any]], scale: float
+            ) -> tuple[Sequence[SweepCandidate], Sequence[int]]:
+                self.scales.append(scale)
+                if len(self.scales) == 1:
+                    family, name = "momentum", "momentum_v2"
+                    params: dict[str, Any] = {"fast_ema_period": 8, "slow_ema_period": 21}
+                else:
+                    family, name = "breakout", "breakout_v2"
+                    params = {"channel_period": 30}
+                baseline = SweepCandidate(
+                    name=f"active_{family}",
+                    family=family,
+                    params=dict(active_params.get(family, {})),
+                )
+                challenger = SweepCandidate(name=name, family=family, params=params)
+                return (baseline, challenger), ()
+
+        bot = FakeBot(
+            {
+                "momentum": {"fast_ema_period": 12, "slow_ema_period": 26},
+                "breakout": {"channel_period": 55},
+            }
+        )
+        campaign, _sweeps, _bot, _provider = _campaign(
+            [_validated("momentum_v2"), _validated("breakout_v2")],
+            bot=bot,
+            provider=TwoFamilyProvider(),
+            holdout=regressed_holdout,
+            notify=recorder,
+        )
+
+        await campaign.run(_config(max_rounds=2, auto_revert=True))
+
+        # Two promotions, then a revert of each family back to its start params.
+        reverts = {
+            family: params for family, params, sweep_id, _note in bot.promotions if sweep_id is None
+        }
+        assert reverts == {
+            "momentum": {"fast_ema_period": 12, "slow_ema_period": 26},
+            "breakout": {"channel_period": 55},
+        }
+        assert bot.params["momentum"] == {"fast_ema_period": 12, "slow_ema_period": 26}
+        assert bot.params["breakout"] == {"channel_period": 55}
+        message = next(m for m in recorder.messages if "auto-reverted" in m)
+        assert "momentum" in message and "breakout" in message
+
+    async def test_an_armed_revert_reverts_nothing_when_no_family_was_promoted(self) -> None:
+        # Revert armed, auto_revert on, but the campaign promoted nothing (every
+        # round kept the baseline): there is nothing to undo, so no revert
+        # promotion is issued and the alert says so.
+        recorder = Recorder()
+
+        async def regressed_holdout(
+            start_params: Mapping[str, Mapping[str, Any]],
+            final_params: Mapping[str, Mapping[str, Any]],
+            holdout_start: datetime,
+        ) -> dict[str, Any] | None:
+            return {"revert_armed": True, "explanation": "start beats final out of sample"}
+
+        campaign, _sweeps, bot, _provider = _campaign(
+            [_kept("overfit")], holdout=regressed_holdout, notify=recorder
+        )
+
+        await campaign.run(_config(max_rounds=1, auto_revert=True))
+
+        assert bot.promotions == []  # nothing promoted, so nothing reverted
+        assert any("auto-reverted nothing" in message for message in recorder.messages)
+
+    async def test_an_armed_revert_with_auto_revert_off_only_alerts(self) -> None:
+        # Default (off): the armed revert is announced, never acted on — the
+        # only promotion is the validated round's, no revert promotion follows.
+        recorder = Recorder()
+
+        async def regressed_holdout(
+            start_params: Mapping[str, Mapping[str, Any]],
+            final_params: Mapping[str, Mapping[str, Any]],
+            holdout_start: datetime,
+        ) -> dict[str, Any] | None:
+            return {"revert_armed": True, "explanation": "start beats final out of sample"}
+
+        bot = FakeBot({"momentum": {"fast_ema_period": 12, "slow_ema_period": 26}})
+        campaign, _sweeps, _bot, _provider = _campaign(
+            [_validated()], bot=bot, holdout=regressed_holdout, notify=recorder
+        )
+
+        await campaign.run(_config(max_rounds=1))  # auto_revert defaults off
+
+        assert len(bot.promotions) == 1  # the validated round only; no revert
+        assert any("revert armed for review" in message for message in recorder.messages)
+
     async def test_a_clean_holdout_does_not_alert(self) -> None:
         recorder = Recorder()
         campaign, _sweeps, _bot, _provider = _campaign(

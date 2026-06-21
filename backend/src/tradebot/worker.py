@@ -49,6 +49,7 @@ from tradebot.competition.candidacy import (
     RESEARCH_FAMILIES,
     RoutingCandidacy,
     assemble_candidacies,
+    newly_qualified_candidates,
 )
 from tradebot.competition.lineup import ScopedSignalStrategy
 from tradebot.core.config import AppConfig, TradingMode, validate_symbol_quote
@@ -98,6 +99,7 @@ from tradebot.persistence import (
     BotCapitalStore,
     CampaignHistoryStore,
     CampaignSettingsStore,
+    CandidacyAlertStore,
     CandleStore,
     CoinStore,
     CustomBotStore,
@@ -156,6 +158,11 @@ cancelling them. A feed parked in a blocking ``watch_ohlcv`` (or the initial
 multi-year backfill) only notices ``stop()`` between ticks, which may be a
 minute away or never — so shutdown forces the issue well inside Railway's
 SIGTERM-to-SIGKILL window rather than risk hanging the deploy."""
+
+CANDIDACY_WATCH_SECONDS = 3600.0
+"""How often the §13.7 candidacy watch checks for newly qualified routing
+candidates to alert on. Candidacy accrues over weeks of evidence, so an hourly
+tick is ample; the alert is deduped, so the cadence only bounds latency."""
 
 
 def filters_from_market(market: Mapping[str, Any]) -> SymbolFilters:
@@ -331,6 +338,9 @@ class Worker:
         # persisted value (if an operator has toggled it) overrides it in
         # initialize(), and the Settings PUT flips it live.
         self.campaign_settings_store = CampaignSettingsStore(database)
+        # Dedup for the §13.7 candidacy alert: which families the operator has
+        # already been told earned routing candidacy, so it fires once.
+        self.candidacy_alert_store = CandidacyAlertStore(database)
         # Durable history of finished campaigns (the driver only holds the
         # current one in memory); the driver appends to it on each finish.
         self.campaign_history_store = CampaignHistoryStore(database)
@@ -990,6 +1000,64 @@ class Worker:
                 read_standings=self._read_research_standings,
             )
         return self._research_selector
+
+    async def _alert_new_candidacies(self) -> None:
+        """Alert once per family that has newly earned §13.7 routing candidacy.
+
+        The flywheel runs the research; this tells the operator the moment a
+        family has accumulated the evidence to be *considered* for routing —
+        the one step the architecture keeps human. Deduped through the store so
+        it fires once per family, never on every tick or after a redeploy. It
+        only *informs*: routing a family into the production router stays the
+        §13.7 human decision.
+
+        A family is recorded as alerted only once its alert is *delivered*: a
+        failed or rejected send leaves it unmarked so the next tick retries,
+        rather than burning the one-shot dedup on a notification the operator
+        never saw — the candidacy gate is exactly the alert we must not silently
+        drop.
+        """
+        if self._notifier is None:
+            return  # nobody to tell; skip the candidacy reads entirely
+        candidacies = await self.routing_candidacies()
+        already = await self.candidacy_alert_store.load_alerted()
+        for family in newly_qualified_candidates(candidacies, already):
+            delivered = await self._notifier.send(
+                f"{family} has earned §13.7 routing candidacy — it has a validated edge, beats "
+                f"the incumbent in its regime, and held a positive live-paper soak. Review it "
+                f"for routing (the flip stays your call)."
+            )
+            if delivered:
+                await self.candidacy_alert_store.mark(family, utc_now())
+
+    async def _run_candidacy_watch(self) -> None:
+        """Periodically alert on newly qualified §13.7 routing candidates.
+
+        A light loop (one slow tick), independent of the research loops so it
+        runs whether or not campaigns are enabled. One failed tick never stops
+        it — candidacy changes slowly, the next tick retries.
+
+        Like the other supervisors in :meth:`run`'s TaskGroup, it must *return*
+        on the stop latch, not just on cancellation: a task that never returns
+        would leave the group waiting forever on shutdown. So it sleeps by
+        racing the interval against ``_stop_requested`` and exits the moment the
+        latch is set. It ticks once up front (the alert is deduped, so an
+        immediate scan is safe) rather than parking a full interval first, so a
+        candidacy that crossed the gate while the worker was down is announced
+        promptly after a redeploy instead of up to an interval later.
+        """
+        while not self._stop_requested.is_set():
+            try:
+                await self._alert_new_candidacies()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("candidacy watch tick failed; retrying next interval")
+            try:
+                await asyncio.wait_for(self._stop_requested.wait(), timeout=CANDIDACY_WATCH_SECONDS)
+            except TimeoutError:
+                continue  # interval elapsed without a stop — run the next tick
+            return  # stop latched during the wait — let the run TaskGroup close
 
     def _runtime_for(self, bot_id: str) -> CompetitorRuntime:
         """Return ``bot_id``'s challenger account; ``KeyError`` if unknown."""
@@ -2425,6 +2493,9 @@ class Worker:
                 # Mutes entries if a safety-critical service (the control
                 # plane) crashes; idle for the worker's whole life otherwise.
                 task_group.create_task(self._run_safety_supervisor())
+                # Alerts once when a research family earns §13.7 routing
+                # candidacy; independent of the research loops' on/off state.
+                task_group.create_task(self._run_candidacy_watch())
                 for symbol, feed in self._feeds.items():
                     self._feed_tasks[symbol] = task_group.create_task(feed.run())
         finally:
@@ -2887,6 +2958,7 @@ class Worker:
                     self.config.campaign_max_lifetime_promotions_per_target
                 ),
                 regime_routed=self.regime_detector is not None,
+                auto_revert=self.config.campaign_auto_revert_on_regression,
             ),
             notify=self._notify,
             enabled=lambda: self._campaign_enabled,

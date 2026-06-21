@@ -662,6 +662,22 @@ class TestStrategySettingsStore:
         assert await store.fetch(9999) is None
 
 
+class TestCandidacyAlertStore:
+    async def test_marks_and_loads_alerted_families_idempotently(self, database: Database) -> None:
+        from tradebot.persistence import CandidacyAlertStore
+
+        store = CandidacyAlertStore(database)
+        assert await store.load_alerted() == set()  # nothing alerted yet
+
+        await store.mark("breakout", BASE_TIME)
+        await store.mark("momentum", BASE_TIME + timedelta(hours=1))
+        assert await store.load_alerted() == {"breakout", "momentum"}
+
+        # Marking a family again is a no-op (alert fires once, ever).
+        await store.mark("breakout", BASE_TIME + timedelta(days=1))
+        assert await store.load_alerted() == {"breakout", "momentum"}
+
+
 class TestCampaignHistoryStore:
     async def test_records_and_lists_newest_first(self, database: Database) -> None:
         from tradebot.persistence import CampaignHistoryStore
