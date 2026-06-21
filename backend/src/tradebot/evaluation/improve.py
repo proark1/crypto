@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 
+from tradebot.evaluation.allocation import TargetSelector
 from tradebot.evaluation.campaign import CandidateProvider
 from tradebot.evaluation.models import LearningFinding, RunStatus
 from tradebot.evaluation.runner import EvaluationRunConfig
@@ -1277,6 +1278,7 @@ class AutoImprover:
         timeframe: str,
         notify: Callable[[str], Awaitable[None]] | None = None,
         campaign_active: Callable[[], bool] | None = None,
+        select: TargetSelector | None = None,
     ) -> None:
         """Bind the loop to the worker's live state.
 
@@ -1286,7 +1288,9 @@ class AutoImprover:
         ``promote`` is the worker's apply path: persist + hot-swap.
         ``confirm`` is the engine-backed gate: given (family, params,
         symbol) it returns a veto reason, or ``None`` to allow — promotion
-        is skipped entirely when it vetoes.
+        is skipped entirely when it vetoes. ``select`` is the §12.7 target
+        scheduler; absent, the loop falls back to the flat round-robin (every
+        target an equal slice each pass), so the seam is backward-compatible.
         """
         self._sweeps = sweeps
         self._evaluations = evaluations
@@ -1300,8 +1304,23 @@ class AutoImprover:
         self._timeframe = timeframe
         self._notify = notify
         self._campaign_active = campaign_active
+        self._select = select
         self._rotation = 0
         self.status = ImprovementStatus()
+
+    async def _next_assignment(self, symbols: tuple[str, ...]) -> tuple[str, str]:
+        """Pick the next ``(target, symbol)`` — weighted if a selector is bound.
+
+        With a ``select`` scheduler the pick is standing-weighted (§12.7
+        allocation); without one it is the historical flat round-robin —
+        targets rotate first, symbols second — preserving prior behaviour.
+        """
+        if self._select is not None:
+            return await self._select.next_assignment(symbols)
+        target = IMPROVEMENT_TARGETS[self._rotation % len(IMPROVEMENT_TARGETS)]
+        symbol = symbols[(self._rotation // len(IMPROVEMENT_TARGETS)) % len(symbols)]
+        self._rotation += 1
+        return target, symbol
 
     async def run(self) -> None:
         """Cycle forever; one failed cycle never stops the loop.
@@ -1346,9 +1365,7 @@ class AutoImprover:
         if not symbols:
             self._finish_cycle("skipped: no active coins to research")
             return None
-        target = IMPROVEMENT_TARGETS[self._rotation % len(IMPROVEMENT_TARGETS)]
-        symbol = symbols[(self._rotation // len(IMPROVEMENT_TARGETS)) % len(symbols)]
-        self._rotation += 1
+        target, symbol = await self._next_assignment(symbols)
         latest_run = await self._latest_completed_run(target)
         if latest_run is None:
             try:

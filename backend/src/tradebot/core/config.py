@@ -422,6 +422,15 @@ class AppConfig(BaseSettings):
     raises the cap. Disabled by default so existing behaviour is unchanged
     until an operator opts in."""
 
+    research_weighted_allocation: bool = True
+    """Spend the §12.7 research lane by live standing rather than a flat
+    round-robin. On (the default), the loops boost families the evidence likes
+    (routing candidates, live-paper winners) and park families it has judged
+    losers (down past a threshold with enough trades), re-probing the parked
+    ones on a cadence so none is abandoned. ``production`` is never parked.
+    Moves no money and pauses no account — it only reallocates research time;
+    off restores the flat rotation."""
+
     @model_validator(mode="after")
     def _backfill_must_cover_campaign_window(self) -> AppConfig:
         """Reject a backfill shallower than the campaign's full data span.

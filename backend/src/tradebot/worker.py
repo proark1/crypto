@@ -65,10 +65,16 @@ from tradebot.core.models import (
 )
 from tradebot.engine import TradingEngine
 from tradebot.evaluation import ScenarioEvaluator
+from tradebot.evaluation.allocation import (
+    PerformanceWeightedSelector,
+    TargetSelector,
+    TargetStanding,
+    standings_from_competition,
+)
 from tradebot.evaluation.bakeoff import BakeOffConfig, BakeOffManager
 from tradebot.evaluation.campaign import CampaignStatus
 from tradebot.evaluation.campaign_driver import CampaignDriver, CampaignDriverConfig
-from tradebot.evaluation.improve import AutoImprover
+from tradebot.evaluation.improve import IMPROVEMENT_TARGETS, AutoImprover
 from tradebot.evaluation.presets import contestant_for
 from tradebot.evaluation.runner import EvaluationManager, EvaluationRunConfig, EvaluationRunner
 from tradebot.evaluation.strategy import build_traded_strategy
@@ -465,6 +471,10 @@ class Worker:
         # The §12.7 campaign driver (supersedes the auto-improver when
         # enabled); ``None`` until _start_campaign_driver_if_enabled builds it.
         self._campaign_driver: CampaignDriver | None = None
+        # The shared §12.7 standing-weighted scheduler, fed to both loops (they
+        # are mutually exclusive on the lane). ``None`` until first built, or
+        # forever when weighted allocation is configured off (flat rotation).
+        self._research_selector: PerformanceWeightedSelector | None = None
         # Validated at boot, not first cycle: a bad timeframe must fail the
         # deploy, not the first improvement attempt half a day later.
         CandleInterval(config.auto_improve_timeframe)
@@ -553,12 +563,48 @@ class Worker:
         """Report whether ``run_id``'s coalescing sweep timer is armed."""
         return self._accept_sweeps is not None and run_id in self._accept_sweeps.pending_run_ids()
 
+    def _allocation_snapshot(self) -> dict[str, Any] | None:
+        """Serialise the current §12.7 allocation plan for the dashboard, or None.
+
+        ``None`` when weighted allocation is off or no pass has run yet — the
+        status card then shows the flat rotation. Returns, being money, stringify
+        at the API boundary (Decimal-safe), like the rest of the control plane.
+        """
+        selector = self._research_selector
+        plan = selector.last_plan if selector is not None else None
+        if plan is None:
+            return None
+        return {
+            "computed_at": plan.computed_at,
+            "symbol": plan.symbol,
+            "pass_index": plan.pass_index,
+            "boosted": list(plan.boosted),
+            "parked": list(plan.parked),
+            "targets": [
+                {
+                    "target": target,
+                    "tier": plan.tiers[target].value,
+                    "weight": plan.weights.get(target, 0),
+                    "return_fraction": (
+                        str(standing.return_fraction)
+                        if standing.return_fraction is not None
+                        else None
+                    ),
+                    "trades": standing.trades,
+                    "is_candidate": standing.is_candidate,
+                }
+                for target, standing in plan.standings.items()
+            ],
+        }
+
     def improvement_status(self) -> dict[str, Any]:
         """Report the §12.7 loop's schedule and last outcome, for the dashboard.
 
         Always answers: when the loop is disabled (or not yet started) the
         schedule still reports, with the cycle fields ``None`` — the status
-        card must say "off" rather than 404.
+        card must say "off" rather than 404. ``allocation`` carries the live
+        standing-weighted plan (which families the lane is boosting or parking),
+        or ``None`` under the flat rotation.
         """
         status = self._improver.status if self._improver is not None else None
         return {
@@ -572,6 +618,7 @@ class Worker:
             ),
             "last_outcome": status.last_outcome if status is not None else None,
             "next_cycle_at": status.next_cycle_at if status is not None else None,
+            "allocation": self._allocation_snapshot(),
         }
 
     def campaign_status(self) -> dict[str, Any]:
@@ -588,6 +635,7 @@ class Worker:
             "max_hours": self.config.campaign_max_hours,
             "timeframe": self.config.campaign_timeframe,
             "campaign": _campaign_snapshot(current),
+            "allocation": self._allocation_snapshot(),
         }
 
     async def campaign_history(self, limit: int = 20) -> list[dict[str, Any]]:
@@ -910,6 +958,38 @@ class Worker:
             started_at=started_at,
             now=utc_now(),
         )
+
+    async def _read_research_standings(self) -> dict[str, TargetStanding]:
+        """Build one ``TargetStanding`` per §12.7 target from the live evidence.
+
+        The standing-weighted scheduler decides on these: each research
+        family's solo competition account (return, trade count, breaker) plus
+        whether it is a §13.7 routing candidate. ``production`` carries the
+        live bot's own account. A target with no account row reports an unknown
+        return — neither parked nor boosted. Read once per pass (a single
+        competition snapshot), never per turn.
+        """
+        rows = await self.competition_snapshot()
+        candidates = {c.family for c in await self.routing_candidacies() if c.is_candidate}
+        return standings_from_competition(rows, candidates, IMPROVEMENT_TARGETS)
+
+    def _research_target_selector(self) -> TargetSelector | None:
+        """Return the shared §12.7 standing-weighted scheduler, or ``None`` for flat.
+
+        One instance feeds both research loops — they never run concurrently
+        (the campaign loop stands the auto-improver down), so a shared cursor
+        gives continuous, non-overlapping coverage and one allocation plan for
+        the status surface to show. Gated by config: off restores the flat
+        round-robin (both loops fall back when ``select`` is ``None``).
+        """
+        if not self.config.research_weighted_allocation:
+            return None
+        if self._research_selector is None:
+            self._research_selector = PerformanceWeightedSelector(
+                targets=IMPROVEMENT_TARGETS,
+                read_standings=self._read_research_standings,
+            )
+        return self._research_selector
 
     def _runtime_for(self, bot_id: str) -> CompetitorRuntime:
         """Return ``bot_id``'s challenger account; ``KeyError`` if unknown."""
@@ -2746,6 +2826,7 @@ class Worker:
             timeframe=self.config.auto_improve_timeframe,
             notify=self._notify,
             campaign_active=lambda: self._campaign_enabled,
+            select=self._research_target_selector(),
         )
         self._improver = improver
         task = asyncio.create_task(improver.run())
@@ -2812,6 +2893,7 @@ class Worker:
             record=self._record_campaign,
             promotions_for=self.campaign_history_store.lifetime_promotions,
             funding_provider=self._funding_series,
+            select=self._research_target_selector(),
         )
         self._campaign_driver = driver
         task = asyncio.create_task(driver.run())
