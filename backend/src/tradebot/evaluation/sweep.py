@@ -65,6 +65,8 @@ from tradebot.strategies import (
     MeanReversionStrategy,
     MomentumConfig,
     MomentumStrategy,
+    RsiTrendConfig,
+    RsiTrendStrategy,
     SqueezeConfig,
     SqueezeStrategy,
     Strategy,
@@ -72,6 +74,10 @@ from tradebot.strategies import (
     SupertrendStrategy,
     TrendFollowingConfig,
     TrendFollowingStrategy,
+    TsmomConfig,
+    TsmomStrategy,
+    VolBreakoutConfig,
+    VolBreakoutStrategy,
 )
 
 logger = logging.getLogger(__name__)
@@ -100,6 +106,9 @@ STRATEGY_FAMILIES: Mapping[str, tuple[type[BaseModel], Callable[..., Strategy]]]
     "adx_trend": (AdxTrendConfig, AdxTrendStrategy),
     "keltner": (KeltnerConfig, KeltnerStrategy),
     "funding": (FundingConfig, FundingStrategy),
+    "vol_breakout": (VolBreakoutConfig, VolBreakoutStrategy),
+    "tsmom": (TsmomConfig, TsmomStrategy),
+    "rsi_trend": (RsiTrendConfig, RsiTrendStrategy),
 }
 """Sweepable families: name -> (config model, strategy constructor). A
 candidate names its family, so one sweep can pit families against each

@@ -40,6 +40,9 @@ FAMILY_DESCRIPTIONS: Mapping[str, str] = {
     "adx_trend": "buys a +DI cross-up confirmed by a strong ADX, exits when direction flips down",
     "keltner": "buys a break above the upper Keltner channel, exits back at the basis",
     "funding": "buys when perpetual funding is deeply negative (crowded shorts), exits on recovery",
+    "vol_breakout": "buys a range break only when volatility is expanding, exits at the basis",
+    "tsmom": "buys when the recent holding return is positive, exits when momentum turns down",
+    "rsi_trend": "buys an RSI cross up through the midline, exits when momentum fades below it",
 }
 """Plain-words one-liners per family, shared by the builder UI and the
 generated bot descriptions — one copy, no drift."""
