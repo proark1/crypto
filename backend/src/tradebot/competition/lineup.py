@@ -135,10 +135,31 @@ LINEUP: tuple[CompetitorSpec, ...] = (
         risk_state_row_id=11,
         description="Buys a break above the upper Keltner channel, exits back at the basis.",
     ),
+    CompetitorSpec(
+        bot_id="vol_breakout",
+        label="Volatility breakout",
+        family="vol_breakout",
+        risk_state_row_id=12,
+        description="Buys a Donchian break only when volatility is expanding, exits at the basis.",
+    ),
+    CompetitorSpec(
+        bot_id="tsmom",
+        label="Time-series momentum",
+        family="tsmom",
+        risk_state_row_id=13,
+        description="Buys a positive lookback return, exits when momentum turns down.",
+    ),
+    CompetitorSpec(
+        bot_id="rsi_trend",
+        label="RSI trend",
+        family="rsi_trend",
+        risk_state_row_id=14,
+        description="Buys an RSI cross up through the midline, exits when it falls back.",
+    ),
 )
-"""Eleven bots, eleven strategies. Order is leaderboard display order before
-ranking; ``risk_state_row_id`` values are append-only — a removed entry's
-row id is never reused."""
+"""Fourteen bots, fourteen strategies. Order is leaderboard display order
+before ranking; ``risk_state_row_id`` values are append-only — a removed
+entry's row id is never reused."""
 
 
 def spec_for(bot_id: str) -> CompetitorSpec:

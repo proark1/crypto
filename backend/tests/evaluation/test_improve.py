@@ -7,7 +7,11 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
-from tradebot.evaluation.improve import AutoImprover, build_improvement_candidates
+from tradebot.evaluation.improve import (
+    IMPROVEMENT_TARGETS,
+    AutoImprover,
+    build_improvement_candidates,
+)
 from tradebot.evaluation.models import LearningFinding
 from tradebot.evaluation.runner import EvaluationRunConfig
 from tradebot.evaluation.sweep import SweepConfig, build_candidate_strategy
@@ -223,9 +227,10 @@ class TestAutoImprover:
         )
         improver = make_improver(sweeps, store, [])
 
-        # Five targets, two symbols: ten cycles is one full pass over the
-        # symbols, every target visited before either symbol repeats.
-        for _ in range(10):
+        # A full pass over every target, then one more cycle: the symbol only
+        # advances once every target has been visited, so the wrap lands on the
+        # next symbol.
+        for _ in range(len(IMPROVEMENT_TARGETS) + 1):
             await improver.run_cycle()
 
         baseline_families = [config.candidates[0].family for config in sweeps.configs]
@@ -239,21 +244,15 @@ class TestAutoImprover:
             "adx_trend",
             "keltner",
             "funding",
-            "trend_following",
+            "vol_breakout",
+            "tsmom",
+            "rsi_trend",
+            "trend_following",  # wrap: production again, now on the next symbol
         ]
-        # Nine targets now, so the symbol advances after every ninth cycle.
-        assert [config.symbol for config in sweeps.configs] == [
-            "BTC/USDT",
-            "BTC/USDT",
-            "BTC/USDT",
-            "BTC/USDT",
-            "BTC/USDT",
-            "BTC/USDT",
-            "BTC/USDT",
-            "BTC/USDT",
-            "BTC/USDT",
-            "ETH/USDT",
-        ]
+        # The symbol advances only after a full pass over the targets.
+        assert [config.symbol for config in sweeps.configs] == (
+            ["BTC/USDT"] * len(IMPROVEMENT_TARGETS) + ["ETH/USDT"]
+        )
 
     async def test_a_target_without_a_fresh_run_gets_evaluated_first(self) -> None:
         """Cycle two serves breakout; with only production runs on record it

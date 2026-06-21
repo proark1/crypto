@@ -38,9 +38,12 @@ from tradebot.strategies import (
     KeltnerConfig,
     MeanReversionConfig,
     MomentumConfig,
+    RsiTrendConfig,
     SqueezeConfig,
     SupertrendConfig,
     TrendFollowingConfig,
+    TsmomConfig,
+    VolBreakoutConfig,
 )
 
 logger = logging.getLogger(__name__)
@@ -58,6 +61,9 @@ IMPROVEMENT_TARGETS = (
     "adx_trend",
     "keltner",
     "funding",
+    "vol_breakout",
+    "tsmom",
+    "rsi_trend",
 )
 """What the loop improves, in rotation. ``production`` covers the regime-
 routed shape and therefore both of its families (trend following and mean
@@ -1111,6 +1117,126 @@ def _keltner_candidates(
     return _dedupe(raw, [])
 
 
+def _vol_breakout_candidates(
+    active: Mapping[str, Mapping[str, Any]],
+    findings: Sequence[tuple[int, str]],
+    scale: float = 1.0,
+) -> tuple[tuple[SweepCandidate, ...], tuple[int, ...]]:
+    """Build the volatility-breakout grid: expansion-gate variants plus the stop.
+
+    The defining knob is ``expansion_ratio`` — how sharply volatility must
+    expand for a Donchian break to count. A *higher* ratio demands a more
+    decisive expansion (fewer entries); a *lower* one admits quieter breaks
+    (more entries, more noise).
+    """
+    config = VolBreakoutConfig(**active.get("vol_breakout", {}))
+    raw: list[SweepCandidate] = [
+        SweepCandidate(
+            name="active_vol_breakout",
+            family="vol_breakout",
+            params=config.model_dump(),
+        ),
+        SweepCandidate(
+            name="stronger_expansion",
+            family="vol_breakout",
+            params=config.model_copy(
+                update={"expansion_ratio": round(config.expansion_ratio * _step(1.25, scale), 2)}
+            ).model_dump(),
+        ),
+        SweepCandidate(
+            name="weaker_expansion",
+            family="vol_breakout",
+            params=config.model_copy(
+                update={
+                    "expansion_ratio": max(
+                        1.0, round(config.expansion_ratio * _step(0.8, scale), 2)
+                    )
+                }
+            ).model_dump(),
+        ),
+        *_stop_variants("vol_breakout", config, scale),
+    ]
+    return _dedupe(raw, [])
+
+
+def _tsmom_candidates(
+    active: Mapping[str, Mapping[str, Any]],
+    findings: Sequence[tuple[int, str]],
+    scale: float = 1.0,
+) -> tuple[tuple[SweepCandidate, ...], tuple[int, ...]]:
+    """Build the time-series-momentum grid: lookback variants plus the stop.
+
+    The defining knob is ``lookback`` — the window the holding return is
+    measured over. A *longer* lookback is a slower, steadier signal (fewer
+    flips); a *shorter* one reacts sooner but whipsaws more.
+    """
+    config = TsmomConfig(**active.get("tsmom", {}))
+    raw: list[SweepCandidate] = [
+        SweepCandidate(
+            name="active_tsmom",
+            family="tsmom",
+            params=config.model_dump(),
+        ),
+        SweepCandidate(
+            name="longer_lookback",
+            family="tsmom",
+            params=config.model_copy(
+                update={"lookback": max(2, round(config.lookback * _step(1.5, scale)))}
+            ).model_dump(),
+        ),
+        SweepCandidate(
+            name="shorter_lookback",
+            family="tsmom",
+            params=config.model_copy(
+                update={"lookback": max(2, round(config.lookback * _step(0.6, scale)))}
+            ).model_dump(),
+        ),
+        *_stop_variants("tsmom", config, scale),
+    ]
+    return _dedupe(raw, [])
+
+
+def _rsi_trend_candidates(
+    active: Mapping[str, Mapping[str, Any]],
+    findings: Sequence[tuple[int, str]],
+    scale: float = 1.0,
+) -> tuple[tuple[SweepCandidate, ...], tuple[int, ...]]:
+    """Build the RSI-trend grid: entry-level variants plus the stop.
+
+    The defining knob is ``entry_level`` — the RSI a cross-up must clear to
+    open. A *higher* level demands clearer strength (fewer, later entries); a
+    *lower* one (never below the exit level) admits earlier momentum.
+    """
+    config = RsiTrendConfig(**active.get("rsi_trend", {}))
+    raw: list[SweepCandidate] = [
+        SweepCandidate(
+            name="active_rsi_trend",
+            family="rsi_trend",
+            params=config.model_dump(),
+        ),
+        SweepCandidate(
+            name="stricter_entry",
+            family="rsi_trend",
+            params=config.model_copy(
+                update={"entry_level": min(80.0, round(config.entry_level * _step(1.1, scale), 1))}
+            ).model_dump(),
+        ),
+        SweepCandidate(
+            name="looser_entry",
+            family="rsi_trend",
+            params=config.model_copy(
+                update={
+                    "entry_level": max(
+                        config.exit_level, round(config.entry_level * _step(0.9, scale), 1)
+                    )
+                }
+            ).model_dump(),
+        ),
+        *_stop_variants("rsi_trend", config, scale),
+    ]
+    return _dedupe(raw, [])
+
+
 def build_candidates_for(
     target: str,
     active: Mapping[str, Mapping[str, Any]],
@@ -1145,6 +1271,12 @@ def build_candidates_for(
         return _keltner_candidates(active, findings, scale)
     if target == "funding":
         return _funding_candidates(active, findings, scale)
+    if target == "vol_breakout":
+        return _vol_breakout_candidates(active, findings, scale)
+    if target == "tsmom":
+        return _tsmom_candidates(active, findings, scale)
+    if target == "rsi_trend":
+        return _rsi_trend_candidates(active, findings, scale)
     raise ValueError(f"no improvement grid for {target!r}; known: {IMPROVEMENT_TARGETS}")
 
 
@@ -1178,6 +1310,12 @@ def _single_family_grid(
         return _keltner_candidates(active, findings, scale)
     if family == "funding":
         return _funding_candidates(active, findings, scale)
+    if family == "vol_breakout":
+        return _vol_breakout_candidates(active, findings, scale)
+    if family == "tsmom":
+        return _tsmom_candidates(active, findings, scale)
+    if family == "rsi_trend":
+        return _rsi_trend_candidates(active, findings, scale)
     candidates, motivating = build_improvement_candidates(active, findings, scale)
     return tuple(c for c in candidates if c.family == family), motivating
 

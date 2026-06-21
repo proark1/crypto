@@ -4,12 +4,15 @@ A "bake-off" pits a fixed roster of bots against each other across a grid
 of timeframes and history windows (see ``bakeoff.py``) and ranks them by
 the money they made. This module defines that roster.
 
-Each of the five solo families appears at two *energies* — ``calm`` and
-``bold`` — that trade the same idea at different tempers: calm waits for
-slower, higher-conviction signals and gives the trade more room (a wider
-ATR stop); bold fires on faster signals and keeps a tighter stop. Ten
-presets in all, plus the live production router as a baseline, so the
-leaderboard answers "did any energy preset beat the bot we actually run?"
+Each solo *price* family appears at two *energies* — ``calm`` and ``bold`` —
+that trade the same idea at different tempers: calm waits for slower,
+higher-conviction signals and gives the trade more room (a wider ATR stop);
+bold fires on faster signals and keeps a tighter stop. Every price family in
+``STRATEGY_FAMILIES`` is here (the non-price ``funding`` family is excluded:
+without a funding series it would trade inert, so it competes in the live
+lineup instead), plus the live production router as a baseline — so the
+leaderboard answers "did any energy of any family beat the bot we actually
+run?" That is the tournament where everything is tested against everything.
 
 The presets are deliberately code-defined and frozen: a bake-off is only
 comparable to a past bake-off if the contestants are the same, so the
@@ -65,7 +68,7 @@ PRODUCTION_BASELINE = BakeOffContestant(
     family=None,
 )
 
-# Five families x {calm, bold}. Calm: slower entries, wider 3x ATR stop.
+# Every price family x {calm, bold}. Calm: slower entries, wider 3x ATR stop.
 # Bold: faster entries, tighter 1.5x ATR stop. Each preset's bot_id is the
 # stable key its bake-off results are recorded under — never rename one.
 ENERGY_PRESETS: tuple[BakeOffContestant, ...] = (
@@ -156,6 +159,115 @@ ENERGY_PRESETS: tuple[BakeOffContestant, ...] = (
         family="squeeze",
         params={"keltner_atr_multiple": 2.0, "atr_stop_multiple": 1.5},
     ),
+    BakeOffContestant(
+        bot_id="supertrend_calm",
+        label="Supertrend (calm)",
+        family="supertrend",
+        params={"atr_period": 14, "atr_multiple": 4.0, "atr_stop_multiple": 3.0},
+    ),
+    BakeOffContestant(
+        bot_id="supertrend_bold",
+        label="Supertrend (bold)",
+        family="supertrend",
+        params={"atr_period": 7, "atr_multiple": 2.0, "atr_stop_multiple": 1.5},
+    ),
+    BakeOffContestant(
+        bot_id="bollinger_calm",
+        label="Bollinger reversion (calm)",
+        family="bollinger_reversion",
+        params={"bollinger_period": 30, "num_stddev": 2.5, "atr_stop_multiple": 3.0},
+    ),
+    BakeOffContestant(
+        bot_id="bollinger_bold",
+        label="Bollinger reversion (bold)",
+        family="bollinger_reversion",
+        params={"bollinger_period": 14, "num_stddev": 2.0, "atr_stop_multiple": 1.5},
+    ),
+    BakeOffContestant(
+        bot_id="adx_calm",
+        label="ADX trend (calm)",
+        family="adx_trend",
+        params={"adx_period": 20, "adx_threshold": 30.0, "atr_stop_multiple": 3.0},
+    ),
+    BakeOffContestant(
+        bot_id="adx_bold",
+        label="ADX trend (bold)",
+        family="adx_trend",
+        params={"adx_period": 10, "adx_threshold": 20.0, "atr_stop_multiple": 1.5},
+    ),
+    BakeOffContestant(
+        bot_id="keltner_calm",
+        label="Keltner breakout (calm)",
+        family="keltner",
+        params={
+            "ema_period": 30,
+            "atr_period": 15,
+            "channel_atr_multiple": 2.5,
+            "atr_stop_multiple": 3.0,
+        },
+    ),
+    BakeOffContestant(
+        bot_id="keltner_bold",
+        label="Keltner breakout (bold)",
+        family="keltner",
+        params={
+            "ema_period": 10,
+            "atr_period": 7,
+            "channel_atr_multiple": 1.5,
+            "atr_stop_multiple": 1.5,
+        },
+    ),
+    BakeOffContestant(
+        bot_id="vol_breakout_calm",
+        label="Volatility breakout (calm)",
+        family="vol_breakout",
+        params={
+            "channel_period": 40,
+            "expansion_ratio": 1.5,
+            "exit_ema_period": 30,
+            "atr_stop_multiple": 3.0,
+        },
+    ),
+    BakeOffContestant(
+        bot_id="vol_breakout_bold",
+        label="Volatility breakout (bold)",
+        family="vol_breakout",
+        params={
+            "channel_period": 10,
+            "expansion_ratio": 1.1,
+            "exit_ema_period": 10,
+            "atr_stop_multiple": 1.5,
+        },
+    ),
+    BakeOffContestant(
+        bot_id="tsmom_calm",
+        label="Time-series momentum (calm)",
+        family="tsmom",
+        params={"lookback": 40, "atr_stop_multiple": 3.0},
+    ),
+    BakeOffContestant(
+        bot_id="tsmom_bold",
+        label="Time-series momentum (bold)",
+        family="tsmom",
+        params={"lookback": 10, "atr_stop_multiple": 1.5},
+    ),
+    BakeOffContestant(
+        bot_id="rsi_trend_calm",
+        label="RSI trend (calm)",
+        family="rsi_trend",
+        params={
+            "rsi_period": 21,
+            "entry_level": 55.0,
+            "exit_level": 45.0,
+            "atr_stop_multiple": 3.0,
+        },
+    ),
+    BakeOffContestant(
+        bot_id="rsi_trend_bold",
+        label="RSI trend (bold)",
+        family="rsi_trend",
+        params={"rsi_period": 9, "entry_level": 50.0, "exit_level": 45.0, "atr_stop_multiple": 1.5},
+    ),
 )
 
 # Ensemble contestants: combine several families on one symbol, the audit's
@@ -210,7 +322,8 @@ CONTROL_CONTESTANTS: tuple[BakeOffContestant, ...] = (
 
 # The full roster the bake-off grades each cell: the baseline first (it
 # leads the comparison group, the sweep contract's baseline slot), then the
-# ten energy presets, the ensembles, and the reference controls.
+# energy presets (every price family at two energies), the ensembles, and the
+# reference controls.
 BAKE_OFF_CONTESTANTS: tuple[BakeOffContestant, ...] = (
     PRODUCTION_BASELINE,
     *ENERGY_PRESETS,

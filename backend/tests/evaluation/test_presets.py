@@ -18,7 +18,7 @@ from tradebot.strategies.controls import build_control_strategy
 
 class TestRoster:
     def test_baseline_plus_presets_ensembles_and_controls(self) -> None:
-        assert len(ENERGY_PRESETS) == 10
+        assert len(ENERGY_PRESETS) == 24
         assert len(ENSEMBLE_CONTESTANTS) == 2
         assert len(CONTROL_CONTESTANTS) == 1
         assert len(BAKE_OFF_CONTESTANTS) == (
@@ -33,9 +33,15 @@ class TestRoster:
         ids = [c.bot_id for c in BAKE_OFF_CONTESTANTS]
         assert len(set(ids)) == len(ids)
 
-    def test_every_family_appears_at_two_energies(self) -> None:
+    def test_every_price_family_appears_at_two_energies(self) -> None:
+        # Everything is tested against everything: every price family in the
+        # sweep registry competes at both energies. The non-price funding
+        # family is excluded (inert without a funding series) and competes in
+        # the live lineup instead.
         families = [c.family for c in ENERGY_PRESETS]
-        for family in ("trend_following", "mean_reversion", "breakout", "momentum", "squeeze"):
+        price_families = set(STRATEGY_FAMILIES) - {"funding"}
+        assert set(families) == price_families
+        for family in price_families:
             assert families.count(family) == 2
 
     def test_each_preset_builds_a_valid_strategy(self) -> None:

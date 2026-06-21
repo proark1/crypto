@@ -26,9 +26,12 @@ from tradebot.strategies.keltner import KeltnerConfig, KeltnerStrategy
 from tradebot.strategies.mean_reversion import MeanReversionConfig, MeanReversionStrategy
 from tradebot.strategies.momentum import MomentumConfig, MomentumStrategy
 from tradebot.strategies.router import RegimeStrategyRouter
+from tradebot.strategies.rsi_trend import RsiTrendConfig, RsiTrendStrategy
 from tradebot.strategies.squeeze import SqueezeConfig, SqueezeStrategy
 from tradebot.strategies.supertrend import SupertrendConfig, SupertrendStrategy
 from tradebot.strategies.trend_following import TrendFollowingConfig, TrendFollowingStrategy
+from tradebot.strategies.tsmom import TsmomConfig, TsmomStrategy
+from tradebot.strategies.vol_breakout import VolBreakoutConfig, VolBreakoutStrategy
 
 __all__ = [
     "CONTROL_STRATEGIES",
@@ -51,6 +54,8 @@ __all__ = [
     "RandomEntryConfig",
     "RandomEntryStrategy",
     "RegimeStrategyRouter",
+    "RsiTrendConfig",
+    "RsiTrendStrategy",
     "SqueezeConfig",
     "SqueezeStrategy",
     "Strategy",
@@ -58,6 +63,10 @@ __all__ = [
     "SupertrendStrategy",
     "TrendFollowingConfig",
     "TrendFollowingStrategy",
+    "TsmomConfig",
+    "TsmomStrategy",
+    "VolBreakoutConfig",
+    "VolBreakoutStrategy",
     "build_control_strategy",
     "validate_control_params",
 ]
