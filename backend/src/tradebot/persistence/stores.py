@@ -39,6 +39,7 @@ from tradebot.persistence.database import (
     fills_table,
     funding_rates_table,
     orders_table,
+    research_rotation_table,
     risk_state_table,
     strategy_settings_table,
     trading_fees_table,
@@ -831,6 +832,50 @@ class CampaignSettingsStore:
         async with self._database.engine.connect() as connection:
             row = (await connection.execute(statement)).first()
         return None if row is None else bool(row[0])
+
+
+class ResearchRotationStore:
+    """The single-row resume cursor for the §12.7 standing-weighted scheduler.
+
+    Two small integers — the pass index (which drives the parking re-probe
+    cadence) and the symbol index (which symbol the pass researches) —
+    persisted so a restart continues the rotation rather than re-starting at
+    pass 0 / symbol 0 every time. Absent until the first pass completes; until
+    then the scheduler starts fresh (the boot behaviour).
+    """
+
+    ROW_ID = 1
+
+    def __init__(self, database: Database) -> None:
+        """Bind the store to ``database``."""
+        self._database = database
+
+    async def save(self, pass_index: int, symbol_index: int, at: datetime) -> None:
+        """Upsert the one rotation-cursor row."""
+        _require_aware(at)
+        row = {
+            "id": self.ROW_ID,
+            "pass_index": pass_index,
+            "symbol_index": symbol_index,
+            "updated_at": at,
+        }
+        statement = pg_insert(research_rotation_table)
+        statement = statement.on_conflict_do_update(
+            index_elements=["id"],
+            set_={name: statement.excluded[name] for name in row if name != "id"},
+        )
+        async with self._database.engine.begin() as connection:
+            await connection.execute(statement, [row])
+
+    async def load(self) -> tuple[int, int] | None:
+        """Return the persisted ``(pass_index, symbol_index)``, or ``None`` if fresh."""
+        statement = select(
+            research_rotation_table.c.pass_index,
+            research_rotation_table.c.symbol_index,
+        ).where(research_rotation_table.c.id == self.ROW_ID)
+        async with self._database.engine.connect() as connection:
+            row = (await connection.execute(statement)).first()
+        return None if row is None else (int(row[0]), int(row[1]))
 
 
 class CampaignHistoryStore:

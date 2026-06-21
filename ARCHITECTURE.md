@@ -935,6 +935,19 @@ return/trade evidence — surfaces on the improvement and campaign status cards
 rotation. This is a scheduler, not a kill switch: routing a family live remains
 the §13.7 human decision, untouched.
 
+The scheduler's cursor is **persisted across restarts** (`research_rotation`,
+one row: the pass index and the symbol index, saved each pass, reloaded in
+`initialize`). This is not a nicety — the worker redeploys on every merge to
+`main`, and without it every restart would re-start the rotation at pass 0 /
+symbol 0: pass 0 is a re-probe pass, so frequent restarts would defrost every
+parked family on each deploy (defeating parking), and symbol 0 would be
+researched far more than the rest of the basket. Resuming the cursor keeps the
+re-probe cadence and the symbol coverage honest across the deploy cadence. The
+ring itself is never stored — it is recomputed each pass from fresh standings —
+so only the two-integer cursor survives, and a missing row simply means "start
+fresh" (the boot behaviour). The save is best-effort: a failed write costs at
+most one warm resume, never a research cycle.
+
 ### 12.8 Learning memory & the research timeline
 
 Progress must be visible to be trusted. Two read-side surfaces compose it

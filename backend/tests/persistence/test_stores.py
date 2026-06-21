@@ -662,6 +662,21 @@ class TestStrategySettingsStore:
         assert await store.fetch(9999) is None
 
 
+class TestResearchRotationStore:
+    async def test_round_trips_the_cursor_and_upserts_one_row(self, database: Database) -> None:
+        from tradebot.persistence import ResearchRotationStore
+
+        store = ResearchRotationStore(database)
+        assert await store.load() is None  # absent until the first pass completes
+
+        await store.save(7, 2, BASE_TIME)
+        assert await store.load() == (7, 2)
+
+        # A second save updates the one row in place (id=1), never appends.
+        await store.save(8, 0, BASE_TIME + timedelta(hours=1))
+        assert await store.load() == (8, 0)
+
+
 class TestCampaignHistoryStore:
     async def test_records_and_lists_newest_first(self, database: Database) -> None:
         from tradebot.persistence import CampaignHistoryStore

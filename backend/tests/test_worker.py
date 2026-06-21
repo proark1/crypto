@@ -1255,6 +1255,24 @@ class TestCompetition:
         rows = await worker.competition_snapshot()
         assert [row["bot_id"] for row in rows] == ["production"]
 
+    async def test_research_rotation_cursor_resumes_after_restart(self, database: Database) -> None:
+        # A persisted cursor (a prior process left off mid-rotation) is reloaded
+        # on initialize and seeds the scheduler, so a redeploy continues the
+        # rotation rather than re-starting at pass 0 / symbol 0.
+        from tradebot.evaluation.allocation import SelectorState
+        from tradebot.persistence import ResearchRotationStore
+
+        await database.create_schema()
+        await ResearchRotationStore(database).save(5, 1, datetime.now(UTC))
+
+        worker = Worker(make_config(api_port=8925), database, ScriptedExchange([]))
+        await worker.initialize()
+
+        assert worker._research_target_selector() is not None  # builds the selector
+        selector = worker._research_selector
+        assert selector is not None
+        assert selector.state() == SelectorState(pass_index=5, symbol_index=1)
+
 
 class TestBotManagement:
     async def test_challengers_trade_ungated_by_the_regime_router(self, database: Database) -> None:

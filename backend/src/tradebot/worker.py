@@ -67,6 +67,7 @@ from tradebot.engine import TradingEngine
 from tradebot.evaluation import ScenarioEvaluator
 from tradebot.evaluation.allocation import (
     PerformanceWeightedSelector,
+    SelectorState,
     TargetSelector,
     TargetStanding,
     standings_from_competition,
@@ -107,6 +108,7 @@ from tradebot.persistence import (
     FillStore,
     FundingStore,
     OrderStore,
+    ResearchRotationStore,
     RiskStateStore,
     StrategySettingsStore,
     TradingFeesStore,
@@ -331,6 +333,10 @@ class Worker:
         # persisted value (if an operator has toggled it) overrides it in
         # initialize(), and the Settings PUT flips it live.
         self.campaign_settings_store = CampaignSettingsStore(database)
+        # The §12.7 scheduler's resume cursor: persisted each pass, reloaded in
+        # initialize() so a redeploy continues the rotation rather than
+        # re-starting it (frequent restarts otherwise defeat parking).
+        self.research_rotation_store = ResearchRotationStore(database)
         # Durable history of finished campaigns (the driver only holds the
         # current one in memory); the driver appends to it on each finish.
         self.campaign_history_store = CampaignHistoryStore(database)
@@ -475,6 +481,10 @@ class Worker:
         # are mutually exclusive on the lane). ``None`` until first built, or
         # forever when weighted allocation is configured off (flat rotation).
         self._research_selector: PerformanceWeightedSelector | None = None
+        # The scheduler's resume cursor loaded from the store in initialize();
+        # ``None`` until a pass has ever completed (then the selector starts
+        # fresh, the boot behaviour).
+        self._loaded_rotation_state: SelectorState | None = None
         # Validated at boot, not first cycle: a bad timeframe must fail the
         # deploy, not the first improvement attempt half a day later.
         CandleInterval(config.auto_improve_timeframe)
@@ -979,7 +989,9 @@ class Worker:
         One instance feeds both research loops — they never run concurrently
         (the campaign loop stands the auto-improver down), so a shared cursor
         gives continuous, non-overlapping coverage and one allocation plan for
-        the status surface to show. Gated by config: off restores the flat
+        the status surface to show. The cursor resumes from the persisted state
+        (loaded in ``initialize``) and is saved each pass, so a redeploy
+        continues the rotation. Gated by config: off restores the flat
         round-robin (both loops fall back when ``select`` is ``None``).
         """
         if not self.config.research_weighted_allocation:
@@ -988,8 +1000,22 @@ class Worker:
             self._research_selector = PerformanceWeightedSelector(
                 targets=IMPROVEMENT_TARGETS,
                 read_standings=self._read_research_standings,
+                initial_state=self._loaded_rotation_state,
+                persist=self._persist_rotation,
             )
         return self._research_selector
+
+    async def _persist_rotation(self, state: SelectorState) -> None:
+        """Save the scheduler's resume cursor (once per pass).
+
+        Best-effort: a failed write only costs a warm resume on the next
+        restart (the rotation re-starts), never a research cycle — so it is
+        logged and swallowed rather than allowed to break the loop.
+        """
+        try:
+            await self.research_rotation_store.save(state.pass_index, state.symbol_index, utc_now())
+        except Exception:
+            logger.exception("failed to persist the research rotation cursor")
 
     def _runtime_for(self, bot_id: str) -> CompetitorRuntime:
         """Return ``bot_id``'s challenger account; ``KeyError`` if unknown."""
@@ -1674,6 +1700,14 @@ class Worker:
         stored_campaign = await self.campaign_settings_store.load()
         if stored_campaign is not None:
             self._campaign_enabled = stored_campaign
+        # The §12.7 scheduler's resume cursor: continue the rotation across
+        # this restart rather than re-starting at pass 0 / symbol 0.
+        stored_rotation = await self.research_rotation_store.load()
+        if stored_rotation is not None:
+            pass_index, symbol_index = stored_rotation
+            self._loaded_rotation_state = SelectorState(
+                pass_index=pass_index, symbol_index=symbol_index
+            )
         # Operator-set trading fees override the config boot defaults before
         # any engine's simulator captures the shared schedule.
         stored_fees = await self.trading_fees_store.load()

@@ -254,6 +254,21 @@ def _interleave(targets: Sequence[str], weights: Mapping[str, int]) -> list[str]
     return ring
 
 
+@dataclass(frozen=True)
+class SelectorState:
+    """The selector's resume cursor — what a restart reloads (§12.7).
+
+    Only the two indices that must survive a restart for the rotation to
+    *continue* rather than re-start: ``pass_index`` (which drives the parking
+    re-probe cadence) and ``symbol_index`` (which symbol the pass researches).
+    The ring itself is recomputed each pass from fresh standings, so it is
+    never stored — only this cursor is.
+    """
+
+    pass_index: int
+    symbol_index: int
+
+
 class PerformanceWeightedSelector:
     """Picks the next ``(target, symbol)`` weighted by live standing (§12.7).
 
@@ -275,22 +290,33 @@ class PerformanceWeightedSelector:
         targets: Sequence[str],
         read_standings: Callable[[], Awaitable[Mapping[str, TargetStanding]]],
         clock: Callable[[], datetime] = utc_now,
+        initial_state: SelectorState | None = None,
+        persist: Callable[[SelectorState], Awaitable[None]] | None = None,
     ) -> None:
         """Bind the selector to its target list and live standings reader.
 
         ``targets`` is the §12.7 rotation (``IMPROVEMENT_TARGETS``);
         ``read_standings`` returns one ``TargetStanding`` per target and is
         awaited once per pass (cheap — a single competition snapshot), never
-        per turn.
+        per turn. ``initial_state`` seeds the resume cursor (from the persisted
+        store) so a restart continues the rotation rather than re-starting at
+        pass 0 / symbol 0; ``persist`` is called once per pass with the new
+        cursor so it survives the next restart. Both absent → the boot
+        behaviour (start fresh, persist nothing).
         """
         self._targets = tuple(targets)
         self._read_standings = read_standings
         self._clock = clock
+        self._persist = persist
         self._ring: list[str] = []
         self._ring_pos = 0
-        self._pass_index = 0
-        self._symbol_index = -1
+        self._pass_index = initial_state.pass_index if initial_state is not None else 0
+        self._symbol_index = initial_state.symbol_index if initial_state is not None else -1
         self._last_plan: AllocationPlan | None = None
+
+    def state(self) -> SelectorState:
+        """Return the current resume cursor, for persistence after each pass."""
+        return SelectorState(pass_index=self._pass_index, symbol_index=self._symbol_index)
 
     @property
     def last_plan(self) -> AllocationPlan | None:
@@ -347,3 +373,7 @@ class PerformanceWeightedSelector:
                 ",".join(plan.boosted) or "none",
                 ",".join(plan.parked) or "none",
             )
+        if self._persist is not None:
+            # Save the cursor for the next pass (pass_index already advanced),
+            # so a restart resumes the rotation rather than re-starting it.
+            await self._persist(self.state())
