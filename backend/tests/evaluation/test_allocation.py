@@ -17,6 +17,7 @@ from tradebot.evaluation.allocation import (
     PARK_REPROBE_PERIOD,
     AllocationTier,
     PerformanceWeightedSelector,
+    SelectorState,
     TargetStanding,
     classify,
     standings_from_competition,
@@ -205,3 +206,40 @@ class TestSelectorSchedule:
         assert "momentum" in plan.boosted
         assert "keltner" in plan.parked
         assert plan.symbol == SYMBOLS[0]
+
+
+class TestSelectorResume:
+    async def test_resumes_from_initial_state_rather_than_restarting(self) -> None:
+        # A restart hands back the persisted cursor: the rotation continues at
+        # the saved pass (so the re-probe cadence is not reset) and advances to
+        # the next symbol, rather than re-starting at pass 0 / symbol 0.
+        standings = {t: standing(t, ret="0.0", trades=0) for t in TARGETS}
+        selector = PerformanceWeightedSelector(
+            targets=TARGETS,
+            read_standings=reader(standings),
+            initial_state=SelectorState(pass_index=3, symbol_index=2),
+        )
+        await selector.next_assignment(SYMBOLS)
+        plan = selector.last_plan
+        assert plan is not None
+        assert plan.pass_index == 3  # continued, not reset to 0
+        assert plan.symbol == SYMBOLS[3 % len(SYMBOLS)]  # symbol advanced
+        assert selector.state() == SelectorState(pass_index=4, symbol_index=3)
+
+    async def test_persists_the_cursor_after_each_pass(self) -> None:
+        standings = {t: standing(t, ret="0.0", trades=0) for t in TARGETS}
+        saved: list[SelectorState] = []
+
+        async def persist(state: SelectorState) -> None:
+            saved.append(state)
+
+        selector = PerformanceWeightedSelector(
+            targets=TARGETS, read_standings=reader(standings), persist=persist
+        )
+        # Drain one all-normal pass (one rebuild → one persist).
+        for _ in range(len(TARGETS)):
+            await selector.next_assignment(SYMBOLS)
+        assert saved[-1] == SelectorState(pass_index=1, symbol_index=0)
+        # The next pass rebuilds and persists again, advancing both indices.
+        await selector.next_assignment(SYMBOLS)
+        assert saved[-1] == SelectorState(pass_index=2, symbol_index=1)

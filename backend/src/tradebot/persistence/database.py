@@ -226,6 +226,22 @@ campaign_settings_table = Table(
 driver reads it each turn — so no redeploy, like the trading-fees setting."""
 
 
+research_rotation_table = Table(
+    "research_rotation",
+    metadata,
+    Column("id", Integer, primary_key=True),
+    Column("pass_index", Integer, nullable=False),
+    Column("symbol_index", Integer, nullable=False),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
+)
+"""The §12.7 standing-weighted scheduler's resume cursor, one row (id=1).
+Persisted so a restart continues the rotation where it left off rather than
+re-starting every pass at the first target/symbol. This matters because the
+worker redeploys often (every merge to ``main``): without it, every restart is
+pass 0 — a re-probe pass that defrosts parked families, and symbol 0 that
+starves the rest of the basket. Absent until the first pass completes."""
+
+
 campaign_history_table = Table(
     "campaign_history",
     metadata,
