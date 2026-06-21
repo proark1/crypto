@@ -1248,9 +1248,12 @@ So the operator does not have to watch that surface, a light **candidacy
 watch** (worker loop, one slow tick) alerts the moment a family newly meets
 all three conditions — the autonomous flywheel runs the research up to the
 gate and then *taps the human on the shoulder* for the one step it reserves.
-The alert is deduped (one row per alerted family in `candidacy_alerts`), so it
-fires once, not on every tick and not again after a redeploy, and it stays an
-alert: routing the family in is still the human decision above.
+The alert is deduped (one row per alerted family in `candidacy_alerts`, written
+only once the alert is delivered), so it fires once per family, not on every
+tick and not again after a redeploy — at-least-once, since a crash between a
+successful send and the write re-alerts that one family on the next boot, the
+safe direction for a notification the human gate depends on. It stays an alert:
+routing the family in is still the human decision above.
 
 ### 13.8 The bake-off (one button, the whole grid)
 

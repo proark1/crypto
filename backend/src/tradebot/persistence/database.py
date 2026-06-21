@@ -233,9 +233,12 @@ candidacy_alerts_table = Table(
     Column("alerted_at", DateTime(timezone=True), nullable=False),
 )
 """One row per research family the operator has already been told earned §13.7
-routing candidacy — the dedup so the alert fires once, not on every watch tick
-(and not again after every redeploy). Append-on-first-alert; the family stays
-recorded even if it later loses candidacy, so a brief flap does not re-spam."""
+routing candidacy — the dedup so the alert fires once per family, not on every
+watch tick (and not again after a redeploy). The row is appended only after the
+alert is delivered, so delivery is at-least-once: a crash between a successful
+send and this insert re-alerts that family once on the next boot (the safe
+direction). The family stays recorded even if it later loses candidacy, so a
+brief flap does not re-spam."""
 
 
 campaign_history_table = Table(
