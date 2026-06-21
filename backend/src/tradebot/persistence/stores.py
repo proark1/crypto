@@ -837,9 +837,15 @@ class CampaignSettingsStore:
 class CandidacyAlertStore:
     """Which research families the operator has already been told earned §13.7.
 
-    The dedup behind the candidacy alert: it fires once per family, not on
-    every watch tick and not again after every redeploy. A family stays
-    recorded even if it later loses candidacy, so a brief flap does not re-spam.
+    The dedup behind the candidacy alert: a family is recorded only once its
+    alert has been *delivered* (the worker marks it after a successful send),
+    so in the steady state it fires once per family — not on every watch tick,
+    and not again after a redeploy. Delivery is **at-least-once**, not exactly
+    once: a crash between a successful send and recording the row re-alerts that
+    one family on the next boot. That is the safe direction for a notification
+    the operator must not miss, and the row is idempotent so the duplicate never
+    compounds. A family stays recorded even if it later loses candidacy, so a
+    brief flap does not re-spam.
     """
 
     def __init__(self, database: Database) -> None:
