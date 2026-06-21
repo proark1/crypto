@@ -31,6 +31,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from tradebot.core.models import utc_now
+from tradebot.evaluation.allocation import TargetSelector
 from tradebot.evaluation.campaign import (
     CampaignConfig,
     CampaignStatus,
@@ -133,6 +134,7 @@ class CampaignDriver:
         record: Callable[[CampaignStatus], Awaitable[None]] | None = None,
         promotions_for: Callable[[str], Awaitable[int]] | None = None,
         funding_provider: FundingProvider | None = None,
+        select: TargetSelector | None = None,
     ) -> None:
         """Bind the driver to the worker's live state and apply paths.
 
@@ -143,9 +145,11 @@ class CampaignDriver:
         durable history (the driver itself only holds the current one in
         memory). ``promotions_for`` reads that history back — a target's
         lifetime auto-promotion count — to enforce the per-target promotion
-        cap; absent, the cap is simply never reached. Everything stateful
-        arrives as a callable so each campaign sees the world as it is when it
-        runs.
+        cap; absent, the cap is simply never reached. ``select`` is the §12.7
+        target scheduler (standing-weighted); absent, the driver falls back to
+        the flat round-robin, so the seam is backward-compatible. Everything
+        stateful arrives as a callable so each campaign sees the world as it is
+        when it runs.
         """
         self._sweeps = sweeps
         self._store = store
@@ -161,8 +165,23 @@ class CampaignDriver:
         self._record = record
         self._promotions_for = promotions_for
         self._funding_provider = funding_provider
+        self._select = select
         self._rotation = 0
         self._campaign: ResearchCampaign | None = None
+
+    async def _next_assignment(self, symbols: tuple[str, ...]) -> tuple[str, str]:
+        """Pick the next ``(target, symbol)`` — weighted if a selector is bound.
+
+        With a ``select`` scheduler the pick is standing-weighted (§12.7
+        allocation); without one it is the historical flat round-robin —
+        targets rotate first, symbols second — preserving prior behaviour.
+        """
+        if self._select is not None:
+            return await self._select.next_assignment(symbols)
+        target = IMPROVEMENT_TARGETS[self._rotation % len(IMPROVEMENT_TARGETS)]
+        symbol = symbols[(self._rotation // len(IMPROVEMENT_TARGETS)) % len(symbols)]
+        self._rotation += 1
+        return target, symbol
 
     @property
     def current(self) -> CampaignStatus | None:
@@ -207,9 +226,7 @@ class CampaignDriver:
         if not symbols:
             logger.info("campaign driver idle: no active coins to research")
             return None
-        target = IMPROVEMENT_TARGETS[self._rotation % len(IMPROVEMENT_TARGETS)]
-        symbol = symbols[(self._rotation // len(IMPROVEMENT_TARGETS)) % len(symbols)]
-        self._rotation += 1
+        target, symbol = await self._next_assignment(symbols)
         prior_promotions = await self._promotions_for(target) if self._promotions_for else 0
         campaign = self._assemble(target, symbol)
         # Publish the campaign before running it: run() populates its status
