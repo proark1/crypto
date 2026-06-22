@@ -119,10 +119,11 @@ class TestValidationVerdict:
         # large spread rather than an i.i.d. shuffle that would understate it.
         noisy_winner = score(
             "challenger",
-            ["1.0", "1.1", "0.9", "1.0", "1.0", "-0.9", "-0.8", "-0.9", "-0.8", "-0.6"],
+            ["1.0", "1.1", "0.9", "1.0", "1.0", "-0.9", "-0.8", "-0.9", "-0.8", "-0.6"] * 5,
         )
         flat_baseline = score(
-            "baseline", ["1.0", "1.0", "0.9", "1.0", "1.1", "-1.0", "-1.0", "-1.0", "-1.0", "-1.0"]
+            "baseline",
+            ["1.0", "1.0", "0.9", "1.0", "1.1", "-1.0", "-1.0", "-1.0", "-1.0", "-1.0"] * 5,
         )
 
         verdict, explanation, significance = validation_verdict(
@@ -172,17 +173,17 @@ class TestValidationVerdict:
         assert significance["windows_won"] == 1
         assert significance["windows_total"] == 3
 
-    def test_an_edge_that_persists_across_a_majority_of_windows_is_validated(self) -> None:
-        """The same pooled edge, but now winning a strict majority of windows."""
+    def test_an_edge_that_persists_across_every_window_is_validated(self) -> None:
+        """The same pooled edge, but now winning every validation window."""
         baseline_windows = [
             score("baseline", enough("0.1")),
             score("baseline", enough("0.1")),
-            score("baseline", enough("0.5")),
+            score("baseline", enough("0.1")),
         ]
         winner_windows = [
             score("challenger", enough("0.6")),  # wins
             score("challenger", enough("0.6")),  # wins
-            score("challenger", enough("0.1")),  # loses one
+            score("challenger", enough("0.6")),  # wins
         ]
         verdict, explanation, significance = validation_verdict(
             baseline=score("baseline", enough("0.1")),
@@ -194,8 +195,34 @@ class TestValidationVerdict:
         )
         assert verdict == "validated"
         assert "survived walk-forward" in explanation
-        assert significance["windows_won"] == 2
+        assert significance["windows_won"] == 3
+        assert significance["positive_windows"] == 3
         assert significance["windows_total"] == 3
+
+    def test_a_winner_must_be_positive_in_every_window(self) -> None:
+        """Beating a worse baseline while still losing money is not deployable."""
+        baseline_windows = [
+            score("baseline", enough("0.1")),
+            score("baseline", enough("-0.5")),
+            score("baseline", enough("0.1")),
+        ]
+        winner_windows = [
+            score("challenger", enough("0.6")),
+            score("challenger", enough("-0.1")),  # beats baseline but loses money
+            score("challenger", enough("0.6")),
+        ]
+        verdict, explanation, significance = validation_verdict(
+            baseline=score("baseline", enough("0.0")),
+            winner=score("challenger", enough("0.4")),
+            comparisons=4,
+            seed=7,
+            baseline_by_window=baseline_windows,
+            winner_by_window=winner_windows,
+        )
+        assert verdict == "overfit"
+        assert "positive in only 2 of 3" in explanation
+        assert significance["windows_won"] == 3
+        assert significance["positive_windows"] == 2
 
 
 class TestBuildCandidateStrategy:

@@ -1,15 +1,15 @@
 """Performance-weighted research allocation (ARCHITECTURE.md §12.7).
 
 The §12.7 loops (`AutoImprover`, `CampaignDriver`) share one serial,
-CPU-shared research lane. Historically they spent it on a *flat* round-robin:
-every improvement target — ``production`` and each research family — got an
-equal slice every pass, regardless of whether the family had shown any edge.
-That wastes the scarcest resource the bot has on families the live evidence
-already says are losing (the §13 leaderboard repeatedly shows several research
-accounts deep underwater with hundreds of trades — no edge, just cost).
+CPU-shared research lane. The default autonomous target set is now
+``production`` only, based on production evidence that broad solo-family
+rotation spent most cycles on weak standalone edges. This selector remains
+the general scheduler for any configured target set, including explicit
+diagnostic runs that add solo families back in.
 
-This module re-spends that lane by *standing*. Each pass it reads the live
-competition standing for every target and sorts them into three tiers:
+For multi-target use, this module re-spends that lane by *standing*. Each
+pass it reads the live competition standing for every target and sorts them
+into three tiers:
 
 * **boosted** — a family the evidence likes: a §13.7 routing candidate, or a
   live-paper account that is *up* with enough trades to trust the sign. It
@@ -27,9 +27,10 @@ Two invariants make this safe to run unattended:
    parked, always at least a normal turn. The thing we trade most is the thing
    we keep researching.
 2. Parking only ever changes *where the research lane spends time*. It moves no
-   money, pauses no account, and deletes no evidence — the parked family keeps
-   trading paper (cheaply) so the standing that parked it stays current and the
-   re-probe has fresh data. This is a scheduler, not a kill switch.
+   money, pauses no account, and deletes no evidence — a parked family keeps
+   trading paper (cheaply) when it is part of the configured target set, so
+   the standing that parked it stays current and the re-probe has fresh data.
+   This is a scheduler, not a kill switch.
 
 The policy is pure and deterministic given a standings snapshot, so it is
 unit-tested with a fake reader (no worker, DB, or network). The worker builds
@@ -66,7 +67,7 @@ boosts a family — it is making paper money, so the lane does more of it."""
 
 BOOST_WEIGHT = 3
 """Research turns a boosted target gets per pass (a ``normal`` target gets 1).
-Capped small: even a winning family should not starve the rotation."""
+Capped small: even a winning target should not starve the rest of the set."""
 
 NORMAL_WEIGHT = 1
 """Research turns a normal target gets per pass."""
@@ -278,7 +279,7 @@ class PerformanceWeightedSelector:
     ) -> None:
         """Bind the selector to its target list and live standings reader.
 
-        ``targets`` is the §12.7 rotation (``IMPROVEMENT_TARGETS``);
+        ``targets`` is the §12.7 target set (``IMPROVEMENT_TARGETS``);
         ``read_standings`` returns one ``TargetStanding`` per target and is
         awaited once per pass (cheap — a single competition snapshot), never
         per turn.
@@ -314,9 +315,9 @@ class PerformanceWeightedSelector:
     async def _rebuild(self, symbols: Sequence[str]) -> None:
         """Start a new pass: read standings, weight the ring, pick the symbol.
 
-        A re-probe pass can leave the ring empty (every research family parked
-        and not due) — except ``production`` is protected, so the ring always
-        holds at least it. The loop is therefore never starved.
+        A re-probe pass can leave the ring empty (every non-protected target
+        parked and not due) — except ``production`` is protected, so the ring
+        always holds at least it. The loop is therefore never starved.
         """
         standings = await self._read_standings()
         self._symbol_index += 1

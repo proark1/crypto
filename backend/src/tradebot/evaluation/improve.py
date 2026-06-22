@@ -29,6 +29,7 @@ from typing import Any, Protocol
 from tradebot.evaluation.allocation import TargetSelector
 from tradebot.evaluation.campaign import CandidateProvider
 from tradebot.evaluation.models import LearningFinding, RunStatus
+from tradebot.evaluation.promotion_policy import promotion_timeframe_allowed
 from tradebot.evaluation.runner import EvaluationRunConfig
 from tradebot.evaluation.sweep import DEFAULT_SCENARIO_COUNT, SweepCandidate, SweepConfig
 from tradebot.strategies import (
@@ -52,26 +53,16 @@ logger = logging.getLogger(__name__)
 PROMOTION_VERDICT = "validated"
 """The only sweep verdict that may change the traded configuration."""
 
-IMPROVEMENT_TARGETS = (
-    "production",
-    "breakout",
-    "momentum",
-    "squeeze",
-    "supertrend",
-    "bollinger_reversion",
-    "adx_trend",
-    "keltner",
-    "funding",
-    "vol_breakout",
-    "tsmom",
-    "rsi_trend",
-)
-"""What the loop improves, in rotation. ``production`` covers the regime-
-routed shape and therefore both of its families (trend following and mean
-reversion); every other entry is a research family's solo competition
-account — tuning them sharpens the §13 leaderboard evidence the §13.7
-routing decision will be made on. Custom bots are absent on purpose:
-auto-tuning a user's recipe needs their opt-in (a later change)."""
+IMPROVEMENT_TARGETS = ("production",)
+"""What the autonomous loop improves, in rotation.
+
+Production covers the regime-routed shape and therefore both of its routed
+families (trend following and mean reversion). Solo research-family grids
+remain callable for manual sweeps, recipes, and diagnostics, but production
+database evidence showed they were spending the autonomous budget on weak
+standalone edges. Custom bots are absent on purpose: auto-tuning a user's
+recipe needs their opt-in.
+"""
 
 IMPROVEMENT_SCENARIO_COUNT = DEFAULT_SCENARIO_COUNT
 """Scenarios per candidate per period in automated research — the shared
@@ -201,22 +192,20 @@ def build_improvement_candidates(
 
     Returns ``(candidates, motivating_finding_ids)``. The active trend
     configuration is the baseline (``candidates[0]``, as the sweep
-    contract requires); each variant changes a single knob by a
-    multiplicative step so the journal can name what earned a promotion.
+    contract requires). The always-on grid includes local single-knob steps,
+    the production bake-off shapes that have shown positive evidence
+    (``trend_bold`` and ``reversion_bold``), and explicit stop/exit variants
+    for the dominant production findings.
     Steps are clamped to valid configurations (fast EMA strictly below
     slow, stops never collapsing to zero) and variants that clamp into a
     copy of an existing candidate are dropped — sweeping a candidate
     against itself would only spend the significance budget.
 
-    ``findings`` — ``(id, pattern)`` pairs mined from the latest
-    evaluation run — add *targeted* challengers: a losing-downtrend
-    pattern toggles the mean-reversion trend filter, a chasing pattern
-    toggles the trend family's extension filter. This is where the bot
-    learns from its own graded record: the pattern names the knob, the
-    sweep proves or refutes it, and the finding ids ride along as the
-    sweep's recorded motivation (§12.5 lineage). Candidates are added
-    only when their pattern actually fired — every extra candidate
-    tightens the Bonferroni bar for all of them.
+    ``findings`` — ``(id, pattern)`` pairs mined from the latest evaluation
+    run — still add targeted challengers when a pattern names a knob not
+    already in the core grid. The pattern names the hypothesis, the sweep
+    proves or refutes it, and the finding ids ride along as the sweep's
+    recorded motivation (§12.5 lineage).
     """
     trend = TrendFollowingConfig(**active.get("trend_following", {}))
     reversion = MeanReversionConfig(**active.get("mean_reversion", {}))
@@ -264,6 +253,69 @@ def build_improvement_candidates(
             name="active_reversion",
             family="mean_reversion",
             params=reversion.model_dump(),
+        ),
+        SweepCandidate(
+            name="trend_bold",
+            params=trend.model_copy(
+                update={
+                    "fast_ema_period": 8,
+                    "slow_ema_period": 21,
+                    "atr_stop_multiple": 1.5,
+                }
+            ).model_dump(),
+        ),
+        SweepCandidate(
+            name="breakeven_lock" if trend.breakeven_at_r == 0 else "no_breakeven",
+            params=trend.model_copy(
+                update={"breakeven_at_r": 1.0 if trend.breakeven_at_r == 0 else 0.0}
+            ).model_dump(),
+        ),
+        SweepCandidate(
+            name="atr_trailing" if trend.trail_atr_multiple == 0 else "no_trailing",
+            params=trend.model_copy(
+                update={
+                    "trail_atr_multiple": (
+                        trend.atr_stop_multiple if trend.trail_atr_multiple == 0 else 0.0
+                    )
+                }
+            ).model_dump(),
+        ),
+        SweepCandidate(
+            name="breakeven_trailing",
+            params=trend.model_copy(
+                update={"breakeven_at_r": 1.0, "trail_atr_multiple": trend.atr_stop_multiple}
+            ).model_dump(),
+        ),
+        SweepCandidate(
+            name="reversion_bold",
+            family="mean_reversion",
+            params=reversion.model_copy(
+                update={
+                    "oversold_threshold": 35.0,
+                    "exit_rsi": 60.0,
+                    "trend_filter_ema_period": 0,
+                    "atr_stop_multiple": 1.5,
+                }
+            ).model_dump(),
+        ),
+        SweepCandidate(
+            name="trend_filtered_reversion_bold",
+            family="mean_reversion",
+            params=reversion.model_copy(
+                update={
+                    "oversold_threshold": 35.0,
+                    "exit_rsi": 60.0,
+                    "trend_filter_ema_period": 80,
+                    "atr_stop_multiple": 1.5,
+                }
+            ).model_dump(),
+        ),
+        SweepCandidate(
+            name="later_reversion_exit",
+            family="mean_reversion",
+            params=reversion.model_copy(
+                update={"exit_rsi": min(80.0, round(reversion.exit_rsi * 1.2, 1))}
+            ).model_dump(),
         ),
     ]
     motivating: list[int] = []
@@ -1397,8 +1449,10 @@ def make_candidate_provider(target: str, store: ResearchReader) -> CandidateProv
 class AutoImprover:
     """Runs improvement cycles forever; one (target, symbol) pair per cycle.
 
-    Targets rotate first (production, then each research family), symbols
-    second, so every family is revisited before any symbol repeats.
+    The autonomous target is production; symbols rotate second, so each
+    active coin gets the same production-tuning budget over time. Manual
+    sweeps and recipe sweeps can still call the family-specific grids
+    directly, but weak solo families no longer consume scheduled cycles.
     """
 
     def __init__(
@@ -1487,12 +1541,11 @@ class AutoImprover:
         """Run one cycle: evaluate the target when stale, else sweep it.
 
         Returns the sweep id when a sweep ran, ``None`` otherwise. Each
-        cycle serves one improvement target (production, then each
-        research family) on one symbol, rotating target-first so every
-        family is revisited before any symbol repeats. A target with no
-        fresh evaluation run is refreshed first — its completion mines the
-        findings — and the target's next turn sweeps challengers aimed at
-        them.
+        cycle serves one autonomous improvement target on one symbol; the
+        default target set is production-only, so symbols rotate through the
+        production grid. A target with no fresh evaluation run is refreshed
+        first — its completion mines the findings — and the target's next
+        turn sweeps challengers aimed at them.
         """
         self.status.last_cycle_started_at = datetime.now(UTC)
         if self._campaign_active is not None and self._campaign_active():
@@ -1591,6 +1644,17 @@ class AutoImprover:
             self._finish_cycle(
                 f"sweep #{sweep_id} validated recipe {winner.name}; recipes are not auto-promoted"
             )
+            return sweep_id
+        if not promotion_timeframe_allowed(self._timeframe):
+            message = (
+                f"sweep #{sweep_id} validated {winner.name} on {self._timeframe}, but "
+                "that timeframe is diagnostic-only for auto-promotion; promotions require "
+                "4h or 1d validation"
+            )
+            logger.info("%s", message)
+            self._finish_cycle(message)
+            if self._notify is not None:
+                await self._notify(message)
             return sweep_id
         explanation = str(report.get("explanation", ""))
         if self._confirm is not None:

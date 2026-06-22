@@ -38,13 +38,14 @@ def test_trade_and_research_timeframes_default_coherent(monkeypatch: pytest.Monk
     config = AppConfig()
     # The bot trades the same timeframe it researches — the coherence invariant.
     assert config.trade_timeframe == config.campaign_timeframe == config.auto_improve_timeframe
+    assert config.trade_timeframe == "4h"
 
 
 def test_trading_timeframe_must_match_research(monkeypatch: pytest.MonkeyPatch) -> None:
     # Researching 4h while trading 1h would apply every promotion at the wrong
     # cadence; the config refuses to load rather than trade an incoherent setup.
-    monkeypatch.setenv("TRADEBOT_CAMPAIGN_TIMEFRAME", "4h")
-    monkeypatch.delenv("TRADEBOT_TRADE_TIMEFRAME", raising=False)
+    monkeypatch.setenv("TRADEBOT_TRADE_TIMEFRAME", "1h")
+    monkeypatch.delenv("TRADEBOT_CAMPAIGN_TIMEFRAME", raising=False)
     monkeypatch.delenv("TRADEBOT_AUTO_IMPROVE_TIMEFRAME", raising=False)
     with pytest.raises(ValidationError, match="timeframes must match"):
         AppConfig()

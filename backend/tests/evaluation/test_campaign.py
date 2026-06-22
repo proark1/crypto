@@ -322,6 +322,16 @@ class TestResearchCampaign:
         assert status is not None and status.promotions == 0
         assert "vetoed the promotion" in status.rounds[0].note
 
+    async def test_a_validated_one_hour_round_is_diagnostic_only(self) -> None:
+        campaign, _sweeps, bot, _provider = _campaign([_validated()])
+
+        await campaign.run(_config(max_rounds=1, timeframe="1h"))
+
+        assert bot.promotions == []
+        status = campaign.status
+        assert status is not None and status.promotions == 0
+        assert "diagnostic-only" in status.rounds[0].note
+
     async def test_a_validated_baseline_winner_is_never_auto_promoted(self) -> None:
         # The sweep contract never crowns the baseline "validated", but if a
         # report ever did, the campaign must refuse rather than re-promote it.

@@ -82,18 +82,18 @@ from tradebot.strategies import (
 
 logger = logging.getLogger(__name__)
 
-MIN_SWEEP_TRADES = 10
+MIN_SWEEP_TRADES = 50
 """Candidates with fewer graded trades than this cannot be compared
 honestly; expectancy over a handful of trades is noise."""
 
-DEFAULT_SCENARIO_COUNT = 1600
+DEFAULT_SCENARIO_COUNT = 5000
 """Default scenarios per candidate per period, manual and automated alike.
 The strategies trade in only a few percent of sampled scenarios (observed
 ~1-4% on BTC/USDT 1h), so the budget must clear ``MIN_SWEEP_TRADES`` with
 real margin: 100 yielded 3-4 trades and 400 still only 4-8 — every sweep
-ended "insufficient evidence" by construction. At 1600, even a 1% entry
-rate grades ~16 training trades, and validation pools the same budget
-across its windows."""
+ended "insufficient evidence" by construction. At 5000, even a 1% entry
+rate can clear the 50-trade bar, while thinner candidates are explicitly
+classified as insufficient instead of promoted on noise."""
 
 STRATEGY_FAMILIES: Mapping[str, tuple[type[BaseModel], Callable[..., Strategy]]] = {
     "trend_following": (TrendFollowingConfig, TrendFollowingStrategy),
@@ -114,10 +114,10 @@ STRATEGY_FAMILIES: Mapping[str, tuple[type[BaseModel], Callable[..., Strategy]]]
 candidate names its family, so one sweep can pit families against each
 other on identical scenarios. Every family except the two ``production``
 routes (``trend_following`` and ``mean_reversion``) is a research family:
-sweeps, evaluation, the §12.7 improvement rotation, and the strategy
-competition all grade and tune them — promotions change what their solo
-competition accounts trade — but production routing (which regime activates
-them, at whose expense) remains the §13.7 human decision. ``funding`` reads a
+sweeps, evaluation, manual diagnostic grids, and the strategy competition
+grade them, but the scheduled §12.7 loop spends its autonomous budget on
+``production``. Production routing (which regime activates a research family,
+at whose expense) remains the §13.7 human decision. ``funding`` reads a
 per-candle funding rate from an injected provider (see
 ``build_candidate_strategy``); built without one it is inert."""
 
@@ -235,7 +235,7 @@ class SweepConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     symbol: str
-    timeframe: str = "1h"
+    timeframe: str = "4h"
     history_days: int = Field(default=365, gt=0)
     scenario_count: int = Field(default=DEFAULT_SCENARIO_COUNT, gt=0)
     """Scenarios per candidate per window side (training and validation)."""
@@ -579,23 +579,27 @@ def _prose_r(value: Decimal | None) -> str:
     return str(value.quantize(Decimal("0.0001"), rounding=ROUND_HALF_EVEN))
 
 
-def _winner_window_wins(
+def _winner_window_quality(
     baseline_by_window: Sequence[CandidateScore],
     winner_by_window: Sequence[CandidateScore],
-) -> tuple[int, int]:
-    """Count validation windows where the winner's expectancy beat the baseline's.
+) -> tuple[int, int, int]:
+    """Count validation windows where the winner is positive and beats baseline.
 
-    Returns (wins, total). A window where either side has no comparable
-    per-trade expectancy counts against the winner — anti-overfitting errs
-    toward not promoting.
+    Returns (wins, positive, total). A window where either side has no
+    comparable per-trade expectancy counts against the winner; a window
+    where the challenger beats a worse baseline but still loses money is
+    positive evidence of neither edge nor deployability.
     """
     wins = 0
+    positive = 0
     for base, win in zip(baseline_by_window, winner_by_window, strict=True):
         base_r = base.expectancy_r
         win_r = win.expectancy_r
+        if win_r is not None and win_r > 0:
+            positive += 1
         if base_r is not None and win_r is not None and win_r > base_r:
             wins += 1
-    return wins, len(winner_by_window)
+    return wins, positive, len(winner_by_window)
 
 
 def validation_verdict(
@@ -614,10 +618,11 @@ def validation_verdict(
     the baseline on the untouched slices must clear a one-sided bootstrap test
     at the Bonferroni-corrected level (a grid of N variants does not get N
     chances at a 5% fluke), AND — when per-window scores are supplied — the
-    challenger must beat the baseline in a strict majority of the validation
-    windows. The window gate stops an edge that lives in one lucky stretch
-    (dragging the pooled average up) from being promoted as if it were real;
-    the pooled significance test alone cannot see that concentration.
+    challenger must be positive and beat the baseline in every validation
+    window. The window gate stops an edge that lives in one lucky stretch
+    (dragging the pooled average up), or only beats a worse losing baseline,
+    from being promoted as if it were real; the pooled significance test alone
+    cannot see that concentration.
     """
     threshold = corrected_significance(comparisons)
     significance: dict[str, Any] = {
@@ -666,19 +671,30 @@ def validation_verdict(
         )
     # Per-window consistency gate: a real edge persists across successive
     # validation periods rather than living in one lucky window that lifts the
-    # pooled average. Require a strict majority of windows before promoting.
+    # pooled average. Require every window to stay positive and beat baseline
+    # before promoting.
     # Skipped only when the caller passes no per-window scores (unit tests of
     # the pooled statistics in isolation); the production sweep always does.
     if baseline_by_window is not None and winner_by_window is not None:
-        wins, total = _winner_window_wins(baseline_by_window, winner_by_window)
+        wins, positive, total = _winner_window_quality(baseline_by_window, winner_by_window)
         significance["windows_won"] = wins
+        significance["positive_windows"] = positive
         significance["windows_total"] = total
-        if wins * 2 <= total:
+        if positive < total:
+            return (
+                "overfit",
+                f"{winner.candidate.name} beat {baseline.candidate.name} on the pooled "
+                f"validation data (p={p_value}) but was positive in only {positive} of "
+                f"{total} validation windows; the edge did not stay profitable across the "
+                f"walk-forward — keep {baseline.candidate.name}",
+                significance,
+            )
+        if wins < total:
             return (
                 "overfit",
                 f"{winner.candidate.name} beat {baseline.candidate.name} on the pooled "
                 f"validation data (p={p_value}) but won only {wins} of {total} validation "
-                f"windows; the edge was concentrated in a minority of periods, not "
+                f"windows; the edge was not "
                 f"persistent across the walk-forward — keep {baseline.candidate.name}",
                 significance,
             )

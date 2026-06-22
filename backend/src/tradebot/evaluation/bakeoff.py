@@ -45,23 +45,20 @@ from tradebot.persistence.evaluation_store import EvaluationStore
 logger = logging.getLogger(__name__)
 
 DEFAULT_GRID: tuple[tuple[str, tuple[int, ...]], ...] = (
-    ("1h", (10, 50, 100)),
     ("4h", (40, 90, 180)),
     ("1d", (180, 270, 365)),
 )
 """The grid swept by default: each timeframe paired with the history depths
-(in days) it is graded over — fast timeframe to slow, recent window to deep.
+(in days) it is graded over — medium timeframe to slow, recent window to deep.
 
 The depths are timeframe-relative on purpose. Feasibility is a *candle*
-count, not a day count, and a day buys 24 candles at ``1h`` but only one at
+count, not a day count, and a day buys six candles at ``4h`` but only one at
 ``1d``; a scenario needs ``DEFAULT_LOOKBACK_CANDLES`` + ``DEFAULT_HORIZON_CANDLES``
-(= 150) candles before a cell can host even one. A single day-window list
-shared across timeframes cannot win both ends: windows shallow enough to
-probe recent ``1h`` behaviour (10 days = 240 candles) are far too thin on
-``1d`` (10 candles), and windows deep enough for ``1d`` bury the ``1h`` row
-in years of history. So each timeframe sweeps depths sized to its own bar,
-and every cell here clears the 150-candle floor — no default cell is dead on
-arrival, and the leaderboard grades the whole grid."""
+(= 150) candles before a cell can host even one. The default grid deliberately
+omits ``1h`` because production evidence showed it was a diagnostic lane, not
+a promotion lane; operators can still request a custom ``1h`` grid when they
+want that read explicitly. Each default cell clears the 150-candle floor — no
+default cell is dead on arrival, and the leaderboard grades the whole grid."""
 
 DEFAULT_SCENARIO_COUNT = 150
 """Scenarios per contestant per cell. Lower than a solo evaluation's
@@ -148,6 +145,7 @@ class ContestantRank:
     average_return_fraction: Decimal
     cells_scored: int
     total_trades: int
+    inactive: bool
 
 
 def aggregate_ranking(cells: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -158,7 +156,9 @@ def aggregate_ranking(cells: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
     trade_count}). A contestant's score is the mean of its per-cell return
     fractions over feasible cells only; cells flagged anything other than
     ``completed`` contribute nothing, so no bot is charged for a window that
-    held too little history. Ties break by total trades then bot id, so the
+    held too little history. Contestants that never trade are marked inactive
+    and ranked below any active contestant; a zero-trade "flat" line is not
+    evidence of a safe edge. Ties break by total trades then bot id, so the
     order is deterministic. Returned newest-money-first as JSON-able dicts
     (Decimals stringified) ready for the job row.
     """
@@ -179,12 +179,21 @@ def aggregate_ranking(cells: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
             average_return_fraction=sum(values, Decimal(0)) / len(values),
             cells_scored=len(values),
             total_trades=trades.get(bot_id, 0),
+            inactive=trades.get(bot_id, 0) == 0,
         )
         for bot_id, values in returns.items()
     ]
     # Rank on the full-precision average so ties are real ties, then round
     # only the persisted/displayed figure to the leaderboard's resolution.
-    ranks.sort(key=lambda r: (r.average_return_fraction, r.total_trades, r.bot_id), reverse=True)
+    ranks.sort(
+        key=lambda r: (
+            not r.inactive,
+            r.average_return_fraction,
+            r.total_trades,
+            r.bot_id,
+        ),
+        reverse=True,
+    )
     return [
         {
             "bot_id": rank.bot_id,
@@ -195,6 +204,7 @@ def aggregate_ranking(cells: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
             ),
             "cells_scored": rank.cells_scored,
             "total_trades": rank.total_trades,
+            "inactive": rank.inactive,
         }
         for rank in ranks
     ]

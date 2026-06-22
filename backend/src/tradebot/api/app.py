@@ -460,7 +460,7 @@ class EvaluationStartRequest(BaseModel):
     """Shape of a new evaluation run; symbols default to the active coins."""
 
     symbols: list[str] | None = None
-    timeframes: list[str] = ["1h"]
+    timeframes: list[str] = ["4h"]
     history_days: int = 365
     scenario_count: int = DEFAULT_SCENARIO_COUNT
     lookback_candles: int = 200
@@ -1010,7 +1010,7 @@ class SweepStartRequest(BaseModel):
     """
 
     symbol: str | None = None
-    timeframe: str = "1h"
+    timeframe: str = "4h"
     history_days: int = 365
     scenario_count: int = DEFAULT_SCENARIO_COUNT
     lookback_candles: int = 200
