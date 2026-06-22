@@ -39,6 +39,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from tradebot.core.models import CandleInterval, utc_now
 from tradebot.evaluation.models import RunStatus
+from tradebot.evaluation.promotion_policy import promotion_timeframe_allowed
 from tradebot.evaluation.settings_diff import SettingChange, settings_changes
 from tradebot.evaluation.sweep import DEFAULT_SCENARIO_COUNT, SweepCandidate, SweepConfig
 
@@ -127,7 +128,7 @@ class CampaignConfig(BaseModel):
     (``production`` or a research family) — metadata for the record."""
 
     symbol: str
-    timeframe: str = "1h"
+    timeframe: str = "4h"
     history_days: int = Field(default=730, gt=0)
     """Days of history each round's walk-forward sweep is graded over, ending
     at the reserved holdout boundary. Defaults in step with
@@ -459,6 +460,20 @@ class ResearchCampaign:
                     winner_name,
                     None,
                     "validated winner is not auto-promotable; skipped",
+                )
+            )
+            return False
+        if not promotion_timeframe_allowed(config.timeframe):
+            status.rounds.append(
+                CampaignRound(
+                    index,
+                    scale,
+                    sweep_id,
+                    verdict,
+                    winner.name,
+                    None,
+                    f"validated on {config.timeframe}, which is diagnostic-only for "
+                    "auto-promotion; promotions require 4h or 1d validation",
                 )
             )
             return False

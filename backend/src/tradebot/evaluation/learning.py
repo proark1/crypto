@@ -85,7 +85,13 @@ def mine_findings(run_id: int, records: list[_Record], now: datetime) -> list[Le
 
 
 def _losing_buckets(run_id: int, records: list[_Record], now: datetime) -> list[LearningFinding]:
-    """One finding per market condition whose entries lose money."""
+    """One finding per losing condition with an in-run contrast group.
+
+    A label is only useful when the same run saw at least one other label in
+    that dimension with enough evidence. Without that contrast, the finding is
+    a tautology ("BTC/USDT lost" in a BTC-only run) rather than a sweepable
+    market-condition pattern.
+    """
     dimensions: list[tuple[str, Callable[[Scenario], list[str]]]] = [
         ("trend", lambda scenario: [scenario.conditions.trend.value]),
         ("volatility", lambda scenario: [scenario.conditions.volatility.value]),
@@ -101,9 +107,12 @@ def _losing_buckets(run_id: int, records: list[_Record], now: datetime) -> list[
                 continue
             for label in labels_of(scenario):
                 groups.setdefault(label, []).append(result)
-        for label, trades in sorted(groups.items()):
-            if len(trades) < MIN_EVIDENCE:
-                continue
+        eligible_groups = {
+            label: trades for label, trades in groups.items() if len(trades) >= MIN_EVIDENCE
+        }
+        if len(eligible_groups) < 2:
+            continue
+        for label, trades in sorted(eligible_groups.items()):
             expectancy = _mean(
                 [result.r_multiple for result in trades if result.r_multiple is not None]
             )

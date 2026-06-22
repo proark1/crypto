@@ -14,7 +14,7 @@ from tradebot.evaluation.improve import (
 )
 from tradebot.evaluation.models import LearningFinding
 from tradebot.evaluation.runner import EvaluationRunConfig
-from tradebot.evaluation.sweep import SweepConfig, build_candidate_strategy
+from tradebot.evaluation.sweep import DEFAULT_SCENARIO_COUNT, SweepConfig, build_candidate_strategy
 
 
 class ScriptedSweeps:
@@ -116,6 +116,7 @@ def make_improver(
     evaluations: ScriptedEvaluations | None = None,
     confirm: Callable[[str, Mapping[str, Any], str], Awaitable[str | None]] | None = None,
     campaign_active: Callable[[], bool] | None = None,
+    timeframe: str = "4h",
 ) -> AutoImprover:
     async def promote(
         family: str, params: Mapping[str, Any], sweep_id: int | None, note: str | None
@@ -133,7 +134,7 @@ def make_improver(
         confirm=confirm,
         interval=timedelta(hours=12),
         history_days=180,
-        timeframe="1h",
+        timeframe=timeframe,
         notify=notify,
         campaign_active=campaign_active,
     )
@@ -172,6 +173,27 @@ class TestBuildImprovementCandidates:
         candidates, _ = build_improvement_candidates({})
         families = {candidate.family for candidate in candidates}
         assert families == {"trend_following", "mean_reversion"}
+
+    def test_production_grid_includes_winning_shapes_and_exit_management(self) -> None:
+        candidates, _ = build_improvement_candidates({})
+        names = {candidate.name for candidate in candidates}
+        assert {
+            "trend_bold",
+            "reversion_bold",
+            "trend_filtered_reversion_bold",
+            "breakeven_lock",
+            "atr_trailing",
+            "breakeven_trailing",
+            "later_reversion_exit",
+        } <= names
+        trend_bold = next(candidate for candidate in candidates if candidate.name == "trend_bold")
+        assert trend_bold.params["fast_ema_period"] == 8
+        assert trend_bold.params["slow_ema_period"] == 21
+        reversion_bold = next(
+            candidate for candidate in candidates if candidate.name == "reversion_bold"
+        )
+        assert reversion_bold.params["oversold_threshold"] == 35.0
+        assert reversion_bold.params["exit_rsi"] == 60.0
 
 
 class TestAutoImprover:
@@ -220,7 +242,7 @@ class TestAutoImprover:
         assert promoted == []
 
     async def test_targets_rotate_first_then_symbols(self) -> None:
-        """Every family gets its turn before any symbol repeats."""
+        """Production is the only autonomous target; symbols rotate after it."""
         sweeps = ScriptedSweeps()
         store = ScriptedStore(
             "completed", {"verdict": "baseline_best"}, runs=runs_for_every_target()
@@ -234,40 +256,24 @@ class TestAutoImprover:
             await improver.run_cycle()
 
         baseline_families = [config.candidates[0].family for config in sweeps.configs]
-        assert baseline_families == [
-            "trend_following",  # the production grid leads with the trend baseline
-            "breakout",
-            "momentum",
-            "squeeze",
-            "supertrend",
-            "bollinger_reversion",
-            "adx_trend",
-            "keltner",
-            "funding",
-            "vol_breakout",
-            "tsmom",
-            "rsi_trend",
-            "trend_following",  # wrap: production again, now on the next symbol
-        ]
+        assert baseline_families == ["trend_following", "trend_following"]
         # The symbol advances only after a full pass over the targets.
         assert [config.symbol for config in sweeps.configs] == (
             ["BTC/USDT"] * len(IMPROVEMENT_TARGETS) + ["ETH/USDT"]
         )
 
     async def test_a_target_without_a_fresh_run_gets_evaluated_first(self) -> None:
-        """Cycle two serves breakout; with only production runs on record it
-        starts a breakout evaluation instead of sweeping blind."""
+        """With no fresh production run on record it evaluates instead of sweeping blind."""
         sweeps = ScriptedSweeps()
         evaluations = ScriptedEvaluations()
-        store = ScriptedStore("completed", {"verdict": "baseline_best"})  # production run only
+        store = ScriptedStore("completed", {"verdict": "baseline_best"}, runs=[])
         improver = make_improver(sweeps, store, [], evaluations=evaluations)
 
-        await improver.run_cycle()  # production: sweeps
-        await improver.run_cycle()  # breakout: no run -> evaluates
+        await improver.run_cycle()
 
-        assert len(sweeps.configs) == 1
+        assert sweeps.configs == []
         (started,) = evaluations.configs
-        assert started.strategy == "breakout"
+        assert started.strategy == "production"
 
     async def test_engine_confirmation_veto_blocks_the_promotion(self) -> None:
         """A validated sweep winner still needs the engine's confirmation."""
@@ -313,6 +319,26 @@ class TestAutoImprover:
 
         await improver.run_cycle()
         assert len(promoted) == 1
+
+    async def test_validated_one_hour_sweep_is_diagnostic_only(self) -> None:
+        promoted: list[tuple[str, Mapping[str, Any], int | None, str | None]] = []
+        messages: list[str] = []
+
+        async def notify(text: str) -> None:
+            messages.append(text)
+
+        store = ScriptedStore(
+            "completed",
+            {"verdict": "validated", "winner": "tighter_stop", "explanation": "won"},
+        )
+        improver = make_improver(ScriptedSweeps(), store, promoted, timeframe="1h", notify=notify)
+
+        await improver.run_cycle()
+
+        assert promoted == []
+        assert improver.status.last_outcome is not None
+        assert "diagnostic-only" in improver.status.last_outcome
+        assert messages and "diagnostic-only" in messages[0]
 
     async def test_notify_carries_the_promotion_message(self) -> None:
         messages: list[str] = []
@@ -789,9 +815,19 @@ class TestScale:
             "mean_reversion": {},
         }
         candidates, _ = build_improvement_candidates(active, scale=0.0)
-        # Every magnitude step is scaled by 1.0 now, so the base variants equal the
-        # baseline and dedup leaves only the two family baselines.
-        assert [c.name for c in candidates] == [candidates[0].name, "active_reversion"]
+        # Every magnitude step is scaled by 1.0 now, so the local step variants
+        # equal the baseline and dedupe drops them. The production evidence
+        # shapes and stop/exit hypotheses remain because they are discrete
+        # challengers, not scaled neighbours.
+        names = [c.name for c in candidates]
+        assert names[0] == candidates[0].name
+        assert "active_reversion" in names
+        assert "faster_cross" not in names
+        assert "slower_cross" not in names
+        assert "wider_stop" not in names
+        assert "tighter_stop" not in names
+        assert "trend_bold" in names
+        assert "reversion_bold" in names
         assert {c.family for c in candidates} == {"trend_following", "mean_reversion"}
 
     def test_scale_threads_through_to_a_research_family(self) -> None:
@@ -901,7 +937,7 @@ class TestEvaluateBeforeSweeping:
         assert await improver.run_cycle() is None
         assert sweeps.configs == []  # nothing to learn from yet: no sweep
         (config,) = evaluations.configs
-        assert config.scenario_count == 1600  # unstarved sample size
+        assert config.scenario_count == DEFAULT_SCENARIO_COUNT  # unstarved sample size
 
     async def test_a_stale_run_is_refreshed_before_sweeping(self) -> None:
         stale = {
@@ -942,7 +978,7 @@ class TestEvaluateBeforeSweeping:
         assert "trend_filtered_reversion" in names and "anti_chase" in names
         # Rejected finding 9 contributes nothing; 7 and 8 are the lineage.
         assert set(config.motivating_finding_ids) == {7, 8}
-        assert config.scenario_count == 1600
+        assert config.scenario_count == DEFAULT_SCENARIO_COUNT
 
     async def test_busy_evaluation_manager_just_waits_for_the_next_cycle(self) -> None:
         evaluations = ScriptedEvaluations(running=True)

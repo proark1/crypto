@@ -43,9 +43,10 @@ class TestExpandCells:
             ("4h", 10),
         ]
 
-    def test_default_grid_is_three_by_three(self) -> None:
+    def test_default_grid_is_two_by_three_without_one_hour_cells(self) -> None:
         cells = expand_cells(BakeOffConfig(symbols=("BTC/USDT",)))
-        assert len(cells) == 9
+        assert len(cells) == 6
+        assert {cell.timeframe for cell in cells} == {"4h", "1d"}
 
 
 class TestAggregateRanking:
@@ -100,6 +101,21 @@ class TestAggregateRanking:
         ]
         ranking = aggregate_ranking(cells)
         assert [r["bot_id"] for r in ranking] == ["high_trades", "low_trades"]
+
+    def test_zero_trade_contestants_rank_below_active_losers(self) -> None:
+        cells = [
+            self._cell(
+                "completed",
+                {
+                    "inactive": {"return_fraction": "0.00", "trade_count": 0},
+                    "active_loser": {"return_fraction": "-0.02", "trade_count": 3},
+                },
+            )
+        ]
+        ranking = aggregate_ranking(cells)
+        assert [r["bot_id"] for r in ranking] == ["active_loser", "inactive"]
+        assert ranking[0]["inactive"] is False
+        assert ranking[1]["inactive"] is True
 
     def test_average_return_is_quantized_not_unbounded(self) -> None:
         # 0.10 and 0.05 over three cells average to 0.0833..., which must be

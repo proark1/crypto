@@ -39,7 +39,7 @@ class EvaluationRunConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     symbols: tuple[str, ...] = Field(min_length=1)
-    timeframes: tuple[str, ...] = ("1h",)
+    timeframes: tuple[str, ...] = ("4h",)
     history_days: int = Field(default=365, gt=0)
     scenario_count: int = Field(default=200, gt=0)
     """Scenarios per (symbol, timeframe) series."""

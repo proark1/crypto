@@ -359,10 +359,10 @@ class AppConfig(BaseSettings):
             )
         return self
 
-    auto_improve_timeframe: str = "1h"
+    auto_improve_timeframe: str = "4h"
     """Candle timeframe the automated sweeps evaluate (validated at boot)."""
 
-    trade_timeframe: str = "1h"
+    trade_timeframe: str = "4h"
     """Candle timeframe the **live** bot trades on. The 1m feed is rolled up to
     this interval before it reaches the engines, so the strategy decides on the
     same bars its research grades and its promotions are tuned on. Must equal
@@ -379,7 +379,7 @@ class AppConfig(BaseSettings):
     Identical safety scope: promotions are paper-only, validated, versioned
     with their sweep, and revertible."""
 
-    campaign_timeframe: str = "1h"
+    campaign_timeframe: str = "4h"
     """Candle timeframe campaign sweeps evaluate (validated at boot)."""
 
     campaign_history_days: int = Field(default=730, gt=0)
@@ -392,7 +392,7 @@ class AppConfig(BaseSettings):
     """Most-recent days reserved as the untouched holdout — graded once, at
     the end, for the campaign's non-gating honesty read; never swept."""
 
-    campaign_scenario_count: int = Field(default=1600, gt=0)
+    campaign_scenario_count: int = Field(default=5000, gt=0)
     """Scenarios per candidate per period (matches sweep.DEFAULT_SCENARIO_COUNT
     — the unstarved default that clears the minimum-trades bar)."""
 
@@ -423,13 +423,11 @@ class AppConfig(BaseSettings):
     until an operator opts in."""
 
     research_weighted_allocation: bool = True
-    """Spend the §12.7 research lane by live standing rather than a flat
-    round-robin. On (the default), the loops boost families the evidence likes
-    (routing candidates, live-paper winners) and park families it has judged
-    losers (down past a threshold with enough trades), re-probing the parked
-    ones on a cadence so none is abandoned. ``production`` is never parked.
-    Moves no money and pauses no account — it only reallocates research time;
-    off restores the flat rotation."""
+    """Spend a multi-target §12.7 research lane by live standing rather than a
+    flat round-robin. The default target set is production-only; if diagnostic
+    targets are added, the loops boost families the evidence likes and park
+    families it has judged losers, while ``production`` is never parked. Moves
+    no money and pauses no account — it only reallocates research time."""
 
     campaign_auto_revert_on_regression: bool = True
     """The reproducibility tripwire: when a campaign's reserved holdout arms a

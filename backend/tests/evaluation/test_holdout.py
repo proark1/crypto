@@ -23,14 +23,14 @@ _T1 = datetime(2026, 6, 15, tzinfo=UTC)
 
 class TestRead:
     def test_an_improvement_is_judged(self) -> None:
-        read = _read(_T0, _T1, 1500, Decimal("0.05"), 30, Decimal("0.20"), 28)
+        read = _read(_T0, _T1, 1500, Decimal("0.05"), 60, Decimal("0.20"), 58)
         assert read["judged"] is True and read["improved"] is True
         assert read["delta_r"] == "0.15"
         assert read["start_expectancy_r"] == "0.05"
         assert "an improvement" in read["explanation"]
 
     def test_a_regression_is_judged_but_not_improved(self) -> None:
-        read = _read(_T0, _T1, 1500, Decimal("0.20"), 30, Decimal("0.05"), 28)
+        read = _read(_T0, _T1, 1500, Decimal("0.20"), 60, Decimal("0.05"), 58)
         assert read["judged"] is True and read["improved"] is False
         assert "no improvement" in read["explanation"]
 
@@ -48,9 +48,9 @@ class TestRead:
             _T1,
             1500,
             Decimal("0.20"),
-            30,
+            60,
             Decimal("0.05"),
-            28,
+            58,
             regression_p=Decimal("0.01"),
         )
         assert read["judged"] is True
@@ -67,9 +67,9 @@ class TestRead:
             _T1,
             1500,
             Decimal("0.20"),
-            30,
+            60,
             Decimal("0.05"),
-            28,
+            58,
             regression_p=Decimal("0.30"),
         )
         assert read["judged"] is True
@@ -82,7 +82,15 @@ class TestRead:
         assert read["revert_armed"] is False
 
     def test_the_explanation_rounds_r_but_the_fields_keep_full_precision(self) -> None:
-        read = _read(_T0, _T1, 1500, Decimal("0.050000000000"), 30, Decimal("0.200000000000"), 28)
+        read = _read(
+            _T0,
+            _T1,
+            1500,
+            Decimal("0.050000000000"),
+            60,
+            Decimal("0.200000000000"),
+            58,
+        )
         assert "from 0.0500R to 0.2000R" in read["explanation"]
         assert "0.050000000000" not in read["explanation"]
         # raw fields keep full ACCOUNTING_RESOLUTION precision for the API

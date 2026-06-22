@@ -1,9 +1,9 @@
 """The campaign driver: run research campaigns continuously (ARCHITECTURE.md §12.7).
 
 This is the wiring that turns the dormant campaign engine into the §12.7
-loop. On each turn it picks the next ``(target, symbol)`` on the same
-rotation the auto-improver uses, **assembles** a campaign from the worker's
-live state — the candidate provider (`improve.make_candidate_provider`), the
+loop. On each turn it picks the next ``(target, symbol)`` from the same
+autonomous target set the auto-improver uses, **assembles** a campaign from
+the worker's live state — the candidate provider (`improve.make_candidate_provider`), the
 holdout grader (`holdout.make_holdout_grader`), and the paper-only promote
 and engine-confirm paths — runs it to its budget, then rests.
 
@@ -93,7 +93,7 @@ class CampaignDriverConfig(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    timeframe: str = "1h"
+    timeframe: str = "4h"
     history_days: int = Field(default=730, gt=0)
     holdout_days: int = Field(default=60, gt=0)
     scenario_count: int = Field(default=DEFAULT_SCENARIO_COUNT, gt=0)
@@ -122,7 +122,7 @@ class CampaignDriverConfig(BaseModel):
 
 
 class CampaignDriver:
-    """Runs research campaigns continuously across the §12.7 target rotation."""
+    """Runs research campaigns continuously across the §12.7 target set."""
 
     def __init__(
         self,
@@ -180,8 +180,8 @@ class CampaignDriver:
         """Pick the next ``(target, symbol)`` — weighted if a selector is bound.
 
         With a ``select`` scheduler the pick is standing-weighted (§12.7
-        allocation); without one it is the historical flat round-robin —
-        targets rotate first, symbols second — preserving prior behaviour.
+        allocation); without one it is the flat target-first, symbol-second
+        round-robin over the configured autonomous targets.
         """
         if self._select is not None:
             return await self._select.next_assignment(symbols)
@@ -223,9 +223,8 @@ class CampaignDriver:
         """Assemble and run one campaign for the next ``(target, symbol)``.
 
         Returns the finished campaign's status, or ``None`` when there is no
-        coin to research. Targets rotate first (production, then each
-        research family), symbols second, so every family is revisited before
-        any symbol repeats — the same rotation the auto-improver uses.
+        coin to research. Targets rotate first, symbols second, matching the
+        auto-improver's production-focused autonomous target set.
         """
         if self._enabled is not None and not self._enabled():
             return None  # toggled off in Settings — idle, no campaign

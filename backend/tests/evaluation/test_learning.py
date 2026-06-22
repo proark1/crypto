@@ -52,12 +52,16 @@ def make_record(
 
 class TestLosingBuckets:
     def test_losing_condition_bucket_becomes_a_finding(self) -> None:
-        records = [
+        losing = [
             make_record(index, trend=TrendLabel.RANGING, r_multiple="-0.5")
             for index in range(MIN_EVIDENCE)
         ]
+        contrast = [
+            make_record(100 + index, trend=TrendLabel.UP, r_multiple="0.5")
+            for index in range(MIN_EVIDENCE)
+        ]
 
-        findings = mine_findings(1, records, NOW)
+        findings = mine_findings(1, losing + contrast, NOW)
 
         ranging = [f for f in findings if "trend is ranging" in f.pattern]
         assert len(ranging) == 1
@@ -85,11 +89,29 @@ class TestLosingBuckets:
         assert findings == []
 
     def test_confidence_scales_with_evidence(self) -> None:
-        records = [
+        losing = [
             make_record(index, trend=TrendLabel.RANGING, r_multiple="-0.5") for index in range(20)
         ]
-        (finding,) = [f for f in mine_findings(1, records, NOW) if "ranging" in f.pattern]
+        contrast = [
+            make_record(100 + index, trend=TrendLabel.UP, r_multiple="0.5")
+            for index in range(MIN_EVIDENCE)
+        ]
+        (finding,) = [
+            finding
+            for finding in mine_findings(1, losing + contrast, NOW)
+            if "ranging" in finding.pattern
+        ]
         assert finding.confidence == "high"
+
+    def test_single_label_bucket_is_not_reported_without_contrast(self) -> None:
+        records = [
+            make_record(index, trend=TrendLabel.RANGING, r_multiple="-0.5")
+            for index in range(MIN_EVIDENCE)
+        ]
+
+        findings = mine_findings(1, records, NOW)
+
+        assert [finding for finding in findings if "trend is ranging" in finding.pattern] == []
 
 
 class TestTimingPatterns:
