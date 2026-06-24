@@ -313,6 +313,24 @@ ENSEMBLE_CONTESTANTS: tuple[BakeOffContestant, ...] = (
 # built from the separate control registry, never swept or promoted.
 CONTROL_CONTESTANTS: tuple[BakeOffContestant, ...] = (
     BakeOffContestant(
+        bot_id="buy_hold",
+        label="Buy and hold (baseline)",
+        family=None,
+        control="buy_hold",
+    ),
+    BakeOffContestant(
+        bot_id="dca",
+        label="DCA (baseline)",
+        family=None,
+        control="dca",
+    ),
+    BakeOffContestant(
+        bot_id="grid",
+        label="Spot grid (baseline)",
+        family=None,
+        control="grid",
+    ),
+    BakeOffContestant(
         bot_id="random_entry",
         label="Random entry (control)",
         family=None,

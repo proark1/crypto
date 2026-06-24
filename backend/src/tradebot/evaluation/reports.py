@@ -19,6 +19,7 @@ from typing import Any
 from tradebot.core.models import ACCOUNTING_RESOLUTION
 from tradebot.evaluation.classifier import archetype
 from tradebot.evaluation.models import Scenario, ScenarioClass, ScenarioResult, Verdict
+from tradebot.evaluation.statistics import overfit_diagnostics
 
 _DISPLAY_RESOLUTION = Decimal("0.0001")
 _MONEY_RESOLUTION = Decimal("0.01")
@@ -64,15 +65,18 @@ def _money(value: Decimal) -> str:
 def build_summary(records: list[tuple[Scenario, ScenarioResult]]) -> dict[str, Any]:
     """Build the persisted run report from graded scenarios."""
     r_values = [result.r_multiple for _, result in records if result.r_multiple is not None]
+    by_archetype = _breakdown(records, lambda s: archetype(s.conditions).value)
     summary: dict[str, Any] = {
         "scenario_count": len(records),
         "verdicts": _verdict_counts(records),
         **r_metrics(r_values),
         **money_result(r_values),
+        "overfit_diagnostics": overfit_diagnostics(r_values),
         "hold_metrics": _hold_metrics(records),
         "by_trend": _breakdown(records, lambda s: s.conditions.trend.value),
         "by_volatility": _breakdown(records, lambda s: s.conditions.volatility.value),
-        "by_archetype": _breakdown(records, lambda s: archetype(s.conditions).value),
+        "by_archetype": by_archetype,
+        "regime_diagnostics": _regime_diagnostics(by_archetype),
         "by_timeframe": _breakdown(records, lambda s: s.timeframe),
         "by_symbol": _breakdown(records, lambda s: s.symbol),
         "by_event": _event_breakdown(records),
@@ -232,6 +236,42 @@ def _event_breakdown(
             **trade_metrics([result for _, result in group]),
         }
         for label, group in sorted(groups.items())
+    }
+
+
+def _regime_diagnostics(by_archetype: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """Compact read of where the bot has evidence to trade or stand down."""
+    traded = [
+        (label, block)
+        for label, block in by_archetype.items()
+        if block.get("trade_count", 0) > 0 and block.get("expectancy_r") is not None
+    ]
+    if not traded:
+        return {"best": None, "weakest": None, "sit_out_candidates": []}
+    ranked = sorted(traded, key=lambda item: Decimal(str(item[1]["expectancy_r"])))
+    sit_out = [
+        {
+            "archetype": label,
+            "expectancy_r": block["expectancy_r"],
+            "trade_count": block["trade_count"],
+        }
+        for label, block in ranked
+        if Decimal(str(block["expectancy_r"])) <= 0
+    ]
+    weakest_label, weakest = ranked[0]
+    best_label, best = ranked[-1]
+    return {
+        "best": {
+            "archetype": best_label,
+            "expectancy_r": best["expectancy_r"],
+            "trade_count": best["trade_count"],
+        },
+        "weakest": {
+            "archetype": weakest_label,
+            "expectancy_r": weakest["expectancy_r"],
+            "trade_count": weakest["trade_count"],
+        },
+        "sit_out_candidates": sit_out,
     }
 
 

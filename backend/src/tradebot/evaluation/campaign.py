@@ -129,17 +129,33 @@ class CampaignConfig(BaseModel):
 
     symbol: str
     timeframe: str = "4h"
-    history_days: int = Field(default=730, gt=0)
+    history_days: int = Field(default=1280, gt=0)
     """Days of history each round's walk-forward sweep is graded over, ending
     at the reserved holdout boundary. Defaults in step with
     ``AppConfig.campaign_history_days`` (the worker always passes that through;
     the default only applies to a directly-constructed config)."""
 
-    holdout_days: int = Field(default=60, gt=0)
+    holdout_days: int = Field(default=180, gt=0)
     """The most-recent days reserved as the untouched holdout — no round is
     ever graded on them; the final honesty read is."""
 
     scenario_count: int = Field(default=DEFAULT_SCENARIO_COUNT, gt=0)
+    lookback_candles: int = Field(default=120, ge=60)
+    """Context each campaign scenario sees. Campaigns default shorter than
+    manual sweeps so high-timeframe validation can host enough distinct
+    decision points to clear the minimum-trades bar."""
+
+    horizon_candles: int = Field(default=30, gt=0)
+    """Future candles revealed for grading each campaign scenario."""
+
+    validation_windows: int = Field(default=3, ge=1)
+    """Chronological validation slices used by each campaign sweep."""
+
+    promotions_enabled: bool = True
+    """Whether a validated round may auto-promote. Diagnostic campaign
+    timeframes set this false so they add evidence without changing the
+    traded configuration."""
+
     max_rounds: int = Field(default=8, ge=1)
     """The hard cap on rounds. The budget is what makes an iterated search
     over backtests safe: it bounds how many chances the search gets at a
@@ -401,6 +417,9 @@ class ResearchCampaign:
                 timeframe=config.timeframe,
                 history_days=config.history_days,
                 scenario_count=config.scenario_count,
+                lookback_candles=config.lookback_candles,
+                horizon_candles=config.horizon_candles,
+                validation_windows=config.validation_windows,
                 window_end=holdout_start,
                 candidates=candidates,
                 motivating_finding_ids=tuple(motivating),
@@ -460,6 +479,20 @@ class ResearchCampaign:
                     winner_name,
                     None,
                     "validated winner is not auto-promotable; skipped",
+                )
+            )
+            return False
+        if not config.promotions_enabled:
+            status.rounds.append(
+                CampaignRound(
+                    index,
+                    scale,
+                    sweep_id,
+                    verdict,
+                    winner.name,
+                    None,
+                    f"validated on diagnostic timeframe {config.timeframe}; recorded as "
+                    "research evidence, not auto-promoted",
                 )
             )
             return False

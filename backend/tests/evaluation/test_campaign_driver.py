@@ -110,9 +110,71 @@ class TestCampaignDriver:
         assert status is not None
         assert status.config.target == "production"  # first on the rotation
         assert status.config.symbol == "BTC/USDT"
+        assert status.config.timeframe == "4h"
+        assert status.config.promotions_enabled is True
         assert status.status == "completed"
         assert research.started  # a sweep was actually launched
         assert driver.current is status
+
+    async def test_rotates_primary_and_diagnostic_timeframes(self) -> None:
+        research = DriverResearch("baseline_best")
+        driver = CampaignDriver(
+            sweeps=research,
+            store=research,
+            candle_store=NoCandles(),
+            active_params=_no_active_params,
+            symbols=lambda: ("BTC/USDT",),
+            promote=_promote,
+            confirm=None,
+            config=CampaignDriverConfig(
+                max_rounds=1,
+                cooldown_minutes=0.001,
+                scenario_count=10,
+                diagnostic_timeframes=("1h", "1d"),
+            ),
+            clock=lambda: _NOW,
+        )
+
+        statuses = [await driver.run_one() for _ in range(3)]
+
+        assert [status.config.timeframe for status in statuses if status is not None] == [
+            "4h",
+            "1h",
+            "1d",
+        ]
+        assert [status.config.promotions_enabled for status in statuses if status is not None] == [
+            True,
+            False,
+            False,
+        ]
+
+    async def test_sampling_knobs_are_wired_into_campaign_config(self) -> None:
+        research = DriverResearch("baseline_best")
+        driver = CampaignDriver(
+            sweeps=research,
+            store=research,
+            candle_store=NoCandles(),
+            active_params=_no_active_params,
+            symbols=lambda: ("BTC/USDT",),
+            promote=_promote,
+            confirm=None,
+            config=CampaignDriverConfig(
+                max_rounds=1,
+                cooldown_minutes=0.001,
+                scenario_count=10,
+                lookback_candles=90,
+                horizon_candles=24,
+                validation_windows=2,
+            ),
+            clock=lambda: _NOW,
+        )
+
+        status = await driver.run_one()
+
+        assert status is not None
+        assert status.config.lookback_candles == 90
+        assert status.config.horizon_candles == 24
+        assert status.config.validation_windows == 2
 
     async def test_records_each_finished_campaign(self) -> None:
         research = DriverResearch("baseline_best")

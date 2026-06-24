@@ -15,7 +15,17 @@ from tradebot.core.models import Candle, CandleInterval, Side, Signal
 from tradebot.evaluation.improve import IMPROVEMENT_TARGETS
 from tradebot.evaluation.sweep import STRATEGY_FAMILIES
 from tradebot.portfolio import Position
-from tradebot.strategies import RandomEntryConfig, RandomEntryStrategy
+from tradebot.strategies import (
+    BuyHoldConfig,
+    BuyHoldStrategy,
+    DcaConfig,
+    DcaStrategy,
+    GridConfig,
+    GridStrategy,
+    RandomEntryConfig,
+    RandomEntryStrategy,
+    Strategy,
+)
 from tradebot.strategies.controls import (
     CONTROL_STRATEGIES,
     build_control_strategy,
@@ -47,7 +57,7 @@ CLOSES = [100.0 + (i * 7 % 23) - 11 for i in range(80)]
 
 
 def run_series(
-    strategy: RandomEntryStrategy,
+    strategy: Strategy,
     closes: list[float],
     position: Position | None = None,
 ) -> list[Signal | None]:
@@ -133,6 +143,35 @@ class TestConfigValidation:
             RandomEntryConfig(entry_probability=probability)
         with pytest.raises(ValueError):
             RandomEntryConfig(exit_probability=probability)
+
+
+class TestBenchmarkControls:
+    def test_buy_hold_enters_once_after_warmup(self) -> None:
+        strategy = BuyHoldStrategy(BuyHoldConfig(atr_period=3))
+        signals = run_series(strategy, CLOSES)
+
+        buys = [signal for signal in signals if signal is not None]
+        assert len(buys) == 1
+        assert buys[0].strategy_name == "buy_hold"
+        assert buys[0].side == Side.BUY
+
+    def test_dca_buys_on_its_fixed_cadence_while_flat(self) -> None:
+        strategy = DcaStrategy(DcaConfig(atr_period=3, interval_candles=5))
+        signals = run_series(strategy, CLOSES)
+
+        buys = [signal for signal in signals if signal is not None]
+        assert buys
+        assert all(signal.strategy_name == "dca" for signal in buys)
+        assert all(signal.side == Side.BUY for signal in buys)
+
+    def test_grid_buys_dips_and_sells_rebounds(self) -> None:
+        strategy = GridStrategy(GridConfig(grid_step_fraction=Decimal("0.02")))
+
+        assert strategy.on_candle(make_candle(0, 100), None) is None
+        buy = strategy.on_candle(make_candle(1, 97), None)
+        assert buy is not None and buy.strategy_name == "grid" and buy.side == Side.BUY
+        sell = strategy.on_candle(make_candle(2, 100), make_position())
+        assert sell is not None and sell.strategy_name == "grid" and sell.side == Side.SELL
 
 
 class TestRegistrySeparation:

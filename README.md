@@ -77,10 +77,18 @@ internally.
 | `TRADEBOT_API_PORT` | no | falls back to Railway's injected `PORT` automatically |
 | `TRADEBOT_API_CORS_ORIGINS` | no | `*` (safe with bearer-header auth); set to the dashboard URL, e.g. `https://frontend-xxxx.up.railway.app`, for defence in depth |
 | `TRADEBOT_EXCHANGE_ID` | no | `binance` (any CCXT id: `kraken`, `coinbase`, ...) |
-| `TRADEBOT_SYMBOLS` | no | `BTC/USDT` — comma-separated, e.g. `BTC/USDT,ETH/USDT` (all pairs share the quote currency; singular `TRADEBOT_SYMBOL` still works). **Seeds the coin list on first boot only** — afterwards add/remove coins from the dashboard and the database is the source of truth |
+| `TRADEBOT_SYMBOLS` | no | `BTC/USDT,ETH/USDT,SOL/USDT` — comma-separated (all pairs share the quote currency; singular `TRADEBOT_SYMBOL` still works). **Seeds the coin list on first boot only** — afterwards add/remove coins from the dashboard and the database is the source of truth |
 | `TRADEBOT_PAPER_INITIAL_BALANCE_QUOTE` | no | `10000` — seeds every competition account equally |
 | `TRADEBOT_COMPETITION_ENABLED` | no | `true` — run the five-bot strategy competition; `false` trades the production router alone |
 | `TRADEBOT_HISTORY_BACKFILL_DAYS` | no | `1460` — a full ~4-year crypto cycle of 1m history (free, public REST) fetched the first time a coin has no stored candles; existing databases are deepened to the horizon on the next boot. Expect the initial crawl to take ~30–60 min per coin-year and ~0.5 GB of Postgres per coin-year |
+| `TRADEBOT_SIMULATOR_SPREAD_BPS` / `TRADEBOT_SIMULATOR_MARKET_SLIPPAGE_BPS` | no | `0` / `5` — explicit spread plus generic adverse slippage for simulated market fills |
+| `TRADEBOT_SIMULATOR_MAX_VOLUME_FRACTION` / `TRADEBOT_SIMULATOR_VOLUME_IMPACT_BPS` / `TRADEBOT_SIMULATOR_SUBMIT_LATENCY_CANDLES` | no | `0` / `0` / `0` — optional realism knobs for partial fills, volume impact, and order latency; defaults preserve deterministic historical behavior |
+| `TRADEBOT_CAMPAIGN_ENABLED` | no | `false` — opt-in continuous research campaigns; paper mode only |
+| `TRADEBOT_CAMPAIGN_TIMEFRAME` | no | `4h` — the only campaign timeframe allowed to auto-promote; must match the traded timeframe |
+| `TRADEBOT_CAMPAIGN_DIAGNOSTIC_TIMEFRAMES` | no | `15m,1h,1d` — extra campaign timeframes run as evidence-only diagnostics, never auto-promoted |
+| `TRADEBOT_CAMPAIGN_HISTORY_DAYS` / `TRADEBOT_CAMPAIGN_HOLDOUT_DAYS` | no | `1280` / `180` — sweep history plus untouched holdout; together must fit within `TRADEBOT_HISTORY_BACKFILL_DAYS` when campaigns are enabled |
+| `TRADEBOT_CAMPAIGN_SCENARIO_COUNT` | no | `5000` — requested scenarios per campaign sweep |
+| `TRADEBOT_CAMPAIGN_LOOKBACK_CANDLES` / `TRADEBOT_CAMPAIGN_HORIZON_CANDLES` / `TRADEBOT_CAMPAIGN_VALIDATION_WINDOWS` | no | `120` / `30` / `3` — campaign sampling shape, sized so higher timeframes produce more distinct validation windows |
 | `TRADEBOT_HEARTBEAT_URL` | recommended | a healthchecks.io ping URL; the monitor alerts when the bot (or its data feed) goes silent |
 | `TRADEBOT_HEARTBEAT_INTERVAL_SECONDS` | no | `60` |
 | `TRADEBOT_TELEGRAM_BOT_TOKEN` | for alerts | from @BotFather |

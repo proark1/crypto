@@ -218,6 +218,8 @@ def _campaign_snapshot(status: CampaignStatus | None) -> dict[str, Any] | None:
     return {
         "target": status.config.target,
         "symbol": status.config.symbol,
+        "timeframe": status.config.timeframe,
+        "promotions_enabled": status.config.promotions_enabled,
         "status": status.status,
         "promotions": status.promotions,
         # The cross-campaign cumulative-trials read: this target's lifetime
@@ -348,6 +350,13 @@ class Worker:
         self.fee_schedule = FeeSchedule(
             buy_fee_bps=config.buy_fee_bps, sell_fee_bps=config.sell_fee_bps
         )
+        self.fill_config = FillSimulatorConfig(
+            spread_bps=config.simulator_spread_bps,
+            market_slippage_bps=config.simulator_market_slippage_bps,
+            max_volume_fraction=config.simulator_max_volume_fraction,
+            volume_impact_bps=config.simulator_volume_impact_bps,
+            submit_latency_candles=config.simulator_submit_latency_candles,
+        )
         # Operator-set starting capital per bot; loaded in initialize(). An
         # absent bot uses ``config.paper_initial_balance_quote``. Read by the
         # leaderboard (for return %) and applied to portfolios before replay.
@@ -409,7 +418,12 @@ class Worker:
             spawn=self._spawn_background,
         )
         self.sweeps = SweepManager(
-            SweepRunner(self.candle_store, self.evaluation_store, self._candidate_builder),
+            SweepRunner(
+                self.candle_store,
+                self.evaluation_store,
+                self._candidate_builder,
+                fills=self.fill_config,
+            ),
             self.evaluation_store,
             spawn=self._spawn_background,
         )
@@ -489,6 +503,8 @@ class Worker:
         # deploy, not the first improvement attempt half a day later.
         CandleInterval(config.auto_improve_timeframe)
         CandleInterval(config.campaign_timeframe)
+        for timeframe in config.campaign_diagnostic_timeframe_list():
+            CandleInterval(timeframe)
         # The timeframe the live engines trade on (config keeps it equal to the
         # research timeframes). The 1m feed is rolled up to it inside each
         # engine, so the bot decides on the same bars its sweeps grade.
@@ -1549,7 +1565,7 @@ class Worker:
             # Bare, unscoped instances: scenario decisions are graded, not
             # journaled, so the live bot_id signal namespace does not apply.
             rules = dict(runtime.rules)
-            return ScenarioEvaluator(lambda: build_rules_strategy(rules))
+            return ScenarioEvaluator(lambda: build_rules_strategy(rules), self.fill_config)
         contestant = contestant_for(strategy_id)
         if contestant is not None and contestant.control is not None:
             # A bake-off reference control (e.g. the random-entry noise
@@ -1558,7 +1574,9 @@ class Worker:
             # because controls carry no family.
             control_id = contestant.control
             control_params = dict(contestant.params)
-            return ScenarioEvaluator(lambda: build_control_strategy(control_id, control_params))
+            return ScenarioEvaluator(
+                lambda: build_control_strategy(control_id, control_params), self.fill_config
+            )
         if contestant is not None and contestant.recipe is not None:
             # A bake-off ensemble: a multi-family composite graded bare,
             # exactly the recipe a custom bot trades. Reuses the recipe
@@ -1569,7 +1587,7 @@ class Worker:
             candidate = SweepCandidate(
                 name=contestant.bot_id, recipe=copy.deepcopy(dict(contestant.recipe))
             )
-            return ScenarioEvaluator(lambda: self._candidate_builder(candidate))
+            return ScenarioEvaluator(lambda: self._candidate_builder(candidate), self.fill_config)
         if contestant is not None and contestant.family is not None:
             # A bake-off energy preset: a single family at fixed parameters,
             # graded bare like any solo-family scenario strategy. The
@@ -1579,14 +1597,15 @@ class Worker:
                 family=contestant.family,
                 params=dict(contestant.params),
             )
-            return ScenarioEvaluator(lambda: self._candidate_builder(candidate))
+            return ScenarioEvaluator(lambda: self._candidate_builder(candidate), self.fill_config)
         spec = spec_for(strategy_id)
         return ScenarioEvaluator(
             lambda: build_scenario_strategy(
                 spec,
                 self.strategy_params,
                 regime_routed=self.regime_detector is not None,
-            )
+            ),
+            self.fill_config,
         )
 
     def _build_strategy(self) -> Strategy:
@@ -1635,7 +1654,7 @@ class Worker:
             self._build_strategy(),
             self.risk_manager,
             self.portfolio,
-            SimulatedExecutionAdapter(FillSimulatorConfig(), fees=self.fee_schedule),
+            SimulatedExecutionAdapter(self.fill_config, fees=self.fee_schedule),
             symbol=symbol,
             interval=self._trade_interval,
             fill_store=self.fill_store,
@@ -1717,7 +1736,7 @@ class Worker:
             strategy if strategy is not None else self._challenger_strategy(runtime),
             runtime.risk_manager,
             runtime.portfolio,
-            SimulatedExecutionAdapter(FillSimulatorConfig(), fees=self.fee_schedule),
+            SimulatedExecutionAdapter(self.fill_config, fees=self.fee_schedule),
             symbol=symbol,
             interval=self._trade_interval,
             fill_store=runtime.fill_store,
@@ -2002,7 +2021,7 @@ class Worker:
                 ),
                 RiskManager(RiskConfig(), portfolio),
                 portfolio,
-                SimulatedExecutionAdapter(FillSimulatorConfig(), fees=self.fee_schedule),
+                SimulatedExecutionAdapter(self.fill_config, fees=self.fee_schedule),
             )
             return (await runner.run(candles)).final_equity_quote
 
@@ -2159,7 +2178,7 @@ class Worker:
                 ),
                 RiskManager(RiskConfig(), portfolio, self.symbol_filters),
                 portfolio,
-                SimulatedExecutionAdapter(FillSimulatorConfig(), fees=self.fee_schedule),
+                SimulatedExecutionAdapter(self.fill_config, fees=self.fee_schedule),
             )
             result = await runner.run(candles)
             # Fills inside the priming prefix exist only to warm state, and
@@ -2946,9 +2965,13 @@ class Worker:
             confirm=self._confirm_promotion,
             config=CampaignDriverConfig(
                 timeframe=self.config.campaign_timeframe,
+                diagnostic_timeframes=self.config.campaign_diagnostic_timeframe_list(),
                 history_days=self.config.campaign_history_days,
                 holdout_days=self.config.campaign_holdout_days,
                 scenario_count=self.config.campaign_scenario_count,
+                lookback_candles=self.config.campaign_lookback_candles,
+                horizon_candles=self.config.campaign_horizon_candles,
+                validation_windows=self.config.campaign_validation_windows,
                 max_rounds=self.config.campaign_max_rounds,
                 max_hours=self.config.campaign_max_hours,
                 refine_factor=self.config.campaign_refine_factor,

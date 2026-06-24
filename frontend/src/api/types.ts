@@ -535,6 +535,8 @@ export interface CampaignHoldoutReadResponse {
 export interface CampaignSnapshotResponse {
   target: string;
   symbol: string;
+  timeframe: string;
+  promotions_enabled: boolean;
   status: string;
   promotions: number;
   stop_reason: string | null;

@@ -123,6 +123,27 @@ class AppConfig(BaseSettings):
     """Trading fee charged on every *sell* fill, in basis points of notional
     (see ``buy_fee_bps``)."""
 
+    simulator_spread_bps: NonNegativeAmount = Decimal("0")
+    """Explicit spread-crossing cost applied by the simulator to market fills.
+
+    Defaults to 0 for backwards-compatible deterministic backtests; set it in
+    paper/research deployments when you want spread separated from generic
+    market slippage."""
+
+    simulator_market_slippage_bps: NonNegativeAmount = Decimal("5")
+    """Generic adverse market slippage applied by the simulator."""
+
+    simulator_max_volume_fraction: Decimal = Field(default=Decimal("0"), ge=0, le=1)
+    """Maximum share of one candle's volume a simulated market fill may consume.
+
+    ``0`` disables partial fills and preserves the historical whole-fill model."""
+
+    simulator_volume_impact_bps: NonNegativeAmount = Decimal("0")
+    """Extra slippage per 100% of candle volume consumed by a simulated fill."""
+
+    simulator_submit_latency_candles: int = Field(default=0, ge=0)
+    """Candles an order waits before the simulator lets it become active."""
+
     competition_enabled: bool = True
     """Run the strategy competition: alongside the production bot, five
     challenger paper accounts (trend following, mean reversion, breakout,
@@ -380,21 +401,49 @@ class AppConfig(BaseSettings):
     with their sweep, and revertible."""
 
     campaign_timeframe: str = "4h"
-    """Candle timeframe campaign sweeps evaluate (validated at boot)."""
+    """Candle timeframe campaign sweeps can promote from (validated at boot)."""
 
-    campaign_history_days: int = Field(default=730, gt=0)
+    campaign_diagnostic_timeframes: str = "15m,1h,1d"
+    """Comma-separated extra timeframes the campaign loop researches without
+    auto-promoting. They widen the automated evidence set while preserving the
+    live/research coherence invariant for changes that can reach the traded
+    bot: only ``campaign_timeframe`` campaigns may promote automatically."""
+
+    def campaign_diagnostic_timeframe_list(self) -> tuple[str, ...]:
+        """Parse diagnostic campaign timeframes, deduped and excluding the primary."""
+        seen: dict[str, None] = {}
+        for raw in self.campaign_diagnostic_timeframes.split(","):
+            timeframe = raw.strip()
+            if timeframe and timeframe != self.campaign_timeframe:
+                seen[timeframe] = None
+        return tuple(seen)
+
+    campaign_history_days: int = Field(default=1280, gt=0)
     """History each campaign round's walk-forward sweep is graded over, ending
-    at the reserved holdout boundary — two years, so each round spans more
-    regimes and grades more trades (more statistical power per verdict). The
-    four-year default backfill covers this with the holdout to spare."""
+    at the reserved holdout boundary. The default spends almost the whole
+    four-year backfill while leaving a six-month untouched holdout; paired
+    with the campaign's shorter lookback/horizon it gives 4h validation
+    windows enough distinct decision points to clear the minimum-trades bar."""
 
-    campaign_holdout_days: int = Field(default=60, gt=0)
+    campaign_holdout_days: int = Field(default=180, gt=0)
     """Most-recent days reserved as the untouched holdout — graded once, at
     the end, for the campaign's non-gating honesty read; never swept."""
 
     campaign_scenario_count: int = Field(default=5000, gt=0)
     """Scenarios per candidate per period (matches sweep.DEFAULT_SCENARIO_COUNT
     — the unstarved default that clears the minimum-trades bar)."""
+
+    campaign_lookback_candles: int = Field(default=120, ge=60)
+    """Scenario context for automated campaigns. Shorter than the manual sweep
+    default so higher-timeframe campaigns can host enough distinct scenarios
+    without starving validation."""
+
+    campaign_horizon_candles: int = Field(default=30, gt=0)
+    """Future candles revealed for grading each campaign scenario. A shorter
+    horizon raises sample count on 4h/1d while still covering multi-day exits."""
+
+    campaign_validation_windows: int = Field(default=3, ge=1)
+    """Chronological validation slices per campaign sweep."""
 
     campaign_max_rounds: int = Field(default=8, ge=1)
     """Hard cap on rounds per campaign — the budget that bounds how many

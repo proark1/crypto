@@ -10,6 +10,7 @@ from tradebot.evaluation.statistics import (
     _resampled_mean,
     bootstrap_expectancy_interval,
     corrected_significance,
+    overfit_diagnostics,
     superiority_p_value,
 )
 
@@ -115,3 +116,28 @@ class TestCorrectedSignificance:
     def test_zero_comparisons_is_a_caller_bug(self) -> None:
         with pytest.raises(ValueError, match="comparisons"):
             corrected_significance(0)
+
+
+class TestOverfitDiagnostics:
+    def test_positive_stable_edge_passes_the_deflated_sharpe_gate(self) -> None:
+        diagnostics = overfit_diagnostics(r(["0.5"] * 40), effective_trials=10)
+
+        assert diagnostics["deflated_sharpe_probability"] == "1.0000"
+        assert diagnostics["pbo_proxy"] == "0.0000"
+        assert diagnostics["passes"] is True
+
+    def test_negative_edge_fails_even_when_stable(self) -> None:
+        diagnostics = overfit_diagnostics(r(["-0.5"] * 40), effective_trials=1)
+
+        assert diagnostics["deflated_sharpe_probability"] == "0.0000"
+        assert diagnostics["passes"] is False
+
+    def test_more_trials_raise_the_selection_threshold(self) -> None:
+        values = r(["1.0", "-0.4", "0.6", "-0.2", "0.8", "-0.1"] * 8)
+
+        one = overfit_diagnostics(values, effective_trials=1)
+        many = overfit_diagnostics(values, effective_trials=50)
+
+        assert Decimal(many["selection_sharpe_threshold_r"]) > Decimal(
+            one["selection_sharpe_threshold_r"]
+        )

@@ -12,6 +12,8 @@ const RUNNING: CampaignStatusResponse = {
   campaign: {
     target: "momentum",
     symbol: "BTC/USDT",
+    timeframe: "1h",
+    promotions_enabled: true,
     status: "running",
     promotions: 1,
     stop_reason: null,
@@ -56,12 +58,29 @@ describe("CampaignStatusCard", () => {
     render(<CampaignStatusCard status={RUNNING} />);
     expect(screen.getByText("research campaigns")).toBeTruthy();
     expect(screen.getByText("running now…")).toBeTruthy();
+    expect(screen.getByText(/BTC\/USDT, 1h/)).toBeTruthy();
     expect(screen.getByText(/promoted momentum settings v3/)).toBeTruthy();
     expect(screen.getByText(/kept the active configuration/)).toBeTruthy();
     expect(screen.getByText(/an improvement out of sample/)).toBeTruthy();
     // The promoted round reads out what it changed: macd_fast 12 -> 8.
     expect(screen.getByText("macd_fast")).toBeTruthy();
     expect(screen.getByText("8")).toBeTruthy();
+  });
+
+  it("marks diagnostic campaigns as evidence-only", () => {
+    render(
+      <CampaignStatusCard
+        status={{
+          ...RUNNING,
+          campaign:
+            RUNNING.campaign === null
+              ? null
+              : { ...RUNNING.campaign, timeframe: "15m", promotions_enabled: false },
+        }}
+      />,
+    );
+    expect(screen.getByText("evidence only")).toBeTruthy();
+    expect(screen.getByText(/record evidence without auto-promoting/)).toBeTruthy();
   });
 
   it("says off when the loop is disabled", () => {

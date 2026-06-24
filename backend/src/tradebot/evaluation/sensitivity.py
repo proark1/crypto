@@ -43,6 +43,7 @@ def scale_fill_costs(fills: FillSimulatorConfig, multiplier: float) -> FillSimul
         update={
             "maker_fee_bps": fills.maker_fee_bps * factor,
             "taker_fee_bps": fills.taker_fee_bps * factor,
+            "spread_bps": fills.spread_bps * factor,
             "market_slippage_bps": fills.market_slippage_bps * factor,
         }
     )

@@ -45,25 +45,29 @@ from tradebot.persistence.evaluation_store import EvaluationStore
 logger = logging.getLogger(__name__)
 
 DEFAULT_GRID: tuple[tuple[str, tuple[int, ...]], ...] = (
-    ("4h", (40, 90, 180)),
-    ("1d", (180, 270, 365)),
+    ("15m", (30, 90)),
+    ("1h", (90, 180, 365)),
+    ("4h", (180, 365, 730)),
+    ("1d", (365, 730, 1095)),
 )
 """The grid swept by default: each timeframe paired with the history depths
-(in days) it is graded over — medium timeframe to slow, recent window to deep.
+(in days) it is graded over — intraday diagnostics through slow daily reads.
 
 The depths are timeframe-relative on purpose. Feasibility is a *candle*
 count, not a day count, and a day buys six candles at ``4h`` but only one at
 ``1d``; a scenario needs ``DEFAULT_LOOKBACK_CANDLES`` + ``DEFAULT_HORIZON_CANDLES``
-(= 150) candles before a cell can host even one. The default grid deliberately
-omits ``1h`` because production evidence showed it was a diagnostic lane, not
-a promotion lane; operators can still request a custom ``1h`` grid when they
-want that read explicitly. Each default cell clears the 150-candle floor — no
-default cell is dead on arrival, and the leaderboard grades the whole grid."""
+(= 150) candles before a cell can host even one. The default grid now includes
+15m and 1h as diagnostics plus 4h/1d promotion-scale reads, so a single
+bake-off shows whether a contender is broadly robust or only works at one
+cadence. Each default cell clears the 150-candle floor — no default cell is
+dead on arrival, and the leaderboard grades the whole grid."""
 
-DEFAULT_SCENARIO_COUNT = 150
+DEFAULT_SCENARIO_COUNT = 300
 """Scenarios per contestant per cell. Lower than a solo evaluation's
 default: a bake-off runs this many for every contestant in every cell, so
-the budget trades some statistical depth for finishing in reasonable time."""
+the budget trades some statistical depth for finishing in reasonable time.
+The wider default grid needs enough per-cell scenarios that active bots do
+not win or lose on a handful of sampled decisions."""
 
 DEFAULT_LOOKBACK_CANDLES = 120
 """Context per scenario. Covers the slowest preset indicator (an 80-period

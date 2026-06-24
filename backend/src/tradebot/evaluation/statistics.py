@@ -33,8 +33,11 @@ from __future__ import annotations
 
 import math
 import random
+import statistics
 from collections.abc import Sequence
 from decimal import ROUND_HALF_EVEN, Decimal
+from statistics import NormalDist
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
@@ -53,6 +56,10 @@ MIN_BOOTSTRAP_SAMPLES = 2
 
 _CI_LOWER_QUANTILE = 0.025
 _CI_UPPER_QUANTILE = 0.975
+_PROBABILITY_RESOLUTION = Decimal("0.0001")
+_EULER_GAMMA = 0.5772156649015329
+DSR_MIN_PROBABILITY = Decimal("0.95")
+"""Minimum DSR-style probability required by the sweep promotion gate."""
 
 
 class ExpectancyInterval(BaseModel):
@@ -125,6 +132,70 @@ def corrected_significance(comparisons: int) -> Decimal:
     return BASE_SIGNIFICANCE / Decimal(comparisons)
 
 
+def overfit_diagnostics(
+    r_values: Sequence[Decimal],
+    *,
+    effective_trials: int = 1,
+    threshold: Decimal = DSR_MIN_PROBABILITY,
+) -> dict[str, Any]:
+    """Return DSR-style diagnostics for a selected strategy's R stream.
+
+    This is deliberately a *diagnostic gate*, not a replacement for the
+    existing walk-forward/bootstrap proof. It estimates how likely the
+    observed per-trade Sharpe is to represent skill after accounting for the
+    number of variants that had a chance to be selected and for skew/kurtosis
+    in the R distribution. ``pbo_proxy`` is ``1 - probability``: not a full
+    CPCV/PBO calculation, but a compact false-discovery risk signal the
+    reports can show anywhere only one selected R stream is available.
+    """
+    if effective_trials < 1:
+        raise ValueError(f"effective_trials must be >= 1, got {effective_trials}")
+    base: dict[str, Any] = {
+        "sample_count": len(r_values),
+        "effective_trials": effective_trials,
+        "sharpe_r": None,
+        "selection_sharpe_threshold_r": None,
+        "deflated_sharpe_probability": None,
+        "pbo_proxy": None,
+        "passes": False,
+    }
+    if len(r_values) < MIN_BOOTSTRAP_SAMPLES:
+        return base
+    values = [float(value) for value in r_values]
+    mean = statistics.fmean(values)
+    std = statistics.stdev(values)
+    if std == 0:
+        probability = Decimal(1) if mean > 0 else Decimal(0)
+        base.update(
+            {
+                "sharpe_r": None,
+                "selection_sharpe_threshold_r": "0.0000",
+                "deflated_sharpe_probability": _probability(probability),
+                "pbo_proxy": _probability(Decimal(1) - probability),
+                "passes": probability >= threshold,
+            }
+        )
+        return base
+
+    sharpe = mean / std
+    skewness = _skewness(values, mean, std)
+    kurtosis = _kurtosis(values, mean, std)
+    sharpe_error = _sharpe_standard_error(sharpe, skewness, kurtosis, len(values))
+    selection_threshold = _selection_sharpe_threshold(effective_trials, sharpe_error)
+    z_score = (sharpe - selection_threshold) / sharpe_error if sharpe_error > 0 else 0.0
+    probability = _decimal_probability(NormalDist().cdf(z_score))
+    base.update(
+        {
+            "sharpe_r": _display_float(sharpe),
+            "selection_sharpe_threshold_r": _display_float(selection_threshold),
+            "deflated_sharpe_probability": _probability(probability),
+            "pbo_proxy": _probability(Decimal(1) - probability),
+            "passes": probability >= threshold,
+        }
+    )
+    return base
+
+
 def _block_size(n: int) -> int:
     """Moving-block length for ``n`` observations.
 
@@ -136,6 +207,33 @@ def _block_size(n: int) -> int:
     ordinary i.i.d. resample (block length 1) rather than over-blocking.
     """
     return max(1, round(math.pow(n, 1 / 3)))
+
+
+def _skewness(values: Sequence[float], mean: float, std: float) -> float:
+    """Return population skewness of the R stream for the DSR denominator."""
+    return sum(((value - mean) / std) ** 3 for value in values) / len(values)
+
+
+def _kurtosis(values: Sequence[float], mean: float, std: float) -> float:
+    """Return population kurtosis; normal data is near 3."""
+    return sum(((value - mean) / std) ** 4 for value in values) / len(values)
+
+
+def _sharpe_standard_error(sharpe: float, skewness: float, kurtosis: float, n: int) -> float:
+    denominator = max(n - 1, 1)
+    variance = 1.0 - skewness * sharpe + ((kurtosis - 1.0) / 4.0) * sharpe * sharpe
+    return math.sqrt(max(variance, 1e-12) / denominator)
+
+
+def _selection_sharpe_threshold(effective_trials: int, sharpe_error: float) -> float:
+    if effective_trials <= 1:
+        return 0.0
+    normal = NormalDist()
+    trials = float(effective_trials)
+    expected_best_noise = (1.0 - _EULER_GAMMA) * normal.inv_cdf(
+        1.0 - 1.0 / trials
+    ) + _EULER_GAMMA * normal.inv_cdf(1.0 - 1.0 / (trials * math.e))
+    return sharpe_error * expected_best_noise
 
 
 def _resampled_mean(values: Sequence[Decimal], rng: random.Random, block_size: int) -> Decimal:
@@ -163,3 +261,16 @@ def _resampled_mean(values: Sequence[Decimal], rng: random.Random, block_size: i
 
 def _quantize(value: Decimal) -> Decimal:
     return value.quantize(ACCOUNTING_RESOLUTION, rounding=ROUND_HALF_EVEN)
+
+
+def _decimal_probability(value: float) -> Decimal:
+    clamped = min(1.0, max(0.0, value))
+    return Decimal(str(clamped)).quantize(_PROBABILITY_RESOLUTION, rounding=ROUND_HALF_EVEN)
+
+
+def _probability(value: Decimal) -> str:
+    return str(value.quantize(_PROBABILITY_RESOLUTION, rounding=ROUND_HALF_EVEN))
+
+
+def _display_float(value: float) -> str:
+    return str(Decimal(str(value)).quantize(_PROBABILITY_RESOLUTION, rounding=ROUND_HALF_EVEN))

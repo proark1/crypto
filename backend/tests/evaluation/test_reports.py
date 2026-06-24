@@ -93,6 +93,7 @@ class TestBuildSummary:
         # The R-multiple block still rides along untouched.
         assert summary["trade_count"] == 2
         assert "expectancy_r" in summary
+        assert summary["overfit_diagnostics"]["sample_count"] == 2
 
     def test_a_run_with_no_trades_still_reports_the_stake(self) -> None:
         summary = build_summary([_record(None, 1)])
@@ -106,6 +107,16 @@ class TestBuildSummary:
         # so both graded trades land in the "bull" bucket.
         assert "by_archetype" in summary
         assert summary["by_archetype"]["bull"]["trade_count"] == 2
+        assert summary["regime_diagnostics"]["best"]["archetype"] == "bull"
+
+    def test_regime_diagnostics_name_sit_out_candidates(self) -> None:
+        records = [_record(Decimal("-1"), 1), _record(Decimal("-0.5"), 2)]
+        summary = build_summary(records)
+
+        assert summary["regime_diagnostics"]["weakest"]["archetype"] == "bull"
+        assert summary["regime_diagnostics"]["sit_out_candidates"] == [
+            {"archetype": "bull", "expectancy_r": "-0.7500", "trade_count": 2}
+        ]
 
 
 class TestRiskMetrics:

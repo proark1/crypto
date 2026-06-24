@@ -27,6 +27,9 @@ export function CampaignStatusCard(props: { status: CampaignStatusResponse | nul
           {status.enabled ? "on" : "off"}
         </Badge>
         {running && <Badge tone="amber">running now…</Badge>}
+        {campaign !== null && !campaign.promotions_enabled && (
+          <Badge tone="zinc">evidence only</Badge>
+        )}
       </div>
       {!status.enabled ? (
         <p className="mt-0.5 text-xs text-zinc-500">
@@ -44,8 +47,11 @@ export function CampaignStatusCard(props: { status: CampaignStatusResponse | nul
             <span className="font-medium text-zinc-700 dark:text-zinc-300">
               {campaign.target}
             </span>{" "}
-            on {campaign.symbol}: sweep, promote what beats the live settings out of sample,
-            refine, repeat — up to {status.max_rounds} rounds or {status.max_hours}h.
+            on {campaign.symbol}, {campaign.timeframe}:{" "}
+            {campaign.promotions_enabled
+              ? "sweep, promote what beats the live settings out of sample, refine, repeat"
+              : "sweep and record evidence without auto-promoting"}
+            {" — "}up to {status.max_rounds} rounds or {status.max_hours}h.
           </p>
           <dl className="mt-3 space-y-1 text-sm text-zinc-700 dark:text-zinc-300">
             <div className="flex flex-wrap gap-x-2">

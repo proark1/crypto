@@ -19,6 +19,9 @@ Three optional fidelity knobs, all **off by default** so the golden
 backtest and existing paper behavior are bit-identical until a config opts
 in:
 
+- ``spread_bps`` adds explicit spread-crossing cost to market fills,
+  separate from generic slippage. It defaults to 0 because the historic
+  ``market_slippage_bps`` already carried a generic adverse fill penalty.
 - ``max_volume_fraction`` caps how much of a candle's volume one market
   order may consume; the remainder stays pending and fills on later candles
   (**partial fills**). A zero-volume candle fills nothing — outage and
@@ -120,6 +123,9 @@ class FillSimulatorConfig(BaseModel):
 
     maker_fee_bps: Decimal = Decimal(10)
     taker_fee_bps: Decimal = Decimal(10)
+    spread_bps: Decimal = Decimal(0)
+    """Extra adverse spread-crossing cost on market fills."""
+
     market_slippage_bps: Decimal = Decimal(5)
 
     max_volume_fraction: Decimal = Decimal(0)
@@ -265,7 +271,7 @@ class SimulatedExecutionAdapter:
             quantity = min(remaining, tradable)
             if quantity <= 0:
                 return None  # no volume this candle: nothing can fill
-        slip = self._config.market_slippage_bps / _BPS_DIVISOR
+        slip = (self._config.market_slippage_bps + self._config.spread_bps) / _BPS_DIVISOR
         if self._config.volume_impact_bps > 0 and candle.volume_base > 0:
             # Impact scales with the share of the candle this fill consumes:
             # the same order pays more in a thin candle than a thick one.
