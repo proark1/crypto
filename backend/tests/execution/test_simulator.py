@@ -104,6 +104,19 @@ class TestMarketOrders:
 
         assert collector.fills[0].price_quote == Decimal("99.5")
 
+    async def test_spread_adds_to_market_slippage(self) -> None:
+        config = FillSimulatorConfig(
+            maker_fee_bps=Decimal(0),
+            taker_fee_bps=Decimal(0),
+            market_slippage_bps=Decimal(10),
+            spread_bps=Decimal(20),
+        )
+        adapter, collector = make_adapter(config)
+        await adapter.submit(make_order(Side.BUY, OrderType.MARKET))
+        await adapter.process_candle(make_candle(open_quote="100"))
+
+        assert collector.fills[0].price_quote == Decimal("100.3")
+
     async def test_taker_fee_is_charged_on_notional(self) -> None:
         config = FillSimulatorConfig(
             maker_fee_bps=Decimal(10), taker_fee_bps=Decimal(10), market_slippage_bps=Decimal(0)

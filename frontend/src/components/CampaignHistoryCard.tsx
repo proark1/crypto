@@ -32,7 +32,10 @@ export function CampaignHistoryCard(props: { campaigns: CampaignSnapshotResponse
               <span className="font-semibold text-zinc-900 dark:text-zinc-100">
                 {campaign.target}
               </span>
-              <span className="text-xs text-zinc-500">on {campaign.symbol}</span>
+              <span className="text-xs text-zinc-500">
+                on {campaign.symbol}, {campaign.timeframe}
+              </span>
+              {!campaign.promotions_enabled && <Badge tone="zinc">evidence only</Badge>}
               <Badge tone={campaign.promotions > 0 ? "emerald" : "zinc"}>
                 {campaign.promotions} promoted
               </Badge>

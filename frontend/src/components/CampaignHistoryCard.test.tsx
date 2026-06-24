@@ -7,6 +7,8 @@ import { CampaignHistoryCard } from "./CampaignHistoryCard";
 const PAST: CampaignSnapshotResponse = {
   target: "momentum",
   symbol: "ETH/USDT",
+  timeframe: "1d",
+  promotions_enabled: false,
   status: "completed",
   promotions: 2,
   stop_reason: "budget spent: reached the 8-round limit",
@@ -28,7 +30,8 @@ describe("CampaignHistoryCard", () => {
     render(<CampaignHistoryCard campaigns={[PAST]} />);
     expect(screen.getByText("past campaigns")).toBeTruthy();
     expect(screen.getByText("momentum")).toBeTruthy();
-    expect(screen.getByText("on ETH/USDT")).toBeTruthy();
+    expect(screen.getByText("on ETH/USDT, 1d")).toBeTruthy();
+    expect(screen.getByText("evidence only")).toBeTruthy();
     expect(screen.getByText("2 promoted")).toBeTruthy();
     expect(screen.getByText(/reached the 8-round limit/)).toBeTruthy();
     expect(screen.getByText(/0.05R to 0.20R out of sample/)).toBeTruthy();

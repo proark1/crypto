@@ -369,6 +369,33 @@ class TestResearchCampaign:
 
         assert [config.seed for config in sweeps.started] == [3000, 3001]
 
+    async def test_campaign_sampling_knobs_are_passed_to_each_sweep(self) -> None:
+        campaign, sweeps, _bot, _provider = _campaign([_kept("overfit")])
+
+        await campaign.run(
+            _config(
+                max_rounds=1,
+                lookback_candles=90,
+                horizon_candles=24,
+                validation_windows=2,
+            )
+        )
+
+        assert len(sweeps.started) == 1
+        assert sweeps.started[0].lookback_candles == 90
+        assert sweeps.started[0].horizon_candles == 24
+        assert sweeps.started[0].validation_windows == 2
+
+    async def test_diagnostic_campaign_records_validated_winner_without_promotion(self) -> None:
+        campaign, _sweeps, bot, _provider = _campaign([_validated()])
+
+        await campaign.run(_config(max_rounds=1, timeframe="1h", promotions_enabled=False))
+
+        assert bot.promotions == []
+        status = campaign.status
+        assert status is not None and status.promotions == 0
+        assert "diagnostic timeframe 1h" in status.rounds[0].note
+
     async def test_lifetime_promotion_cap_freezes_promotion_but_keeps_researching(self) -> None:
         # The per-target lifetime cap is already reached by earlier campaigns:
         # a validated, confirmable winner is researched (the round is recorded)

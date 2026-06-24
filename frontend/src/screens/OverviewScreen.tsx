@@ -7,6 +7,7 @@ import {
   fetchCandles,
   fetchCompetition,
   fetchDecisions,
+  fetchDivergence,
   fetchFills,
   fetchImprovementStatus,
   fetchProposals,
@@ -28,6 +29,7 @@ import type {
   ChartInterval,
   CompetitionResponse,
   DecisionResponse,
+  DivergenceReportResponse,
   FillResponse,
   ImprovementStatusResponse,
   ProposalResponse,
@@ -104,6 +106,7 @@ export function OverviewScreen(props: { theme: Theme; onToggleTheme: () => void 
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [fills, setFills] = useState<FillResponse[]>([]);
   const [decisions, setDecisions] = useState<DecisionResponse[]>([]);
+  const [divergence, setDivergence] = useState<DivergenceReportResponse | null>(null);
   const [candles, setCandles] = useState<CandleResponse[]>([]);
   const [proposals, setProposals] = useState<ProposalResponse[]>([]);
   const [wallet, setWallet] = useState<WalletResponse | null>(null);
@@ -129,20 +132,21 @@ export function OverviewScreen(props: { theme: Theme; onToggleTheme: () => void 
     try {
       // Decisions are explainability, not safety: their endpoint failing
       // must never take down status/fills or the kill switch with it.
+      const nextStatus = await fetchStatus(symbol);
       const [
-        nextStatus,
         nextFills,
         nextDecisions,
         nextCandles,
+        nextDivergence,
         nextProposals,
         nextWallet,
         nextCompetition,
         nextImprovement,
       ] = await Promise.all([
-        fetchStatus(symbol),
         fetchFills(),
         fetchDecisions(symbol).catch(() => null),
         fetchCandles(symbol, chartInterval).catch(() => null),
+        fetchDivergence(nextStatus.symbol, 24).catch(() => null),
         fetchProposals().catch(() => null),
         fetchWallet().catch(() => null),
         fetchCompetition().catch(() => null),
@@ -159,6 +163,7 @@ export function OverviewScreen(props: { theme: Theme; onToggleTheme: () => void 
       if (nextCandles !== null) {
         setCandles(nextCandles);
       }
+      setDivergence(nextDivergence);
       if (nextProposals !== null) {
         setProposals(nextProposals);
       }
@@ -373,6 +378,7 @@ export function OverviewScreen(props: { theme: Theme; onToggleTheme: () => void 
           status={status}
           candles={candles}
           decisions={decisions}
+          divergence={divergence}
           fills={fills}
           chartInterval={chartInterval}
           disabled={commandPending}

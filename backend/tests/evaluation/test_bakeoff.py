@@ -43,10 +43,10 @@ class TestExpandCells:
             ("4h", 10),
         ]
 
-    def test_default_grid_is_two_by_three_without_one_hour_cells(self) -> None:
+    def test_default_grid_covers_intraday_to_daily_diagnostics(self) -> None:
         cells = expand_cells(BakeOffConfig(symbols=("BTC/USDT",)))
-        assert len(cells) == 6
-        assert {cell.timeframe for cell in cells} == {"4h", "1d"}
+        assert len(cells) == 11
+        assert {cell.timeframe for cell in cells} == {"15m", "1h", "4h", "1d"}
 
 
 class TestAggregateRanking:

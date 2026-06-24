@@ -559,6 +559,8 @@ class CampaignSnapshotResponse(BaseModel):
 
     target: str
     symbol: str
+    timeframe: str
+    promotions_enabled: bool
     status: str
     promotions: int
     stop_reason: str | None
@@ -961,6 +963,8 @@ def _campaign_snapshot_response(snapshot: Mapping[str, Any]) -> CampaignSnapshot
     return CampaignSnapshotResponse(
         target=snapshot["target"],
         symbol=snapshot["symbol"],
+        timeframe=str(snapshot.get("timeframe", "unknown")),
+        promotions_enabled=bool(snapshot.get("promotions_enabled", True)),
         status=snapshot["status"],
         promotions=snapshot["promotions"],
         stop_reason=snapshot["stop_reason"],

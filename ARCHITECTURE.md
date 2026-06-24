@@ -15,16 +15,16 @@ This document is the target design. Implementation status as of June 2026
 | Strategies: trend-following EMA crossover (§4.2) | **Done** — EMA cross with ATR stops plus sweepable knobs: anti-chase entry-extension filter, breakeven lock, ATR trailing stop; the pluggable registry is the pattern, more families pending |
 | Backtester: runner, pessimistic fill simulator, golden test (§5) | **Done** — walk-forward splitting feeds the parameter sweeps (§12.5); account-level multi-symbol runner (one strategy per symbol, one shared book/risk manager, deterministic candle interleave) exercises exposure ceilings and balance contention no single-symbol backtest can show, with an account report (return, drawdown, turnover, exposure utilization, per-coin attribution) composable per walk-forward window |
 | Risk manager: sizing, per-trade limits, circuit breakers (§4.3) | **Done** — daily-loss + drawdown trips (human reset), loss-streak cooldown, daily entry cap, account-wide exposure cap (open positions treated as one fully correlated block; per-coin caps alone understate crypto risk); breaker and pause/kill state persist to Postgres (saved within a candle of changing, restored before trading resumes), so a deploy cannot release a tripped breaker, reset the daily-loss anchor, or resume a killed bot |
-| Execution: simulated adapter (backtest + paper) (§4.4) | **Done for paper** — protective stop lifecycle enforced in all modes: a resting stop-limit armed on entry fill from the order's persisted exit plan, its level managed by one ManagedStop shared with the evaluator (breakeven lock + ATR trail as sweepable knobs, resting order cancel/replaced as it ratchets), cancelled before any exit (single-exit guard), boot reconciliation re-arms after crashes (exact from the journaled plan, ATR approximation + market-exit backstop for plan-less history); venue filters (lot step, min quantity, min notional, price tick from the ccxt catalog) enforced at order construction, so paper orders are exchange-plausible; opt-in execution fidelity in the simulator (volume-capped partial fills with remainder-aware restart restoration and cumulative stop re-arming, volume-impact slippage, submit latency) — defaults off so the golden fixture and current paper behavior are unchanged until calibrated against real fills; live adapter, exchange-native stop placement, partial-fill handling are Phase 3 (see LIVE_TRADING_CHECKLIST.md) |
+| Execution: simulated adapter (backtest + paper) (§4.4) | **Done for paper** — protective stop lifecycle enforced in all modes: a resting stop-limit armed on entry fill from the order's persisted exit plan, its level managed by one ManagedStop shared with the evaluator (breakeven lock + ATR trail as sweepable knobs, resting order cancel/replaced as it ratchets), cancelled before any exit (single-exit guard), boot reconciliation re-arms after crashes (exact from the journaled plan, ATR approximation + market-exit backstop for plan-less history); venue filters (lot step, min quantity, min notional, price tick from the ccxt catalog) enforced at order construction, so paper orders are exchange-plausible; opt-in execution fidelity in the simulator (explicit spread cost, volume-capped partial fills with remainder-aware restart restoration and cumulative stop re-arming, volume-impact slippage, submit latency) — defaults preserve the golden fixture/current paper behavior until calibrated against real fills; live adapter, exchange-native stop placement, partial-fill handling are Phase 3 (see LIVE_TRADING_CHECKLIST.md) |
 | Portfolio + persistence: positions, PnL, Postgres journal (§4.5) | **Done** — journal-replay restart recovery (fills rebuild positions; the order journal re-arms submitted-but-unfilled orders, stop-trigger latches and exit plans included, and boot replays the downtime candles through restored orders so an outage cannot defer a fill to the wrong price); scheduled gzipped-JSONL backups to S3-compatible storage (R2/S3/B2 via hand-rolled SigV4), streamed table-by-table so no table is ever fully resident (the compressed archive is buffered for one PUT), and restorable through SQLAlchemy |
 | Trading engine + worker (§4.2, §7.1) | **Done** — per-candle strategy → risk → execution loop across every traded coin (see multi-coin below), paper mode only by hard guard; a crashed control plane trips a flatten-safe pause, and shutdown force-stops feeds so a deploy never hangs |
 | Control API: status, pause/resume, kill, data endpoints (§6.4) | **Done** — bearer auth, public /health, CORS; SSE/WS push missing (dashboard polls) |
 | Co-pilot mode: proposal queue, approve/reject, TTL + drift guards (§6.3) | **Done** — entries only; exits never wait for approval |
 | Telegram notifications (§6.2) | **Done** — alerts only; command handling missing |
-| Dashboard: status, chart, decisions, proposals, controls (§6.1) | **Done** — per-coin view with coin switcher, trade journal, decision/proposal panels, the bot-builder wizard, and the research screens (the bake-off tournament is the landing tab, then compare/tune/progress, with inspect — the former evaluate tab — as the single-run drill-in that compare and progress hand off to); SSE/WS push still missing (the dashboard polls) |
+| Dashboard: status, chart, decisions, proposals, controls (§6.1) | **Done** — per-coin view with coin switcher, trade journal, decision/proposal panels, paper-vs-replay divergence card, the bot-builder wizard, and the research screens (the bake-off tournament is the landing tab, then compare/tune/progress, with inspect — the former evaluate tab — as the single-run drill-in that compare and progress hand off to); SSE/WS push still missing (the dashboard polls) |
 | Multi-coin support (§4.2) | **Done** — per-symbol feed+engine, shared account/breakers, per-coin dashboard, runtime add/remove via API + UI (coins persisted in Postgres; env var seeds first boot) |
-| Automated improvement: sweep-validated self-tuning (§12.7) | **Done** — paper-scoped; self-feeding cycle now spends its autonomous budget on `production` only (the two routed families as one budget, rotating symbols); production challengers include the live shape, local single-knob steps, the bake-off winners that showed positive evidence (`trend_bold`, `reversion_bold`), and stop/exit-management hypotheses for the dominant findings; solo research-family grids remain callable for manual sweeps, recipes, comparisons, and explicit diagnostics, but weak families no longer consume scheduled cycles; findings target the next sweep's challengers with recorded lineage; accepted findings outrank proposed ones, and accepting arms a coalesced accept-triggered sweep (family-matched to the run it came from) so a verdict visibly becomes a test; knob map covers downtrend/ranging, wrong-hold, chasing, early-exit, missed-opportunity, and fake-breakout patterns; promotes only statistically validated 4h/1d sweep winners that also survive the engine-backed confirmation gate (challenger vs incumbent replayed through the production engine — sizing, fees, stop lifecycle, breakers — before any promotion; a vetoed winner is alerted, never applied); 1h research is diagnostic-only and cannot auto-promote; versioned settings journal with UI revert; Telegram alert per promotion; custom-bot recipes are sweepable through the human-initiated paths (the run-sweep button and accept-triggered sweeps grade variants of the whole recipe), but excluded from auto-promotion until owner opt-in |
-| Evaluation & training: blind walk-forward (§12) | **Done** — foundations, scenario engine (leak-tested), run orchestration + API, research screen, scenario replay viewer, learning findings (mined + human accept/reject), walk-forward parameter sweeps with explicit overfit verdicts, cross-family candidates, multiple validation windows, bootstrap confidence intervals + Bonferroni-corrected significance on every verdict; validation now needs at least 50 graded challenger trades plus positive expectancy and a baseline win in every validation window, not merely a pooled or majority-window edge; evaluation runs grade a chosen bot — any lineup entry or custom bot via the research bot selector, defaulting to the production shape (regime-routed families, self-classified per scenario); findings require an adequately sampled contrast label before a losing condition bucket is reported, so single-symbol/single-timeframe runs do not produce tautological findings; findings carry recurrence across a bot's runs and the research timeline serves the run/sweep/promotion story (§12.8) |
+| Automated improvement: sweep-validated self-tuning (§12.7) | **Done** — paper-scoped; self-feeding cycle now spends its autonomous budget on `production` only (the two routed families as one budget, rotating symbols); production challengers include the live shape, local single-knob steps, the bake-off winners that showed positive evidence (`trend_bold`, `reversion_bold`), and stop/exit-management hypotheses for the dominant findings; solo research-family grids remain callable for manual sweeps, recipes, comparisons, and explicit diagnostics, but weak families no longer consume scheduled cycles; findings target the next sweep's challengers with recorded lineage; accepted findings outrank proposed ones, and accepting arms a coalesced accept-triggered sweep (family-matched to the run it came from) so a verdict visibly becomes a test; knob map covers downtrend/ranging, wrong-hold, chasing, early-exit, missed-opportunity, and fake-breakout patterns; promotes only statistically validated primary-timeframe sweep winners that also survive the engine-backed confirmation gate (challenger vs incumbent replayed through the production engine — sizing, fees, stop lifecycle, breakers — before any promotion; a vetoed winner is alerted, never applied); campaign diagnostics now rotate through 15m/1h/1d as evidence-only runs, so faster and slower cadences are researched without silently changing the traded config; versioned settings journal with UI revert; Telegram alert per promotion; custom-bot recipes are sweepable through the human-initiated paths (the run-sweep button and accept-triggered sweeps grade variants of the whole recipe), but excluded from auto-promotion until owner opt-in |
+| Evaluation & training: blind walk-forward (§12) | **Done** — foundations, scenario engine (leak-tested), run orchestration + API, research screen, scenario replay viewer, learning findings (mined + human accept/reject), walk-forward parameter sweeps with explicit overfit verdicts, cross-family candidates, multiple validation windows, bootstrap confidence intervals + Bonferroni-corrected significance and DSR-style overfit diagnostics on every verdict; validation now needs at least 50 graded challenger trades plus positive expectancy, a baseline win in every validation window, and a deflated-Sharpe probability gate, not merely a pooled or majority-window edge; evaluation runs grade a chosen bot — any lineup entry or custom bot via the research bot selector, defaulting to the production shape (regime-routed families, self-classified per scenario); findings require an adequately sampled contrast label before a losing condition bucket is reported, so single-symbol/single-timeframe runs do not produce tautological findings; findings carry recurrence across a bot's runs and the research timeline serves the run/sweep/promotion story (§12.8) |
 | News pipeline, regime gates, signal fusion (§5.2, §5.3) | **Partial** — BTC regime gate done (ADX trend/range + drawdown risk-off; blocks every family only on risk-off/warm-up/stale data, while family routing is the router's preference rather than a gate veto so a healthy regime lets either family enter; exits never gated; verdicts journaled as `gated` decisions); sentiment tighteners done (Fear & Greed extremes, BTC dominance surges, broad negative news flow — advisory, one-way, stale data contributes nothing); news pipeline done defensively (CryptoPanic polling + keyword classifier, negative-news coin flags, env-configured event windows); confirmation filters partial (volume confirmation shipped as a sweepable per-family entry knob on breakout/momentum, §5.2.3; perp-funding tightener shipped opt-in (§5.2; crowded-long funding pauses entries, live-only, off the backtest path), order-flow P2 data still missing) and automated calendar ingestion missing |
 | Breakout strategy family (§5.2, review item 9) | **Research + competition** — Donchian-channel entries (close clears the prior N-candle ceiling), turtle-style channel exits, shared ATR stop convention and managed-stop knobs, optional volume-confirmation entry filter (§5.2.3, off by default); registered for sweeps/evaluation and available to manual/diagnostic grids, but deliberately outside the scheduled auto-improvement budget and unrouted in production: which regime activates it (and at whose expense) is the §13.7 human decision the accumulating evidence exists to inform |
 | Mean-reversion strategy family (§5.2 routing) | **Done** — RSI oversold-recovery entries, midline exits, same ATR stop convention as trend; optional trend-filter EMA (skip falling knives) as a sweepable knob; regime-routed per coin, both families' indicators always warm, exits pass from either family in any regime |
@@ -39,7 +39,7 @@ This document is the target design. Implementation status as of June 2026
 | Time-series-momentum strategy family (§13) | **Research + competition** — the CTA absolute-momentum edge, distinct from every moving-average family: buys when the raw `lookback`-candle holding return is positive (above an optional threshold), exits when it turns down; no oscillator, no crossover — the sign of the return itself; built from a bounded close ring + ATR; sweepable, evaluated, callable from manual/diagnostic grids, traded solo by its competition account; unrouted in production until §13.7 |
 | RSI-trend strategy family (§13) | **Research + competition** — RSI used the *opposite* way to mean reversion: buys an RSI **cross up through** the midline (building momentum, not an oversold extreme), exits when RSI falls back below an exit level; the two RSI families disagree on the same tape by design, so the tournament grades momentum-RSI against reversion-RSI; built from the existing RSI + ATR; sweepable, evaluated, callable from manual/diagnostic grids, traded solo by its competition account; unrouted in production until §13.7 |
 | Strategy competition: paper-bot lineup + custom bot builder, per-bot controls, leaderboard, research comparison (§13) | **Done** — production regime router plus thirteen solo-family challengers (trend, mean-reversion, breakout, momentum, squeeze, supertrend, bollinger-reversion, adx-trend, keltner, funding, volatility-breakout, time-series-momentum, rsi-trend) trade the same coins, candles, and gates from isolated journal-backed paper accounts (bot-scoped fills/orders/decisions/risk rows, per-bot signal-id namespacing, full restart replay per account); GET /competition serves the equity-ranked leaderboard; POST /evaluations/compare grades the whole lineup on byte-identical scenario sets (one frozen window + seed, grouped runs) for the research screen's side-by-side table; solo bots trade ungated by the regime router's family schedule (news/event vetoes still apply to all); per-bot pause/resume/kill + detail API; user-built custom bots (rule recipes, any/all entry voting via CompositeStrategy, validated + persisted + hot-editable + restart-replayed) |
-| Strategy bake-off: one-click grid tournament (§13.8) | **Done** — every price family at calm/bold (the full tournament: everything tested against everything) plus the production baseline, two ensembles, and a seeded random-entry control (the noise floor) graded by default across 4h and 1d grids, one cell per comparison on byte-identical scenarios, driven through the single research lane and polled to completion; custom grids can still request 1h diagnostics; cells with too little history reported `insufficient_data` and excluded; zero-trade contestants are marked inactive and ranked below active strategies rather than treated as safe; ranked by average return fraction with a live leaderboard updated per cell; persisted to `bake_off_jobs` (per-cell runs stay in `evaluation_runs`); POST /research/bakeoff + GET /research/bakeoff[s] with a research-tab UI |
+| Strategy bake-off: one-click grid tournament (§13.8) | **Done** — every price family at calm/bold (the full tournament: everything tested against everything) plus the production baseline, two ensembles, and four controls/baselines (buy-and-hold, DCA, spot grid, seeded random-entry noise floor) graded by default across 15m/1h/4h/1d grids, one cell per comparison on byte-identical scenarios, driven through the single research lane and polled to completion; cells with too little history reported `insufficient_data` and excluded; zero-trade contestants are marked inactive and ranked below active strategies rather than treated as safe; ranked by average return fraction with a live leaderboard updated per cell; persisted to `bake_off_jobs` (per-cell runs stay in `evaluation_runs`); POST /research/bakeoff + GET /research/bakeoff[s] with a research-tab UI |
 | Observability: dead-man's switch, metrics, DB backups (§4.9, §7) | **Done** — structured JSON logging (one event per line, env-switchable to text for local tailing) with signal→order→fill correlation fields across the engine and risk manager, amounts kept exact as Decimal-derived strings; heartbeat ping gated on feed freshness; /metrics (feed lag, equity, breakers, bus counters) behind the bearer token; live-vs-backtest divergence measurable per coin (the §10 paper-gate metric: live paper fills matched against a same-candle replay of the production strategy shape; zero is the one-code-path expectation, non-zero is documented gating or a parity bug); scheduled gzipped-JSONL backups to S3-compatible storage with exact-Decimal restore (production restore drill pending, see checklist) |
 | Live trading (§8 Phase 3) | **Missing** — blockers enumerated in LIVE_TRADING_CHECKLIST.md |
 
@@ -675,7 +675,10 @@ and the report says so in plain words. Also: median R, average win/loss,
 false-buy rate, missed-opportunity rate, hold accuracy, and every metric
 broken down by regime, volatility, event, timeframe, and symbol. Sharpe is
 reported but flagged as indicative only (overlapping scenarios violate its
-independence assumption).
+independence assumption). Each run also carries `overfit_diagnostics`: a
+DSR-style probability that the observed R Sharpe is skill rather than
+selection noise, plus a `pbo_proxy` (`1 - probability`) for a compact
+false-discovery risk read.
 
 A scenario is also tagged with one **named archetype** (`classifier.archetype`),
 a frozen priority-ordered partition of the trend/volatility/event labels into
@@ -686,6 +689,8 @@ window gets exactly one archetype, so the `by_archetype` breakdown sums to the
 whole — the axis the research heatmap pivots a bot lineup on to answer "which
 bot wins in chop, and which dies there?". The priority order is frozen for the
 same comparability reason as the §12.2 constants it is built from.
+The report also summarizes this into `regime_diagnostics`: best archetype,
+weakest archetype, and non-positive-expectancy sit-out candidates.
 
 **Risk-adjusted and tail metrics** sit beside expectancy so a high mean is
 not mistaken for a safe one: a **downside-deviation of R** (RMS of the losing
@@ -737,7 +742,9 @@ clears a one-sided bootstrap test at the Bonferroni-corrected
 significance level **and** that edge *persists* across the walk-forward —
 the challenger must clear the minimum evidence bar (50 graded validation
 trades), remain positive in **every** validation window, and beat the
-baseline in **every** validation window, not merely on the pooled average
+baseline in **every** validation window, and clear the DSR-style overfit
+gate (`deflated_sharpe_probability >= 0.95` after accounting for the number
+of variants that could have been selected), not merely on the pooled average
 or a majority. An edge concentrated in one lucky stretch (which lifts the
 pooled average while losing the other windows), or one that only beats a
 worse losing baseline, is rejected as overfit rather than promoted:
@@ -871,6 +878,13 @@ rather than re-running the identical sweep — until a **fixed budget**
 (`campaign_max_rounds` or `campaign_max_hours`) is spent or the step
 converges below `campaign_min_scale`. Promote-each-step means the paper bot
 always trades the best proven config and the next round climbs from there.
+The promotable cadence is `campaign_timeframe` (default `4h` and required to
+match the traded candle timeframe); `campaign_diagnostic_timeframes` (default
+`15m,1h,1d`) rotate through the same campaign machinery as evidence-only runs.
+Diagnostic campaigns record validated winners and the holdout read, but they
+set `promotions_enabled=false` and never auto-apply a change. That gives the
+research loop coverage across fast, medium, and slow cadences without letting a
+non-traded timeframe rewrite the production settings.
 
 Iterating a search over backtests is how you overfit, so the guard is
 structural. Every round is graded strictly *before* a **reserved holdout**
@@ -907,11 +921,18 @@ reproduces bit for bit, and the holdout read keeps its own frozen seed to
 stay comparable across campaigns.
 
 A **driver** runs campaigns continuously across the autonomous target set
-(currently `production`) and rotates symbols, one at a time — the loop is
-sequential, so it never contends with itself for the single research lane,
-and a round whose sweep loses that lane to a human-started sweep refines and
-retries. Because the loop runs forever, its cumulative multiple-comparisons
-exposure has an outer bound too: an optional **per-target lifetime promotion
+(currently `production`) and rotates symbols and campaign timeframes, one at a
+time — the loop is sequential, so it never contends with itself for the single
+research lane, and a round whose sweep loses that lane to a human-started sweep
+refines and retries. The default campaign window is deliberately deeper and
+denser than the original 4h-only pass: `campaign_history_days=1280`,
+`campaign_holdout_days=180`, `campaign_scenario_count=5000`,
+`campaign_lookback_candles=120`, `campaign_horizon_candles=30`, and
+`campaign_validation_windows=3`. The shorter per-scenario context and horizon
+keep higher timeframes from starving validation windows, while the full
+backfill supplies enough unique windows for the requested scenario count.
+Because the loop runs forever, its cumulative multiple-comparisons exposure has
+an outer bound too: an optional **per-target lifetime promotion
 cap** (`campaign_max_lifetime_promotions_per_target`, `0` = off) sums a
 target's auto-promotions across all its campaigns from the durable history,
 and once that count is reached the target's campaigns keep *researching* but
@@ -919,7 +940,8 @@ no longer *apply* — a validated, engine-confirmed winner is recorded and the
 search refines, but the live config is frozen until a human reviews the
 accumulated evidence and promotes manually or raises the cap. Manual
 diagnostic campaigns can still name a solo family target explicitly. The
-lifetime count and cap surface on the campaign status (`GET /campaign`). When enabled the campaign **supersedes** the single-sweep
+lifetime count, cap, campaign timeframe, and evidence-only promotion flag
+surface on the campaign status (`GET /campaign`). When enabled the campaign **supersedes** the single-sweep
 auto-improver (they share the one lane); when off — the default — nothing
 changes. Same scope as everything else here: this paper-only worker
 promotes through the journaled, revertible apply path, and the campaign's
@@ -1282,24 +1304,25 @@ research tab's one-click experiment — start it and walk away.
   agree on the same candle, and a *breadth* ensemble that enters when any of
   its families fires), built from the same composite a custom bot trades and
   graded research-only — winning the bake-off never routes a recipe into
-  production (§13.7); and a **random-entry control** as the noise floor: a
-  seeded coin-flip bot (`strategies/controls.py`) that buys and sells at
-  random with the families' own ATR stop, fees, and slippage, so a family
-  that cannot out-earn it has no edge distinguishable from luck. The control
-  lives in its own registry, never `STRATEGY_FAMILIES` — it is a yardstick,
-  never swept, lineup'd, or promoted. The roster is code-defined and frozen
-  so two bake-offs are comparable; every contestant is validated buildable at
-  import.
+  production (§13.7); and four **controls/baselines** from
+  `strategies/controls.py`: buy-and-hold (passive spot), DCA (time-based
+  accumulator), spot grid (sideways-market yardstick), and seeded
+  random-entry (the noise floor). Controls live in their own registry, never
+  `STRATEGY_FAMILIES` — they are yardsticks, never swept, lineup'd, or
+  promoted. The roster is code-defined and frozen so two bake-offs are
+  comparable; every contestant is validated buildable at import.
 - **The grid.** Each *cell* is one (timeframe, history-window) pair. The
   default grid pairs each timeframe with depths sized to its own bar —
-  `4h × {40, 90, 180d}`, `1d × {180, 270, 365d}`, six cells — because
+  `15m × {30, 90d}`, `1h × {90, 180, 365d}`,
+  `4h × {180, 365, 730d}`, and `1d × {365, 730, 1095d}`, eleven cells —
+  because
   feasibility is a candle count, not a day count: a scenario needs lookback
   + horizon candles (150 by default), and a day buys six candles at 4h but
   only one at 1d, so a single day-window list shared across timeframes is
   either too thin to trade on 1d or buries faster bars in years of history.
-  The default grid omits 1h because production evidence showed it as a
-  diagnostic timeframe, not a promotion timeframe; a custom grid can still
-  request `1h` cells explicitly. Each cell is one ordinary comparison
+  The default grid includes 15m and 1h diagnostics plus 4h/1d promotion-scale
+  reads, so the tournament exposes whether a contender is robust across
+  cadence or only works in one sampling regime. Each cell is one ordinary comparison
   (§13.6): all contestants on byte-identical scenarios (one frozen window
   end, one seed), so within a cell the only variable is the strategy. Every
   per-cell number is a normal, inspectable evaluation run, linked by its
@@ -1313,7 +1336,9 @@ research tab's one-click experiment — start it and walk away.
   few candles to host a scenario (ten daily candles cannot). Such a cell is
   recorded `insufficient_data` and excluded from the averages — no bot is
   charged for a window nobody could trade. The default grid is sized so
-  every cell clears that floor; only a hand-picked grid can land on one.
+  every cell clears that floor; only a hand-picked grid can land on one. The
+  default per-cell scenario count is 300, enough to avoid ranking active bots
+  on only a few sampled trades while keeping the wider grid finishable.
 - **Ranking.** Each contestant is scored by its **average return fraction**
   across the cells it could trade (raw money is not comparable across a
   40-day and a 365-day window). A contestant with zero trades is marked

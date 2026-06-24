@@ -8,6 +8,7 @@ import type {
   CandleResponse,
   ChartInterval,
   DecisionResponse,
+  DivergenceReportResponse,
   FillResponse,
   StatusResponse,
 } from "../api/types";
@@ -15,6 +16,7 @@ import { CandleChart } from "../components/CandleChart";
 import { CoinManager } from "../components/CoinManager";
 import { CoinTabs } from "../components/CoinTabs";
 import { DecisionsPanel } from "../components/DecisionsPanel";
+import { DivergenceCard } from "../components/DivergenceCard";
 import { FillsTable } from "../components/FillsTable";
 import { IntervalSwitcher } from "../components/IntervalSwitcher";
 import { StatusCard } from "../components/StatusCard";
@@ -24,6 +26,7 @@ export function CoinsScreen(props: {
   status: StatusResponse | null;
   candles: CandleResponse[];
   decisions: DecisionResponse[];
+  divergence: DivergenceReportResponse | null;
   fills: FillResponse[];
   chartInterval: ChartInterval;
   disabled: boolean;
@@ -56,7 +59,10 @@ export function CoinsScreen(props: {
         </>
       )}
       {status ? (
-        <StatusCard status={status} />
+        <>
+          <StatusCard status={status} />
+          <DivergenceCard report={props.divergence} />
+        </>
       ) : (
         <div className="text-sm text-zinc-500">loading…</div>
       )}

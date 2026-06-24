@@ -1,14 +1,10 @@
-"""Baseline controls: no-skill reference strategies for the tournament.
+"""Baseline controls: reference strategies for the tournament.
 
 A strategy only earns its complexity if it beats doing something trivial.
-The **random-entry control** is that trivial thing: it buys and sells on a
-seeded coin flip, with the *same* ATR stop, fees, and slippage as every real
-family, so its graded expectancy is the tournament's **noise floor**. A
-family whose edge does not clear the random control's is indistinguishable
-from luck — exactly the "is this signal or noise?" check the research system
-(ARCHITECTURE.md §12, §13.8) exists to make, and the one benchmark a backtest
-yardstick (buy-and-hold) cannot give, because random trading pays the same
-fees and stops the family does.
+These controls are deliberately simple: random-entry is the no-skill noise
+floor, buy-and-hold is the passive spot benchmark, DCA is a time-based
+accumulator, and grid is the obvious sideways-market alternative. A family
+whose edge does not clear these has not proved it deserves complexity.
 
 The randomness is **seeded**, so a graded run reproduces bit-for-bit like
 every other evaluation (§12.1): the same series, config, and seed produce the
@@ -150,8 +146,182 @@ class RandomEntryStrategy:
         return None
 
 
+class BuyHoldConfig(BaseModel):
+    """Passive spot benchmark: enter once, then let the horizon mark it."""
+
+    model_config = ConfigDict(frozen=True)
+
+    atr_period: int = Field(default=14, ge=2)
+    atr_stop_multiple: float = Field(default=2.0, gt=0.0)
+
+
+class BuyHoldStrategy:
+    """Enter once after ATR warm-up; never emits an active exit."""
+
+    def __init__(self, config: BuyHoldConfig) -> None:
+        """Initialize the passive benchmark with incremental ATR state."""
+        self._config = config
+        self._atr = Atr(config.atr_period)
+        self._entered = False
+        self._last_open_time: datetime | None = None
+
+    @property
+    def name(self) -> str:
+        """Return the stable strategy identifier used in reports."""
+        return "buy_hold"
+
+    def on_candle(self, candle: Candle, position: Position | None) -> Signal | None:
+        """Emit the single benchmark entry after ATR warm-up while flat."""
+        self._check_order(candle)
+        atr = self._atr.update(
+            float(candle.high_quote), float(candle.low_quote), float(candle.close_quote)
+        )
+        if position is not None or self._entered or atr is None:
+            return None
+        stop = _atr_stop(candle.close_quote, atr, self._config.atr_stop_multiple)
+        if stop is None:
+            return None
+        self._entered = True
+        return _buy_signal(self.name, candle, stop, ("buy-and-hold benchmark entry",))
+
+    def _check_order(self, candle: Candle) -> None:
+        if self._last_open_time is not None and candle.open_time <= self._last_open_time:
+            raise ValueError(
+                f"out-of-order or duplicate candle: {candle.open_time.isoformat()} after "
+                f"{self._last_open_time.isoformat()}"
+            )
+        self._last_open_time = candle.open_time
+
+
+class DcaConfig(BaseModel):
+    """Time-based accumulator benchmark."""
+
+    model_config = ConfigDict(frozen=True)
+
+    interval_candles: int = Field(default=24, ge=1)
+    atr_period: int = Field(default=14, ge=2)
+    atr_stop_multiple: float = Field(default=2.0, gt=0.0)
+
+
+class DcaStrategy:
+    """Buy on a fixed candle cadence while flat; never predicts direction."""
+
+    def __init__(self, config: DcaConfig) -> None:
+        """Initialize the cadence benchmark with incremental ATR state."""
+        self._config = config
+        self._atr = Atr(config.atr_period)
+        self._seen = 0
+        self._last_open_time: datetime | None = None
+
+    @property
+    def name(self) -> str:
+        """Return the stable strategy identifier used in reports."""
+        return "dca"
+
+    def on_candle(self, candle: Candle, position: Position | None) -> Signal | None:
+        """Emit a time-based benchmark entry while flat on the configured cadence."""
+        self._check_order(candle)
+        self._seen += 1
+        atr = self._atr.update(
+            float(candle.high_quote), float(candle.low_quote), float(candle.close_quote)
+        )
+        if position is not None or atr is None or self._seen % self._config.interval_candles != 0:
+            return None
+        stop = _atr_stop(candle.close_quote, atr, self._config.atr_stop_multiple)
+        if stop is None:
+            return None
+        return _buy_signal(
+            self.name,
+            candle,
+            stop,
+            (f"DCA benchmark: every {self._config.interval_candles} candles",),
+        )
+
+    def _check_order(self, candle: Candle) -> None:
+        if self._last_open_time is not None and candle.open_time <= self._last_open_time:
+            raise ValueError(
+                f"out-of-order or duplicate candle: {candle.open_time.isoformat()} after "
+                f"{self._last_open_time.isoformat()}"
+            )
+        self._last_open_time = candle.open_time
+
+
+class GridConfig(BaseModel):
+    """Simple spot grid benchmark around a rolling anchor."""
+
+    model_config = ConfigDict(frozen=True)
+
+    grid_step_fraction: Decimal = Field(default=Decimal("0.02"), gt=0, lt=1)
+    stop_step_multiple: Decimal = Field(default=Decimal("2"), gt=0)
+
+
+class GridStrategy:
+    """Buy dips below a rolling anchor; sell rebounds above entry/anchor."""
+
+    def __init__(self, config: GridConfig) -> None:
+        """Initialize the grid benchmark with a lazy price anchor."""
+        self._config = config
+        self._anchor_quote: Decimal | None = None
+        self._last_open_time: datetime | None = None
+
+    @property
+    def name(self) -> str:
+        """Return the stable strategy identifier used in reports."""
+        return "grid"
+
+    def on_candle(self, candle: Candle, position: Position | None) -> Signal | None:
+        """Emit grid entries and exits relative to the rolling anchor."""
+        self._check_order(candle)
+        close = candle.close_quote
+        if self._anchor_quote is None:
+            self._anchor_quote = close
+            return None
+        step = self._config.grid_step_fraction
+        if position is None:
+            buy_level = self._anchor_quote * (Decimal(1) - step)
+            if close <= buy_level:
+                stop = close * (Decimal(1) - step * self._config.stop_step_multiple)
+                if stop <= 0:
+                    return None
+                self._anchor_quote = close
+                return _buy_signal(
+                    self.name,
+                    candle,
+                    stop.quantize(ACCOUNTING_RESOLUTION, rounding=ROUND_HALF_EVEN),
+                    (f"grid benchmark: close fell {step:.4f} below anchor",),
+                )
+            self._anchor_quote = close
+            return None
+        entry = position.average_entry_price_quote
+        sell_level = max(self._anchor_quote, entry) * (Decimal(1) + step)
+        if close >= sell_level:
+            self._anchor_quote = close
+            return Signal(
+                signal_id=_signal_id(self.name, candle),
+                strategy_name=self.name,
+                symbol=candle.symbol,
+                side=Side.SELL,
+                confidence=1.0,
+                stop_price_quote=candle.close_quote,
+                reasons=(f"grid benchmark: close rebounded {step:.4f} above grid level",),
+                created_at=candle.close_time,
+            )
+        return None
+
+    def _check_order(self, candle: Candle) -> None:
+        if self._last_open_time is not None and candle.open_time <= self._last_open_time:
+            raise ValueError(
+                f"out-of-order or duplicate candle: {candle.open_time.isoformat()} after "
+                f"{self._last_open_time.isoformat()}"
+            )
+        self._last_open_time = candle.open_time
+
+
 CONTROL_STRATEGIES: Mapping[str, tuple[type[BaseModel], Callable[..., Strategy]]] = {
     "random_entry": (RandomEntryConfig, RandomEntryStrategy),
+    "buy_hold": (BuyHoldConfig, BuyHoldStrategy),
+    "dca": (DcaConfig, DcaStrategy),
+    "grid": (GridConfig, GridStrategy),
 }
 """Reference controls: id -> (config model, constructor). Deliberately
 separate from ``STRATEGY_FAMILIES`` (``evaluation/sweep.py``): controls are
@@ -178,3 +348,29 @@ def build_control_strategy(control_id: str, params: Mapping[str, Any]) -> Strate
     validate_control_params(control_id, params)
     config_model, constructor = CONTROL_STRATEGIES[control_id]
     return constructor(config_model(**params))
+
+
+def _atr_stop(close_quote: Decimal, atr: float, multiple: float) -> Decimal | None:
+    stop = (close_quote - Decimal(str(multiple * atr))).quantize(
+        ACCOUNTING_RESOLUTION, rounding=ROUND_HALF_EVEN
+    )
+    return stop if stop > 0 else None
+
+
+def _signal_id(strategy_name: str, candle: Candle) -> str:
+    return f"{strategy_name}:{candle.symbol}:{candle.close_time.isoformat()}"
+
+
+def _buy_signal(
+    strategy_name: str, candle: Candle, stop_price_quote: Decimal, reasons: tuple[str, ...]
+) -> Signal:
+    return Signal(
+        signal_id=_signal_id(strategy_name, candle),
+        strategy_name=strategy_name,
+        symbol=candle.symbol,
+        side=Side.BUY,
+        confidence=1.0,
+        stop_price_quote=stop_price_quote,
+        reasons=reasons,
+        created_at=candle.close_time,
+    )

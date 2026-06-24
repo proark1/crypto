@@ -20,7 +20,7 @@ class TestRoster:
     def test_baseline_plus_presets_ensembles_and_controls(self) -> None:
         assert len(ENERGY_PRESETS) == 24
         assert len(ENSEMBLE_CONTESTANTS) == 2
-        assert len(CONTROL_CONTESTANTS) == 1
+        assert len(CONTROL_CONTESTANTS) == 4
         assert len(BAKE_OFF_CONTESTANTS) == (
             1 + len(ENERGY_PRESETS) + len(ENSEMBLE_CONTESTANTS) + len(CONTROL_CONTESTANTS)
         )
@@ -77,9 +77,9 @@ class TestControlContestants:
             strategy = build_control_strategy(contestant.control, dict(contestant.params))
             assert strategy.name == contestant.control
 
-    def test_the_random_entry_control_is_present(self) -> None:
+    def test_the_benchmark_controls_are_present(self) -> None:
         ids = [c.bot_id for c in CONTROL_CONTESTANTS]
-        assert "random_entry" in ids
+        assert {"buy_hold", "dca", "grid", "random_entry"} <= set(ids)
 
     def test_a_contestant_cannot_set_more_than_one_kind(self) -> None:
         # The resolver checks the kinds in order, so a multi-kind entry would

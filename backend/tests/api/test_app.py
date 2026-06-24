@@ -371,6 +371,8 @@ class StubBot:
             "campaign": {
                 "target": "momentum",
                 "symbol": "BTC/USDT",
+                "timeframe": "1h",
+                "promotions_enabled": True,
                 "status": "running",
                 "promotions": 1,
                 "stop_reason": None,
@@ -399,6 +401,8 @@ class StubBot:
             {
                 "target": "momentum",
                 "symbol": "ETH/USDT",
+                "timeframe": "1d",
+                "promotions_enabled": False,
                 "status": "completed",
                 "promotions": 2,
                 "stop_reason": "budget spent: reached the 8-round limit",
@@ -1545,6 +1549,8 @@ class TestCampaignStatus:
         assert body["max_rounds"] == 8
         campaign = body["campaign"]
         assert campaign["target"] == "momentum" and campaign["status"] == "running"
+        assert campaign["timeframe"] == "1h"
+        assert campaign["promotions_enabled"] is True
         assert campaign["promotions"] == 1
         assert campaign["rounds"][0]["winner"] == "faster_macd"
         # The promoted round carries the field-level diff (what it changed).
@@ -1565,6 +1571,8 @@ class TestCampaignStatus:
         assert len(body) == 1
         past = body[0]
         assert past["target"] == "momentum" and past["symbol"] == "ETH/USDT"
+        assert past["timeframe"] == "1d"
+        assert past["promotions_enabled"] is False
         assert past["status"] == "completed" and past["promotions"] == 2
         # ISO strings from the persisted snapshot pass straight through.
         assert past["finished_at"] == BASE_TIME.isoformat()

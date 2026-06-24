@@ -133,7 +133,7 @@ def test_campaign_backfill_must_cover_history_plus_holdout(
 ) -> None:
     """An enabled campaign needs both its history and its holdout depth of candles."""
     monkeypatch.setenv("TRADEBOT_CAMPAIGN_ENABLED", "true")
-    monkeypatch.setenv("TRADEBOT_HISTORY_BACKFILL_DAYS", "400")  # short of 365 + 60
+    monkeypatch.setenv("TRADEBOT_HISTORY_BACKFILL_DAYS", "400")  # short of 1280 + 180
     with pytest.raises(ValidationError, match="must cover"):
         AppConfig()
 
@@ -144,10 +144,34 @@ def test_disabled_campaign_skips_the_backfill_check(
     """The campaign window check only bites when campaigns are enabled."""
     monkeypatch.setenv("TRADEBOT_CAMPAIGN_ENABLED", "false")
     # 750 covers the auto-improve window (730) but is short of the campaign's
-    # 790 (730 history + 60 holdout), so a fired campaign check would reject it
-    # — disabled, it does not.
+    # 1460 (1280 history + 180 holdout), so a fired campaign check would reject
+    # it — disabled, it does not.
     monkeypatch.setenv("TRADEBOT_HISTORY_BACKFILL_DAYS", "750")
     assert AppConfig().history_backfill_days == 750
+
+
+def test_campaign_diagnostic_timeframes_parse_without_primary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TRADEBOT_CAMPAIGN_TIMEFRAME", "4h")
+    monkeypatch.setenv("TRADEBOT_CAMPAIGN_DIAGNOSTIC_TIMEFRAMES", "15m, 1h, 4h, 1d,1h")
+    assert AppConfig().campaign_diagnostic_timeframe_list() == ("15m", "1h", "1d")
+
+
+def test_simulator_realism_knobs_load_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TRADEBOT_SIMULATOR_SPREAD_BPS", "2")
+    monkeypatch.setenv("TRADEBOT_SIMULATOR_MARKET_SLIPPAGE_BPS", "7.5")
+    monkeypatch.setenv("TRADEBOT_SIMULATOR_MAX_VOLUME_FRACTION", "0.25")
+    monkeypatch.setenv("TRADEBOT_SIMULATOR_VOLUME_IMPACT_BPS", "20")
+    monkeypatch.setenv("TRADEBOT_SIMULATOR_SUBMIT_LATENCY_CANDLES", "1")
+
+    config = AppConfig()
+
+    assert config.simulator_spread_bps == Decimal("2")
+    assert config.simulator_market_slippage_bps == Decimal("7.5")
+    assert config.simulator_max_volume_fraction == Decimal("0.25")
+    assert config.simulator_volume_impact_bps == Decimal("20")
+    assert config.simulator_submit_latency_candles == 1
 
 
 def test_sentiment_thresholds_load_from_env(monkeypatch: pytest.MonkeyPatch) -> None:

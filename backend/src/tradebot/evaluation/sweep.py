@@ -41,8 +41,10 @@ from tradebot.evaluation.models import RunStatus
 from tradebot.evaluation.reports import r_metrics
 from tradebot.evaluation.sensitivity import scale_fill_costs, summarize_cost_sensitivity
 from tradebot.evaluation.statistics import (
+    DSR_MIN_PROBABILITY,
     bootstrap_expectancy_interval,
     corrected_significance,
+    overfit_diagnostics,
     superiority_p_value,
 )
 from tradebot.execution import FillSimulatorConfig
@@ -560,6 +562,7 @@ def _score_block(score: CandidateScore, seed: int) -> dict[str, Any]:
         "recipe": score.candidate.recipe,
         "scenario_count": score.scenario_count,
         **r_metrics(list(score.r_values)),
+        "overfit_diagnostics": overfit_diagnostics(score.r_values),
         "expectancy_ci_r": (
             {"low": str(interval.low_r), "high": str(interval.high_r)}
             if interval is not None
@@ -629,6 +632,7 @@ def validation_verdict(
         "comparisons": comparisons,
         "corrected_threshold": str(threshold),
         "p_value": None,
+        "overfit_diagnostics": None,
     }
     winner_r = winner.expectancy_r
     baseline_r = baseline.expectancy_r
@@ -667,6 +671,18 @@ def validation_verdict(
             f"windows ({_prose_r(winner_r)}R vs {_prose_r(baseline_r)}R per trade), but "
             f"the edge is not distinguishable from luck after correcting for "
             f"{comparisons} comparisons (p={p_value}, needs <= {threshold})",
+            significance,
+        )
+    diagnostics = overfit_diagnostics(winner.r_values, effective_trials=comparisons)
+    significance["overfit_diagnostics"] = diagnostics
+    if not diagnostics["passes"]:
+        probability = diagnostics["deflated_sharpe_probability"]
+        return (
+            "insufficient_evidence",
+            f"{winner.candidate.name} beat {baseline.candidate.name} on the validation "
+            f"windows, but its deflated Sharpe probability is {probability}; needs "
+            f">= {DSR_MIN_PROBABILITY} after accounting for {comparisons} selected "
+            "variants",
             significance,
         )
     # Per-window consistency gate: a real edge persists across successive

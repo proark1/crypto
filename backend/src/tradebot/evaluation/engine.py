@@ -414,7 +414,7 @@ class ScenarioEvaluator:
 
     def _slipped(self, price: Decimal, buying: bool) -> Decimal:
         """Apply adverse market slippage, mirroring the fill simulator."""
-        slip = self._fills.market_slippage_bps / _BPS_DIVISOR
+        slip = (self._fills.market_slippage_bps + self._fills.spread_bps) / _BPS_DIVISOR
         factor = (1 + slip) if buying else (1 - slip)
         return (price * factor).quantize(ACCOUNTING_RESOLUTION, rounding=ROUND_HALF_EVEN)
 

@@ -13,11 +13,15 @@ from tradebot.execution import FillSimulatorConfig
 class TestScaleFillCosts:
     def test_scales_every_cost_by_an_integer_multiplier(self) -> None:
         fills = FillSimulatorConfig(
-            maker_fee_bps=Decimal(8), taker_fee_bps=Decimal(10), market_slippage_bps=Decimal(5)
+            maker_fee_bps=Decimal(8),
+            taker_fee_bps=Decimal(10),
+            spread_bps=Decimal(2),
+            market_slippage_bps=Decimal(5),
         )
         doubled = scale_fill_costs(fills, 2.0)
         assert doubled.maker_fee_bps == Decimal(16)
         assert doubled.taker_fee_bps == Decimal(20)
+        assert doubled.spread_bps == Decimal(4)
         assert doubled.market_slippage_bps == Decimal(10)
 
     def test_fractional_multiplier_stays_exact(self) -> None:

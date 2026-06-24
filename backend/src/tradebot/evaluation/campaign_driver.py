@@ -94,9 +94,19 @@ class CampaignDriverConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     timeframe: str = "4h"
-    history_days: int = Field(default=730, gt=0)
-    holdout_days: int = Field(default=60, gt=0)
+    diagnostic_timeframes: tuple[str, ...] = ("15m", "1h", "1d")
+    """Extra campaign timeframes to research without auto-promotion.
+
+    The primary ``timeframe`` remains the only one that may change the
+    traded configuration. Diagnostics broaden the evidence base and produce
+    sweep/timeline data, but validated winners there are recorded only."""
+
+    history_days: int = Field(default=1280, gt=0)
+    holdout_days: int = Field(default=180, gt=0)
     scenario_count: int = Field(default=DEFAULT_SCENARIO_COUNT, gt=0)
+    lookback_candles: int = Field(default=120, ge=60)
+    horizon_candles: int = Field(default=30, gt=0)
+    validation_windows: int = Field(default=3, ge=1)
     max_rounds: int = Field(default=8, ge=1)
     max_hours: float = Field(default=6.0, gt=0.0)
     refine_factor: float = Field(default=0.5, gt=0.0, lt=1.0)
@@ -174,7 +184,23 @@ class CampaignDriver:
         self._funding_provider = funding_provider
         self._select = select
         self._rotation = 0
+        self._timeframe_rotation = 0
         self._campaign: ResearchCampaign | None = None
+
+    def _timeframes(self) -> tuple[str, ...]:
+        """Return primary plus diagnostic timeframes, deduped in run order."""
+        seen: dict[str, None] = {self._config.timeframe: None}
+        for timeframe in self._config.diagnostic_timeframes:
+            if timeframe != self._config.timeframe:
+                seen[timeframe] = None
+        return tuple(seen)
+
+    def _next_timeframe(self) -> str:
+        """Rotate campaign turns through every configured research timeframe."""
+        timeframes = self._timeframes()
+        timeframe = timeframes[self._timeframe_rotation % len(timeframes)]
+        self._timeframe_rotation += 1
+        return timeframe
 
     async def _next_assignment(self, symbols: tuple[str, ...]) -> tuple[str, str]:
         """Pick the next ``(target, symbol)`` — weighted if a selector is bound.
@@ -233,13 +259,14 @@ class CampaignDriver:
             logger.info("campaign driver idle: no active coins to research")
             return None
         target, symbol = await self._next_assignment(symbols)
+        timeframe = self._next_timeframe()
         prior_promotions = await self._promotions_for(target) if self._promotions_for else 0
-        campaign = self._assemble(target, symbol)
+        campaign = self._assemble(target, symbol, timeframe)
         # Publish the campaign before running it: run() populates its status
         # synchronously before its first await, so the live surface sees the
         # in-flight campaign rather than waiting hours for it to finish.
         self._campaign = campaign
-        await campaign.run(self._campaign_config(target, symbol, prior_promotions))
+        await campaign.run(self._campaign_config(target, symbol, timeframe, prior_promotions))
         status = campaign.status
         # Persist the finished campaign to the durable history. Best-effort:
         # the campaign already ran, so a history-write failure is logged and
@@ -254,17 +281,19 @@ class CampaignDriver:
                 )
         return status
 
-    def _assemble(self, target: str, symbol: str) -> ResearchCampaign:
+    def _assemble(self, target: str, symbol: str, timeframe: str) -> ResearchCampaign:
         """Build the campaign for one target from the injected worker state."""
         provider = make_candidate_provider(target, self._store)
         grader = make_holdout_grader(
             symbol=symbol,
-            timeframe=self._config.timeframe,
+            timeframe=timeframe,
             candles=self._candle_store,
             strategy_for=strategy_for_target(
                 target, self._config.regime_routed, self._funding_provider
             ),
             scenario_count=self._config.scenario_count,
+            lookback_candles=self._config.lookback_candles,
+            horizon_candles=self._config.horizon_candles,
             clock=self._clock,
         )
         return ResearchCampaign(
@@ -279,7 +308,9 @@ class CampaignDriver:
             notify=self._notify,
         )
 
-    def _campaign_config(self, target: str, symbol: str, prior_promotions: int) -> CampaignConfig:
+    def _campaign_config(
+        self, target: str, symbol: str, timeframe: str, prior_promotions: int
+    ) -> CampaignConfig:
         """Project the driver config onto one campaign's ``CampaignConfig``.
 
         ``prior_promotions`` is the target's lifetime auto-promotion count from
@@ -290,10 +321,13 @@ class CampaignDriver:
         return CampaignConfig(
             target=target,
             symbol=symbol,
-            timeframe=config.timeframe,
+            timeframe=timeframe,
             history_days=config.history_days,
             holdout_days=config.holdout_days,
             scenario_count=config.scenario_count,
+            lookback_candles=config.lookback_candles,
+            horizon_candles=config.horizon_candles,
+            validation_windows=config.validation_windows,
             max_rounds=config.max_rounds,
             max_hours=config.max_hours,
             refine_factor=config.refine_factor,
@@ -301,4 +335,5 @@ class CampaignDriver:
             max_lifetime_promotions=config.max_lifetime_promotions_per_target,
             prior_promotions=prior_promotions,
             auto_revert=config.auto_revert,
+            promotions_enabled=timeframe == config.timeframe,
         )
