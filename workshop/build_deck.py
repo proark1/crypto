@@ -6,6 +6,9 @@ mit kleinen Unternehmern. Inhalt und Reihenfolge folgen dem roten Faden:
 Vorstellung -> Digitale Transformation -> Prozessoptimierung -> Faktor Mensch
 -> KI-gestütztes Coding -> Produkt-Showcase -> Angebot / Call to Action.
 
+Design: helles, corporate-freundliches Theme (weißer Hintergrund, dunkler
+Navy-Text, Teal/Orange als Akzente) — gut für helle Räume und als Handout.
+
 Ausführen:
     pip install python-pptx
     python build_deck.py
@@ -18,30 +21,30 @@ Notizen) und sollten vor dem Vortrag kurz gegengeprüft / aktualisiert werden.
 """
 
 from pptx import Presentation
-from pptx.util import Inches, Pt, Emu
+from pptx.util import Inches, Pt
 from pptx.dml.color import RGBColor
 from pptx.enum.text import PP_ALIGN, MSO_ANCHOR
 from pptx.enum.shapes import MSO_SHAPE
-from pptx.oxml.ns import qn
 
 # ---------------------------------------------------------------------------
-# Design-System
+# Design-System (helles / corporate Theme)
 # ---------------------------------------------------------------------------
 # 16:9
 SLIDE_W = Inches(13.333)
 SLIDE_H = Inches(7.5)
 
-# Farbpalette – modern, ruhig, hoher Kontrast für Beamer
-NAVY      = RGBColor(0x0B, 0x1B, 0x2B)   # Hintergrund dunkel
-NAVY_SOFT = RGBColor(0x12, 0x2A, 0x42)   # Karten / Flächen
-TEAL      = RGBColor(0x2D, 0xD4, 0xBF)   # Akzent 1
-AMBER     = RGBColor(0xF5, 0x9E, 0x0B)   # Akzent 2
-WHITE     = RGBColor(0xF8, 0xFA, 0xFC)
-MUTED     = RGBColor(0x9F, 0xB3, 0xC8)
-DARKTEXT  = RGBColor(0x0B, 0x1B, 0x2B)
+# Farbpalette – hell, ruhig, hoher Kontrast für helle Räume & Druck
+PAGE_BG   = RGBColor(0xFF, 0xFF, 0xFF)   # Seitenhintergrund weiß
+SURFACE   = RGBColor(0xEE, 0xF2, 0xF7)   # Karten / Flächen (zartes Grau-Blau)
+INK       = RGBColor(0x0B, 0x1B, 0x2B)   # Primärtext / dunkle Elemente (Navy)
+SURFACE_DK = RGBColor(0x14, 0x26, 0x3B)  # dunkle Karte auf dunklem Slide
+TEAL      = RGBColor(0x0D, 0x94, 0x88)   # Akzent 1 (kontraststark auf Weiß)
+AMBER     = RGBColor(0xC2, 0x41, 0x0C)   # Akzent 2 (Burnt Orange)
+MUTED     = RGBColor(0x51, 0x64, 0x7B)   # Sekundärtext auf Hell
+MUTED_LT  = RGBColor(0xAE, 0xBE, 0xD0)   # Sekundärtext auf Dunkel
+WHITE     = RGBColor(0xFF, 0xFF, 0xFF)
 
 FONT = "Calibri"
-FONT_H = "Calibri"
 
 prs = Presentation()
 prs.slide_width = SLIDE_W
@@ -68,6 +71,7 @@ def add_rect(slide, x, y, w, h, color, line=False):
     shp.fill.fore_color.rgb = color
     if not line:
         _no_line(shp)
+    # Theme-Standardschatten abschalten -> flaches, sauberes Design.
     shp.shadow.inherit = False
     return shp
 
@@ -121,7 +125,7 @@ def kicker(slide, text, color=TEAL, x=Inches(0.9), y=Inches(0.55)):
 _page = 0
 
 
-def new_slide(bg=NAVY, number=True):
+def new_slide(bg=PAGE_BG, number=True):
     global _page
     s = prs.slides.add_slide(BLANK)
     _set_bg(s, bg)
@@ -137,7 +141,7 @@ def new_slide(bg=NAVY, number=True):
 def title_slide():
     global _page
     s = prs.slides.add_slide(BLANK)
-    _set_bg(s, NAVY)
+    _set_bg(s, PAGE_BG)
     _page += 1
     # Akzentbalken links
     add_rect(s, 0, 0, Inches(0.35), SLIDE_H, TEAL)
@@ -147,8 +151,8 @@ def title_slide():
     add_text(s, Inches(0.95), Inches(1.6), Inches(11.5), Inches(0.5),
              [[("WORKSHOP · KI FÜR KLEINE UNTERNEHMEN", 15, TEAL, True)]])
     add_text(s, Inches(0.95), Inches(2.25), Inches(11.6), Inches(2.6),
-             [[("KI im Unternehmen:", 54, WHITE, True)],
-              [("von der Idee zur Umsetzung", 54, WHITE, True)]],
+             [[("KI im Unternehmen:", 54, INK, True)],
+              [("von der Idee zur Umsetzung", 54, INK, True)]],
              line_spacing=1.0, space_after=Pt(2))
     add_text(s, Inches(0.98), Inches(4.5), Inches(11.4), Inches(0.8),
              [[("Wie KI und KI-gestütztes Coding Ihrem Betrieb Zeit, "
@@ -156,34 +160,35 @@ def title_slide():
     # Presenter
     add_rect(s, Inches(0.98), Inches(5.7), Inches(0.5), Inches(0.06), AMBER)
     add_text(s, Inches(0.98), Inches(5.9), Inches(11), Inches(0.9),
-             [[("[Ihr Name]", 20, WHITE, True)],
+             [[("[Ihr Name]", 20, INK, True)],
               [("[Ihr Unternehmen] · KI- & Digitalisierungsberatung", 15, MUTED, False)]])
 
 
 def section_slide(no, title, subtitle):
-    s = new_slide(NAVY_SOFT)
-    add_rect(s, 0, Inches(3.0), SLIDE_W, Inches(1.5), NAVY)
-    add_text(s, Inches(0.95), Inches(2.0), Inches(3), Inches(1.2),
+    s = new_slide(PAGE_BG)
+    # dunkle Bandfläche für visuellen Rhythmus
+    add_rect(s, 0, Inches(2.55), SLIDE_W, Inches(2.4), INK)
+    add_text(s, Inches(0.95), Inches(2.05), Inches(3), Inches(1.2),
              [[(no, 110, TEAL, True)]])
-    add_text(s, Inches(3.1), Inches(3.05), Inches(9.4), Inches(1.0),
+    add_text(s, Inches(3.1), Inches(2.95), Inches(9.4), Inches(1.0),
              [[(title, 40, WHITE, True)]], anchor=MSO_ANCHOR.MIDDLE)
-    add_text(s, Inches(3.13), Inches(4.15), Inches(9.0), Inches(1.2),
-             [[(subtitle, 18, MUTED, False)]])
+    add_text(s, Inches(3.13), Inches(4.0), Inches(9.0), Inches(1.2),
+             [[(subtitle, 18, MUTED_LT, False)]])
     return s
 
 
 def content_slide(kick, heading):
-    s = new_slide(NAVY)
+    s = new_slide(PAGE_BG)
     kicker(s, kick)
     add_text(s, Inches(0.9), Inches(0.95), Inches(11.6), Inches(1.0),
-             [[(heading, 32, WHITE, True)]])
+             [[(heading, 32, INK, True)]])
     add_rect(s, Inches(0.95), Inches(1.85), Inches(0.9), Inches(0.06), TEAL)
     return s
 
 
 def bullets(slide, items, x=Inches(0.95), y=Inches(2.2), w=Inches(11.4),
-            h=Inches(4.6), size=19, gap=Pt(14)):
-    """items: list of (lead, rest) – lead bold/teal, rest muted."""
+            h=Inches(4.6), size=19, gap=Pt(14), lead_color=INK):
+    """items: list of (lead, rest) – lead fett, rest gedämpft."""
     tb = slide.shapes.add_textbox(x, y, w, h)
     tf = tb.text_frame
     tf.word_wrap = True
@@ -206,7 +211,7 @@ def bullets(slide, items, x=Inches(0.95), y=Inches(2.2), w=Inches(11.4),
             r1.text = lead
             r1.font.name = FONT
             r1.font.size = Pt(size)
-            r1.font.color.rgb = WHITE
+            r1.font.color.rgb = lead_color
             r1.font.bold = True
         if rest:
             r2 = p.add_run()
@@ -219,10 +224,10 @@ def bullets(slide, items, x=Inches(0.95), y=Inches(2.2), w=Inches(11.4),
 
 
 def card(slide, x, y, w, h, title, body, accent=TEAL):
-    add_round_rect(slide, x, y, w, h, NAVY_SOFT)
+    add_round_rect(slide, x, y, w, h, SURFACE)
     add_rect(slide, x, y, Inches(0.09), h, accent)
     add_text(slide, x + Inches(0.35), y + Inches(0.25), w - Inches(0.6),
-             Inches(0.6), [[(title, 17, WHITE, True)]])
+             Inches(0.6), [[(title, 17, INK, True)]])
     add_text(slide, x + Inches(0.35), y + Inches(0.85), w - Inches(0.6),
              h - Inches(1.0), [[(body, 13.5, MUTED, False)]], line_spacing=1.08)
 
@@ -231,7 +236,7 @@ def stat(slide, x, y, w, big, label, accent=TEAL):
     add_text(slide, x, y, w, Inches(1.1),
              [[(big, 60, accent, True)]], align=PP_ALIGN.CENTER)
     add_text(slide, x, y + Inches(1.15), w, Inches(1.1),
-             [[(label, 15, WHITE, False)]], align=PP_ALIGN.CENTER,
+             [[(label, 15, INK, False)]], align=PP_ALIGN.CENTER,
              line_spacing=1.05)
 
 
@@ -334,7 +339,7 @@ notes(s, "Klarstellen: Digitalisierung ≠ neue Software kaufen. Es ist eine "
 
 # 7 · KI in Zahlen
 s = content_slide("Die Zahlen", "Warum sich das Hinschauen lohnt")
-add_round_rect(s, Inches(0.95), Inches(2.25), Inches(11.45), Inches(2.4), NAVY_SOFT)
+add_round_rect(s, Inches(0.95), Inches(2.25), Inches(11.45), Inches(2.4), SURFACE)
 stat(s, Inches(1.0), Inches(2.6), Inches(3.7), "bis 40 %", "weniger Zeit für "
      "Routineaufgaben durch KI-Assistenz", TEAL)
 stat(s, Inches(4.85), Inches(2.6), Inches(3.7), "10×", "schnellere Erstellung "
@@ -425,11 +430,11 @@ steps = [
 cw = Inches(2.78)
 for i, (n, t, b, acc) in enumerate(steps):
     x = Inches(0.95) + i * (cw + Inches(0.18))
-    add_round_rect(s, x, Inches(2.3), cw, Inches(3.0), NAVY_SOFT)
+    add_round_rect(s, x, Inches(2.3), cw, Inches(3.0), SURFACE)
     add_text(s, x, Inches(2.55), cw, Inches(1.0), [[(n, 48, acc, True)]],
              align=PP_ALIGN.CENTER)
     add_text(s, x + Inches(0.2), Inches(3.55), cw - Inches(0.4), Inches(0.5),
-             [[(t, 18, WHITE, True)]], align=PP_ALIGN.CENTER)
+             [[(t, 18, INK, True)]], align=PP_ALIGN.CENTER)
     add_text(s, x + Inches(0.25), Inches(4.05), cw - Inches(0.5), Inches(1.2),
              [[(b, 13, MUTED, False)]], align=PP_ALIGN.CENTER, line_spacing=1.08)
 notes(s, "Einfache, wiederholbare Methode. Betonen: Schritt 3 (Werkzeug) ist "
@@ -445,7 +450,7 @@ section_slide("03", "Der Faktor Mensch",
 
 # 14 · Technik vs Mensch
 s = content_slide("Die eigentliche Hürde", "Technik ist einfach — Menschen sind schwer")
-add_round_rect(s, Inches(0.95), Inches(2.2), Inches(5.55), Inches(3.6), NAVY_SOFT)
+add_round_rect(s, Inches(0.95), Inches(2.2), Inches(5.55), Inches(3.6), SURFACE)
 add_rect(s, Inches(0.95), Inches(2.2), Inches(5.55), Inches(0.09), TEAL)
 add_text(s, Inches(1.25), Inches(2.45), Inches(5.0), Inches(0.6),
          [[("Technik", 22, TEAL, True)]])
@@ -455,7 +460,7 @@ bullets(s, [
     ("Planbar", "Funktioniert oder funktioniert nicht."),
 ], x=Inches(1.25), y=Inches(3.15), w=Inches(5.0), size=16, gap=Pt(12))
 
-add_round_rect(s, Inches(6.85), Inches(2.2), Inches(5.55), Inches(3.6), NAVY_SOFT)
+add_round_rect(s, Inches(6.85), Inches(2.2), Inches(5.55), Inches(3.6), SURFACE)
 add_rect(s, Inches(6.85), Inches(2.2), Inches(5.55), Inches(0.09), AMBER)
 add_text(s, Inches(7.15), Inches(2.45), Inches(5.0), Inches(0.6),
          [[("Menschen", 22, AMBER, True)]])
@@ -531,13 +536,13 @@ notes(s, "Kurz halten — nicht in Technik abdriften. Das Publikum muss den "
 # 19 · DEMO BREAK
 s = new_slide(TEAL, number=False)
 add_text(s, Inches(1.0), Inches(2.5), Inches(11.3), Inches(1.4),
-         [[("LIVE-DEMO", 24, NAVY, True)]])
+         [[("LIVE-DEMO", 24, WHITE, True)]])
 add_text(s, Inches(1.0), Inches(3.1), Inches(11.3), Inches(1.6),
-         [[("Wir bauen jetzt gemeinsam etwas.", 44, NAVY, True)]])
+         [[("Wir bauen jetzt gemeinsam etwas.", 44, WHITE, True)]])
 add_text(s, Inches(1.02), Inches(4.6), Inches(11.0), Inches(1.0),
          [[("Schauen Sie auf den Ablauf, nicht auf den Code: "
-            "beschreiben → erzeugen → verbessern.", 18, DARKTEXT, False)]])
-add_rect(s, Inches(1.02), Inches(2.35), Inches(1.2), Inches(0.08), NAVY)
+            "beschreiben → erzeugen → verbessern.", 18, WHITE, False)]])
+add_rect(s, Inches(1.02), Inches(2.35), Inches(1.2), Inches(0.08), INK)
 notes(s, "AUF SCREEN-SHARE / EDITOR WECHSELN. Demo-Tipps: 1) Etwas wählen, das "
           "die Zielgruppe versteht (z. B. einfache Kundenanfrage-Seite oder "
           "Angebots-Generator). 2) Laut denken. 3) Bewusst auch eine kleine "
@@ -591,8 +596,8 @@ notes(s, "Ihr Angebot, klar strukturiert. Botschaft an die Unternehmer: „Sie "
           "UND umsetzt.“ Das ist genau die Buchung, auf die der Workshop "
           "hinarbeitet.")
 
-# 23 · Call to action
-s = new_slide(NAVY_SOFT, number=False)
+# 23 · Call to action (dunkler Abschluss für visuellen Punkt)
+s = new_slide(INK, number=False)
 add_rect(s, 0, 0, Inches(0.35), SLIDE_H, TEAL)
 add_text(s, Inches(0.95), Inches(1.5), Inches(11.4), Inches(0.5),
          [[("LASSEN SIE UNS REDEN", 15, TEAL, True)]])
@@ -600,17 +605,17 @@ add_text(s, Inches(0.95), Inches(2.1), Inches(11.4), Inches(1.6),
          [[("Wo klemmt es bei Ihnen?", 46, WHITE, True)]])
 add_text(s, Inches(0.98), Inches(3.5), Inches(11.0), Inches(1.0),
          [[("15 Minuten, ein Prozess, eine ehrliche Einschätzung — "
-            "kostenlos und unverbindlich.", 19, MUTED, False)]])
-add_round_rect(s, Inches(0.98), Inches(4.7), Inches(5.4), Inches(1.6), NAVY)
+            "kostenlos und unverbindlich.", 19, MUTED_LT, False)]])
+add_round_rect(s, Inches(0.98), Inches(4.7), Inches(5.4), Inches(1.6), SURFACE_DK)
 add_text(s, Inches(1.3), Inches(4.95), Inches(5.0), Inches(1.2),
          [[("[Ihr Name]", 20, WHITE, True)],
-          [("[E-Mail-Adresse]", 15, MUTED, False)],
-          [("[Telefon / Website]", 15, MUTED, False)]], space_after=Pt(4))
+          [("[E-Mail-Adresse]", 15, MUTED_LT, False)],
+          [("[Telefon / Website]", 15, MUTED_LT, False)]], space_after=Pt(4))
 add_round_rect(s, Inches(6.6), Inches(4.7), Inches(5.8), Inches(1.6), TEAL)
 add_text(s, Inches(6.9), Inches(5.05), Inches(5.2), Inches(1.0),
-         [[("Termin sichern", 22, NAVY, True)],
+         [[("Termin sichern", 22, WHITE, True)],
           [("Scannen Sie den QR-Code / schreiben Sie mir heute.", 14,
-            DARKTEXT, False)]], space_after=Pt(6))
+            WHITE, False)]], space_after=Pt(6))
 notes(s, "Klarer, niedrigschwelliger Call to Action. Tipp: Hier einen echten "
           "QR-Code zu Ihrem Kalender (z. B. Calendly) einfügen und die "
           "Platzhalter mit echten Kontaktdaten ersetzen. Letzter Satz im "
@@ -620,4 +625,4 @@ notes(s, "Klarer, niedrigschwelliger Call to Action. Tipp: Hier einen echten "
 # ---------------------------------------------------------------------------
 out = "KI-Workshop.pptx"
 prs.save(out)
-print(f"Gespeichert: {out}  ({len(prs.slides.__iter__.__self__._sldIdLst)} Folien)")
+print(f"Gespeichert: {out}  ({len(prs.slides)} Folien)")
