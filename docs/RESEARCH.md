@@ -82,8 +82,9 @@ the two leading inflation sources:
 - **Selection bias under multiple testing** — penalises by the *effective* number of
   trials (correlated trials count as fewer independent ones).
 - **Non-normal returns** — uses skewness and kurtosis to widen the standard error of the
-  Sharpe estimate, via the `√(1 − γ₃·SR + ((γ₄−1)/4)·SR²)` term inherited from the
-  Probabilistic Sharpe Ratio.
+  Sharpe estimate, via the `√((1 − γ₃·SR + ((γ₄−1)/4)·SR²) / (n−1))` term inherited from
+  the Probabilistic Sharpe Ratio (the skew/kurtosis factor is the asymptotic variance;
+  dividing by the sample size `n−1` turns it into the standard error of the estimate).
 
 The DSR **outputs a probability (0–1)** that the strategy has genuine skill rather than
 being a lucky draw — it is *not* a rescaled Sharpe value.
@@ -99,7 +100,7 @@ between train and test sets.
 - **Embargoing** — drop a fixed fraction of rows immediately after each test fold, to
   block leakage from delayed market reactions / serial correlation.
 
-A peer-reviewed 2024 study (*Knowledge-Based Systems*, Arian, Norouzi M. & Seco) found
+A peer-reviewed 2024 study (*Knowledge-Based Systems*, Arian, Norouzi Mobarekeh & Seco) found
 CPCV beats K-Fold, Purged K-Fold, and plain Walk-Forward on overfitting metrics — lower
 Probability of Backtest Overfitting (PBO) and a higher Deflated Sharpe Ratio test
 statistic. Walk-Forward specifically showed weaker false-discovery prevention (higher
@@ -199,9 +200,10 @@ permalinks, as noted above.
   Backtest Overfitting, and Non-Normality," *Journal of Portfolio Management*, 2014 —
   SSRN: <http://ssrn.com/abstract=2460551>;
   PDF: <http://boston.qwafafew.org/wp-content/uploads/sites/4/2017/01/Lopez_de_Prado_Sharpe.pdf>
-- Arian, Norouzi M. & Seco, "Backtest overfitting in the machine learning era: A
-  comparison of out-of-sample testing methods…," *Knowledge-Based Systems*, Vol. 305,
-  2024 — DOI 10.1016/j.knosys.2024.112477 (ScienceDirect S0950705124011110; SSRN 4686376)
+- Hamid R. Arian, Daniel Norouzi Mobarekeh & Luis A. Seco, "Backtest overfitting in the
+  machine learning era: A comparison of out-of-sample testing methods…,"
+  *Knowledge-Based Systems*, Vol. 305, 2024 — DOI 10.1016/j.knosys.2024.112477
+  (ScienceDirect S0950705124011110; SSRN 4686376)
 - Wikipedia: Deflated Sharpe ratio — <https://en.wikipedia.org/wiki/Deflated_Sharpe_ratio>
 - Wikipedia: Purged cross-validation — <https://en.wikipedia.org/wiki/Purged_cross-validation>
 - Wikipedia: Sharpe ratio — <https://en.wikipedia.org/wiki/Sharpe_ratio>
